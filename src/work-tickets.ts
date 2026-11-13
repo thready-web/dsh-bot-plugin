@@ -5,6 +5,10 @@ import { sha256 } from './fs-safe.ts'
 import type { SqlDatabase } from './store.ts'
 
 export const ACTIVE_TICKET = Object.freeze(['accepted', 'enqueued', 'started', 'needs_user'])
+/** Tickets that occupy a running execution slot, plus reserved starts stored as slot=held. */
+export const SLOT_TICKET = Object.freeze(['enqueued', 'started'])
+/** Cap on how long an accepted/needs_user ticket may occupy a reserved start slot. */
+export const RESERVE_WALL_MS = 10 * 60 * 1000
 const TERMINAL_KIND = new Set(['question', 'result', 'failure'])
 const OPEN_NOTICE_FLUSH = new Set(['intent', 'flushing', 'ambiguous'])
 
@@ -17,11 +21,24 @@ const OPEN_NOTICE_FLUSH = new Set(['intent', 'flushing', 'ambiguous'])
  */
 export function createTicketBook(db: SqlDatabase, root: string, now: () => Date = () => new Date()) {
   const iso = () => now().toISOString()
+  const SLOT_SQL = `status IN ('enqueued','started')
+      OR (status IN ('accepted','needs_user') AND json_extract(budget_json, '$.slot') = 'held')`
+  const QUEUE_SQL = `status = 'accepted'
+      AND (json_extract(budget_json, '$.slot') IS NULL OR json_extract(budget_json, '$.slot') != 'held')`
 
   return {
     iso,
     countActive,
     countGlobal,
+    countSlots,
+    countGlobalSlots,
+    countQueued,
+    countGlobalQueued,
+    slotHeld,
+    reserveSlot,
+    releaseSlot,
+    nextPromotable,
+    heldStarts,
     ticket: (id: string) => row('SELECT * FROM work_tickets WHERE id = ?', id),
     attempt: (id: string) => row('SELECT * FROM work_attempts WHERE id = ?', id),
     byIdempotency,
@@ -104,6 +121,115 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
       WHERE status IN ('accepted','enqueued','started','needs_user')
     `)
       .get().n
+  }
+
+  /**
+   * Running execution slots for one bot. needs_user does not count unless a
+   * resume has already reserved a slot.
+   * @param {string} owner
+   */
+  function countSlots(owner: string) {
+    return db.prepare(`SELECT COUNT(*) AS n FROM work_tickets WHERE owner_session_id = ? AND (${SLOT_SQL})`).get(owner)
+      .n
+  }
+
+  function countGlobalSlots() {
+    return db.prepare(`SELECT COUNT(*) AS n FROM work_tickets WHERE ${SLOT_SQL}`).get().n
+  }
+
+  /**
+   * Accepted tickets waiting for a slot. A reserved start is not queued.
+   * @param {string} owner
+   */
+  function countQueued(owner: string) {
+    return db.prepare(`SELECT COUNT(*) AS n FROM work_tickets WHERE owner_session_id = ? AND ${QUEUE_SQL}`).get(owner).n
+  }
+
+  function countGlobalQueued() {
+    return db.prepare(`SELECT COUNT(*) AS n FROM work_tickets WHERE ${QUEUE_SQL}`).get().n
+  }
+
+  /**
+   * @param {{ budget_json?: string } | null | undefined} ticket
+   */
+  function slotHeld(ticket: { budget_json?: string } | null | undefined) {
+    return budgetObject(ticket ?? {}).slot === 'held'
+  }
+
+  /**
+   * Reserve a running slot on an accepted or needs_user ticket. Returns null
+   * when the ticket is missing or already terminal.
+   * @param {string} ticketId
+   */
+  function reserveSlot(ticketId: string) {
+    const ticket = row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
+    if (!ticket) return null
+    if (ticket.status === 'cancelled' || ticket.status === 'failed' || ticket.status === 'delivered') return ticket
+    if (ticket.status === 'enqueued' || ticket.status === 'started' || slotHeld(ticket)) return ticket
+    const budget = { ...budgetObject(ticket), slot: 'held' }
+    db.prepare(`UPDATE work_tickets SET budget_json = ?, updated_at = ? WHERE id = ?`).run(
+      JSON.stringify(budget),
+      iso(),
+      ticketId,
+    )
+    return row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
+  }
+
+  /**
+   * @param {string} ticketId
+   */
+  function releaseSlot(ticketId: string) {
+    const ticket = row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
+    if (!ticket || !slotHeld(ticket)) return ticket
+    const budget = budgetObject(ticket)
+    delete budget.slot
+    db.prepare(`UPDATE work_tickets SET budget_json = ?, updated_at = ? WHERE id = ?`).run(
+      JSON.stringify(budget),
+      iso(),
+      ticketId,
+    )
+    return row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
+  }
+
+  /**
+   * Oldest ticket that can take a newly freed slot: a queued accept, a reserved
+   * start that has not reached enqueued, or a needs_user resume with unflushed input.
+   * FIFO is created_at, then SQLite rowid (insertion order), not ticket id.
+   * The caller still checks per-bot and global slot caps before reserveSlot.
+   */
+  function nextPromotable() {
+    return db
+      .prepare(
+        `
+      SELECT t.* FROM work_tickets t
+      LEFT JOIN work_attempts a ON a.id = t.active_attempt_id
+      LEFT JOIN work_inputs i ON i.id = a.current_input_id
+      WHERE t.status = 'accepted'
+         OR (t.status IN ('accepted','needs_user') AND json_extract(t.budget_json, '$.slot') = 'held')
+         OR (
+           t.status = 'needs_user'
+           AND t.child_session_id IS NOT NULL
+           AND i.flush_status IN ('intent','ambiguous')
+         )
+      ORDER BY t.created_at ASC, t.rowid ASC
+    `,
+      )
+      .all()
+  }
+
+  /**
+   * Reserved starts that still need create/flush after a crash or a mid-start return.
+   */
+  function heldStarts() {
+    return db
+      .prepare(
+        `
+      SELECT * FROM work_tickets
+      WHERE status IN ('accepted','needs_user') AND json_extract(budget_json, '$.slot') = 'held'
+      ORDER BY created_at ASC, rowid ASC
+    `,
+      )
+      .all()
   }
 
   /**
@@ -223,16 +349,36 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
    * @param {string} ticketId
    * @param {string} childSessionId
    */
-  function setChildIfEmpty(ticketId: string, childSessionId: string) {
+  function setChildIfEmpty(
+    ticketId: string,
+    childSessionId: string,
+    expected?: { attemptId?: string; fencingToken?: number },
+  ) {
     const ticket = row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
-    if (!ticket || ticket.child_session_id) return ticket
+    if (!ticket) return { ticket: null, attached: false }
+    if (ticket.status === 'cancelled' || ticket.status === 'failed' || ticket.status === 'delivered') {
+      return { ticket, attached: false }
+    }
+    if (ticket.child_session_id) {
+      return { ticket, attached: ticket.child_session_id === childSessionId }
+    }
+    const attempt = ticket.active_attempt_id
+      ? row('SELECT * FROM work_attempts WHERE id = ?', ticket.active_attempt_id)
+      : null
+    if (expected?.attemptId && attempt?.id !== expected.attemptId) return { ticket, attached: false }
+    if (expected?.fencingToken != null && attempt && attempt.fencing_token !== expected.fencingToken) {
+      return { ticket, attached: false }
+    }
     db.prepare(`
       UPDATE work_tickets SET child_session_id = ?, updated_at = ? WHERE id = ? AND child_session_id IS NULL
     `).run(childSessionId, iso(), ticketId)
-    db.prepare(`
-      UPDATE work_attempts SET child_session_id = ? WHERE id = ? AND child_session_id IS NULL
-    `).run(childSessionId, ticket.active_attempt_id)
-    return row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
+    if (ticket.active_attempt_id) {
+      db.prepare(`
+        UPDATE work_attempts SET child_session_id = ? WHERE id = ? AND child_session_id IS NULL
+      `).run(childSessionId, ticket.active_attempt_id)
+    }
+    const fresh = row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
+    return { ticket: fresh, attached: fresh?.child_session_id === childSessionId }
   }
 
   /**
@@ -431,14 +577,17 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     const token = (previous?.fencing_token ?? 0) + 1
     const attemptId = randomUUID()
     const next = ticket.revision + 1
+    const retryBudget = budgetObject(ticket)
+    delete retryBudget.quota
+    delete retryBudget.extension
     const info = db
       .prepare(`
       UPDATE work_tickets
-      SET revision = ?, briefing_revision = 1, status = 'accepted', review_status = 'none',
+      SET budget_json = ?, revision = ?, briefing_revision = 1, status = 'accepted', review_status = 'none',
           active_attempt_id = ?, cancel_requested_revision = NULL, updated_at = ?
       WHERE id = ? AND revision = ?
     `)
-      .run(next, attemptId, iso(), ticketId, expected)
+      .run(JSON.stringify(retryBudget), next, attemptId, iso(), ticketId, expected)
     if (info.changes !== 1) return { error: 'CAS_CONFLICT' }
     if (previous) {
       db.prepare(`UPDATE work_attempts SET status = 'superseded', ended_at = COALESCE(ended_at, ?) WHERE id = ?`).run(
@@ -550,7 +699,13 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     )
     const stamp = iso()
     if (found.kind === 'question') {
-      db.prepare(`UPDATE work_tickets SET status = 'needs_user', updated_at = ? WHERE id = ?`).run(stamp, ticket.id)
+      const budget = budgetObject(ticket)
+      delete budget.slot
+      db.prepare(`UPDATE work_tickets SET status = 'needs_user', budget_json = ?, updated_at = ? WHERE id = ?`).run(
+        JSON.stringify(budget),
+        stamp,
+        ticket.id,
+      )
     } else if (found.kind === 'result') {
       const review = ticket.review_status === 'rejected' ? 'rejected' : 'candidate'
       db.prepare(`
@@ -625,7 +780,21 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     if (wallMs === beforeWall && maxTokens === beforeTokens) {
       return { error: 'VALIDATION', message: 'Nothing more can be granted. The host ceiling is already used.' }
     }
-    const next = { ...budget, wallMs, maxTokens, extension: null }
+    const quota = budget.quota
+    const enough =
+      !quota?.waiting ||
+      (maxTokens > quota.tokens &&
+        wallMs > quota.activeMs &&
+        quota.tokens < ceilings.maxTokens &&
+        quota.activeMs < ceilings.wallMs)
+    const next = {
+      ...budget,
+      wallMs,
+      maxTokens,
+      extension: enough ? null : 'open',
+      // Only actual loop admission clears durable waiting. A crash after this
+      // grant transaction must not remove expiry protection before resumption.
+    }
     db.prepare(`UPDATE work_tickets SET budget_json = ?, updated_at = ? WHERE id = ?`).run(
       JSON.stringify(next),
       iso(),
@@ -679,11 +848,20 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     return row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
   }
 
+  function extensionIsOpen(budgetJson: string) {
+    try {
+      return JSON.parse(budgetJson ?? '')?.extension === 'open'
+    } catch {
+      return false
+    }
+  }
+
   function expireQuiet() {
     const failed = []
     const running = db
       .prepare(`
-      SELECT t.id AS ticket_id, t.budget_json, t.status AS ticket_status, a.id AS attempt_id, a.status AS attempt_status,
+      SELECT t.id AS ticket_id, t.budget_json, t.status AS ticket_status, t.child_session_id,
+             a.id AS attempt_id, a.status AS attempt_status,
              a.lease_until, a.current_input_id
       FROM work_tickets t
       JOIN work_attempts a ON a.id = t.active_attempt_id
@@ -691,14 +869,17 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     `)
       .all()
     for (const item of running) {
+      if (budgetObject(item).quota?.waiting) continue
       if (
         item.ticket_status === 'started' &&
         item.attempt_status === 'started' &&
         item.lease_until &&
         Date.parse(item.lease_until) <= now().getTime()
       ) {
+        // The host already asked main to grant, not to mark the ticket failed.
+        if (extensionIsOpen(item.budget_json)) continue
         failRunning(item.ticket_id, 'lease')
-        failed.push(item.ticket_id)
+        failed.push({ ticketId: item.ticket_id, reason: 'lease', childSessionId: item.child_session_id ?? null })
         continue
       }
       if (item.ticket_status === 'enqueued' && item.attempt_status === 'enqueued' && item.current_input_id) {
@@ -711,8 +892,38 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
         }
         if (input && input.flush_status === 'accepted' && Date.parse(input.updated_at) + wall <= now().getTime()) {
           failRunning(item.ticket_id, 'enqueue-wall')
-          failed.push(item.ticket_id)
+          failed.push({
+            ticketId: item.ticket_id,
+            reason: 'enqueue-wall',
+            childSessionId: item.child_session_id ?? null,
+          })
         }
+      }
+    }
+    const reserved = db
+      .prepare(`
+      SELECT t.id AS ticket_id, t.budget_json, t.updated_at, t.child_session_id
+      FROM work_tickets t
+      WHERE t.status IN ('accepted','needs_user')
+        AND json_extract(t.budget_json, '$.slot') = 'held'
+    `)
+      .all()
+    for (const item of reserved) {
+      let wall = RESERVE_WALL_MS
+      try {
+        const parsed = JSON.parse(item.budget_json)
+        const ticketWall = Number(parsed?.wallMs)
+        if (Number.isFinite(ticketWall) && ticketWall > 0) wall = Math.min(ticketWall, RESERVE_WALL_MS)
+      } catch {
+        /* host default */
+      }
+      if (Date.parse(item.updated_at) + wall <= now().getTime()) {
+        failRunning(item.ticket_id, 'reserve-wall')
+        failed.push({
+          ticketId: item.ticket_id,
+          reason: 'reserve-wall',
+          childSessionId: item.child_session_id ?? null,
+        })
       }
     }
     return failed
@@ -844,6 +1055,8 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     return visibleTickets(owner).map(item => ({
       id: item.id,
       status: item.status,
+      waiting_budget:
+        (item.status === 'started' || item.status === 'enqueued') && budgetObject(item).quota?.waiting === true,
       briefing_revision: item.briefing_revision,
       child_session_id: item.child_session_id,
       summary: readBriefing(item.briefing_hash).replace(/\s+/g, ' ').trim().slice(0, 80),
@@ -876,7 +1089,7 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
   function signalMap() {
     const rows = db
       .prepare(`
-      SELECT owner_session_id, status FROM work_tickets
+      SELECT owner_session_id, status, budget_json FROM work_tickets
       WHERE status != 'delivered' AND status != 'cancelled'
       ORDER BY updated_at DESC
     `)
@@ -886,7 +1099,11 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     for (const item of rows) {
       const owner = item.owner_session_id
       const list = signals[owner] ?? []
-      list.push(item.status)
+      list.push(
+        (item.status === 'started' || item.status === 'enqueued') && budgetObject(item).quota?.waiting
+          ? 'waiting_budget'
+          : item.status,
+      )
       signals[owner] = list
     }
     return signals
@@ -959,6 +1176,8 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
       ticket: {
         id: item.id,
         status: item.status,
+        waiting_budget:
+          (item.status === 'started' || item.status === 'enqueued') && budgetObject(item).quota?.waiting === true,
         briefing_revision: item.briefing_revision,
         child_session_id: item.child_session_id,
         active_attempt_id: item.active_attempt_id,
@@ -1260,6 +1479,8 @@ function hostFailureText(reason: string) {
   if (reason === 'grant-denied') return 'The main session refused more budget and this round has stopped.'
   if (reason === 'lease') return 'The worker lease expired and this round has stopped.'
   if (reason === 'enqueue-wall') return 'The task entered the queue and did not start before the time limit.'
+  if (reason === 'reserve-wall')
+    return 'The reserved start did not create a worker before the time limit, so the slot was released.'
   if (reason === 'steps') return 'The worker hit its step limit and this round has stopped.'
   return 'The worker has stopped.'
 }

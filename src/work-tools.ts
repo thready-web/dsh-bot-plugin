@@ -24,7 +24,7 @@ export function workToolDefinitions(
   return [
     tool(
       'foundations_dispatch',
-      'Hand a long job to a worker session. Available only on a bot. status=accepted means received, not yet dispatched. status=enqueued means it entered the execution queue, not that it has started. The return value is never started. ownerSessionId is ignored.',
+      'Hand a non-trivial job to a worker session. Prefer this over doing the work with bash, write, edit, or an official subagent in the main session. Available only on a bot. status=accepted means received, and may wait for an execution slot. status=enqueued means it entered the execution queue, not that it has started. queued=true means it is waiting for a slot and will start automatically when one is free. The return value is never started. A BUDGET error means both the slot cap and the queue cap are full; do not start the job in the main session. ownerSessionId is ignored.',
       {
         type: 'object',
         properties: {
@@ -97,7 +97,7 @@ export function workToolDefinitions(
     ),
     tool(
       'foundations_grant',
-      'Grant more time or tokens to an unfinished ticket. wallMs and maxTokens are amounts to add, not a new total. A budget-exhausted notice is not a failure. deny=true refuses the grant and stops this round.',
+      'Grant more active runtime or tokens to an unfinished ticket. wallMs and maxTokens are amounts to ADD, not totals. Exhausted workers wait at the next safe loop boundary without expiry. Use current usage/required totals and headroom in the notice/result: insufficient grants remain paused, host ceilings cannot be raised. deny=true stops this round; do not redispatch a replacement.',
       {
         type: 'object',
         properties: {

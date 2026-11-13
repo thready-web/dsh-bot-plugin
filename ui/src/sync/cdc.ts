@@ -85,7 +85,7 @@ async function loadManifest(
   url: string,
   req: { sessionId: string; afterSeq: number; throughSeq: number },
   signal: AbortSignal,
-): Promise<{ ok: true; value: CdcManifest } | TransportOutcome> {
+): Promise<{ ok: true; value: CdcManifest } | Extract<TransportOutcome, { ok: false }>> {
   const query = new URLSearchParams({
     sessionId: req.sessionId,
     throughSeq: String(req.throughSeq),

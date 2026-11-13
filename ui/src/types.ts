@@ -1,3 +1,4 @@
+import type { ToolStatus } from './activity.ts'
 export interface SessionItem {
   sessionId: string
   running?: boolean
@@ -30,6 +31,16 @@ export interface ToolSegment {
   kind: 'tool'
   id: string
   callId: string
+  /** Stream arguments are not proof of dispatch; an empty result still settles the call. */
+  status?: ToolStatus
+  callReceived?: boolean
+  resultReceived?: boolean
+  callSeq?: number
+  resultSeq?: number
+  requestedAt?: number
+  settledAt?: number
+  meta?: unknown
+  errorCode?: string
   name: string
   args: string
   result: string

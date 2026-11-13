@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert'
 import test from 'node:test'
 import { DB_NAME, DB_VERSION, openLogDb } from './idb.ts'
 import { createIdbCheckpoint, createMemoryCheckpoint } from './checkpoint.ts'
-import { installFakeIndexedDB, type FakeIndexedDB } from './fake-idb.ts'
+import { installFakeIndexedDB } from './fake-idb.ts'
 
 test('a fresh open creates the v2 stores', async () => {
   const fake = installFakeIndexedDB()

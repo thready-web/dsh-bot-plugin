@@ -225,3 +225,14 @@ test('a live snapshot becomes sidebar statuses and cards', () => {
 test('a started preview counts from when the worker saw the task', () => {
   assert.equal(workPreview([ticket({})], Date.parse('2026-11-09T06:01:05.000Z')), 'Started · 1:05')
 })
+
+test('budget-wait cards are localized waiting signals, not running timers or completed tasks', () => {
+  for (const metadata of [{ waiting_budget: true }, { budget_json: JSON.stringify({ quota: { waiting: true } }) }]) {
+    const paused = readTicket({ ticket: { id: 'quota', status: 'started', ...metadata } })!
+    assert.equal(paused.status, 'waiting_budget')
+    assert.equal(botSignal([paused]), 'wait')
+    assert.equal(workPreview([paused]), 'Waiting for budget')
+    assert.match(workPlaceholder([paused])!, /paused.*budget/)
+  }
+  assert.equal(readTicket({ ticket: { id: 'done', status: 'failed', waiting_budget: true } })!.status, 'failed')
+})

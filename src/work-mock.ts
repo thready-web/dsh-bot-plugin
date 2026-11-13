@@ -113,6 +113,12 @@ export function createMockWorld() {
     async snapshot(sessionId: string) {
       return session(sessionId).events.map(event => ({ ...event, data: event.data }))
     },
+    hasSession(sessionId: string) {
+      return sessions.has(sessionId)
+    },
+    dropChild(sessionId: string) {
+      sessions.delete(sessionId)
+    },
   }
 
   /**

@@ -3,7 +3,7 @@
  * Cordis's own Context, and this plugin reads them off the same object.
  *
  * Official types are imported so a host API change fails typecheck. The
- * Context members `connection`, `sessions`, and `sessionQuery` come from the
+ * Context members `connection`, `sessions`, `sessionPersistence`, and `sessionQuery` come from the
  * official packages and are not redeclared here.
  */
 import type {} from '@deepseek-ai/cordis'
@@ -16,7 +16,6 @@ declare module '@deepseek-ai/cordis' {
     profileContext?: { dir?: string }
     webServer?: any
     agents?: any
-    sessionPersistence?: any
     systemPrompt?: any
     tools?: any
     agentPresets?: any
@@ -44,8 +43,17 @@ export interface HostContext {
   systemPrompt?: any
   tools?: any
   agentPresets?: any
+  userQuestions?: {
+    answer(agent: unknown, callId: string, answer: unknown): boolean
+    attachWait?(agent: unknown, callId: string, signal?: AbortSignal): AsyncIterable<{ remainingMs: number }>
+  }
+  authorization?: any
   logger?: { info?(...args: any[]): void; warn?(...args: any[]): void }
-  on?(event: string, listener: (...args: any[]) => any, options?: { global?: boolean }): any
+  on?(
+    event: string,
+    listener: (...args: any[]) => any,
+    options?: boolean | { global?: boolean; prepend?: boolean },
+  ): any
   get?(name: string): any
   agentDefaultModel?: { currentSelection?(): any }
 }
@@ -55,7 +63,7 @@ export interface PluginHost extends HostContext {
   effect(execute: () => void | (() => void)): void
   systemPrompt: any
   tools: any
-  on(event: string, listener: (...args: any[]) => any, options?: { global?: boolean }): any
+  on(event: string, listener: (...args: any[]) => any, options?: boolean | { global?: boolean; prepend?: boolean }): any
 }
 
 export type { OfficialSessionStore }

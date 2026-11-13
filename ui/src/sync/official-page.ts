@@ -1,5 +1,5 @@
 import { PAGE_MAX_MESSAGES, PAGE_TURN_WINDOW, SESSION_EVENTS_PATH } from './constants.ts'
-import type { BoundedTransport, TransportSink } from './transport.ts'
+import type { BoundedTransport } from './transport.ts'
 import { collectEvents } from './ws-follow.ts'
 import { sessionAddress, type SessionAddress } from './types.ts'
 

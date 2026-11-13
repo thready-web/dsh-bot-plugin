@@ -9,19 +9,32 @@ export interface WorkBudget {
   workerMaxSteps: number
   workerWallMs: number
   workerMaxTokens: number
+  /** Execution slots per bot: enqueued, started, or a reserved start. needs_user does not count. */
   perBot: number
+  /** Execution slots across every bot. */
   global: number
+  /** Accepted tickets waiting for a slot, per bot. */
+  perBotQueue: number
+  /** Accepted tickets waiting for a slot, across every bot. */
+  globalQueue: number
   leaseMs: number
   starveMs: number
   mergeWindowMs: number
 }
 
 /**
- * Main-session caps. The main bot may do real work itself (bash, write, ...),
- * so the caps are a runaway guard, not a "dispatch first" policy. `main*` is
- * the cap after a dispatch or a host tool and is never looser than `chat*`;
- * set it lower in config to bring back the old "hand long work to a worker" squeeze.
+ * Main-session caps. The main bot may still call host tools; these caps are a
+ * runaway guard. Worker parallelism is a separate slot/queue policy: `perBot`
+ * and `global` limit running workers, and `perBotQueue` / `globalQueue` cap
+ * tickets waiting for a slot. `needs_user` does not occupy a running slot.
+ * `main*` is the cap after a dispatch or a host tool and is never looser than
+ * `chat*`.
  */
+/** Hard ceiling so a typo cannot raise a slot cap without bound. */
+export const WORK_SLOT_MAX = 64
+/** Hard ceiling so a typo cannot raise a queue cap without bound. */
+export const WORK_QUEUE_MAX = 256
+
 export const DEFAULT_WORK_BUDGET: WorkBudget = Object.freeze({
   mainMaxSteps: 80,
   mainWallMs: 30 * 60 * 1000,
@@ -31,14 +44,38 @@ export const DEFAULT_WORK_BUDGET: WorkBudget = Object.freeze({
   workerMaxSteps: 8,
   workerWallMs: 10 * 60 * 1000,
   workerMaxTokens: 400_000,
-  perBot: 1,
-  global: 2,
+  perBot: 2,
+  global: 4,
+  perBotQueue: 8,
+  globalQueue: 16,
   leaseMs: 60_000,
   starveMs: 30_000,
   mergeWindowMs: 1_000,
 })
 
 const BUDGET_KEYS = Object.keys(DEFAULT_WORK_BUDGET) as Array<keyof WorkBudget>
+
+const INT_MAX: Partial<Record<keyof WorkBudget, number>> = {
+  perBot: WORK_SLOT_MAX,
+  global: WORK_SLOT_MAX,
+  perBotQueue: WORK_QUEUE_MAX,
+  globalQueue: WORK_QUEUE_MAX,
+}
+
+/**
+ * A single bot cannot run more workers than the global cap, even if `perBot`
+ * is larger. The same applies to the queue caps. Existing running workers are
+ * not cancelled when a later process start uses a lower cap.
+ * @param {WorkBudget} budget
+ */
+export function effectiveWorkLimits(budget: WorkBudget) {
+  return {
+    perBot: Math.min(budget.perBot, budget.global),
+    global: budget.global,
+    perBotQueue: Math.min(budget.perBotQueue, budget.globalQueue),
+    globalQueue: budget.globalQueue,
+  }
+}
 
 /** Environment variable the launcher uses to pass `--work-budget` to the plugin. */
 export const WORK_BUDGET_ENV = 'DSH_BOT_WORK_BUDGET'
@@ -59,15 +96,23 @@ function durationMs(value: unknown) {
 
 /**
  * Keep only known, positive, finite budget fields. Unknown keys and bad values
- * are dropped (and listed in `ignored`) so a typo never zeroes a cap.
+ * are dropped (and listed in `ignored`) so a typo never zeroes a cap or raises
+ * it to Infinity. Slot and queue integers above WORK_SLOT_MAX / WORK_QUEUE_MAX
+ * are clamped (and listed in `clamped`). Non-integer slot/queue/step values
+ * are ignored.
  * Shorthands: `steps` sets mainMaxSteps and chatMaxSteps; `wall` sets mainWallMs and chatWallMs.
  * Fields ending in `Ms` accept duration strings such as `30m`.
  * @param {unknown} input
  */
-export function normalizeWorkBudget(input: unknown): { budget: Partial<WorkBudget>; ignored: string[] } {
+export function normalizeWorkBudget(input: unknown): {
+  budget: Partial<WorkBudget>
+  ignored: string[]
+  clamped: string[]
+} {
   const budget: Partial<WorkBudget> = {}
   const ignored: string[] = []
-  if (input == null || typeof input !== 'object' || Array.isArray(input)) return { budget, ignored }
+  const clamped: string[] = []
+  if (input == null || typeof input !== 'object' || Array.isArray(input)) return { budget, ignored, clamped }
   const raw = { ...(input as Record<string, unknown>) }
   const expanded: Record<string, unknown> = {}
   if ('steps' in raw) {
@@ -86,14 +131,25 @@ export function normalizeWorkBudget(input: unknown): { budget: Partial<WorkBudge
       ignored.push(key)
       continue
     }
-    const number = key.endsWith('Ms') ? durationMs(value) : Number(value)
+    const duration = key.endsWith('Ms')
+    const number = duration ? durationMs(value) : Number(value)
     if (!Number.isFinite(number) || number <= 0) {
       ignored.push(key)
       continue
     }
-    budget[key as keyof WorkBudget] = Math.floor(number)
+    if (!duration && !Number.isInteger(number)) {
+      ignored.push(key)
+      continue
+    }
+    const max = INT_MAX[key as keyof WorkBudget]
+    if (max != null && number > max) {
+      budget[key as keyof WorkBudget] = max
+      clamped.push(key)
+      continue
+    }
+    budget[key as keyof WorkBudget] = duration ? Math.floor(number) : number
   }
-  return { budget, ignored }
+  return { budget, ignored, clamped }
 }
 
 /**
@@ -101,14 +157,18 @@ export function normalizeWorkBudget(input: unknown): { budget: Partial<WorkBudge
  * or comma-separated `key=value` (`steps=80,wall=30m,mainMaxSteps=10`).
  * @param {string | undefined} text
  */
-export function parseWorkBudget(text: string | undefined | null): { budget: Partial<WorkBudget>; ignored: string[] } {
+export function parseWorkBudget(text: string | undefined | null): {
+  budget: Partial<WorkBudget>
+  ignored: string[]
+  clamped: string[]
+} {
   const source = typeof text === 'string' ? text.trim() : ''
-  if (source === '') return { budget: {}, ignored: [] }
+  if (source === '') return { budget: {}, ignored: [], clamped: [] }
   if (source.startsWith('{')) {
     try {
       return normalizeWorkBudget(JSON.parse(source))
     } catch {
-      return { budget: {}, ignored: [source] }
+      return { budget: {}, ignored: [source], clamped: [] }
     }
   }
   const object: Record<string, string> = {}
@@ -124,11 +184,15 @@ export function parseWorkBudget(text: string | undefined | null): { budget: Part
     object[piece.slice(0, eq).trim()] = piece.slice(eq + 1).trim()
   }
   const normalized = normalizeWorkBudget(object)
-  return { budget: normalized.budget, ignored: [...ignored, ...normalized.ignored] }
+  return { budget: normalized.budget, ignored: [...ignored, ...normalized.ignored], clamped: normalized.clamped }
 }
 
 /**
- * Defaults, then the environment (launcher `--work-budget`), then plugin config `work`.
+ * Defaults, then the environment (launcher `--work-budget` / `DSH_BOT_WORK_BUDGET`),
+ * then plugin config `work`. Limits are applied when the work runtime is created
+ * (process start or plugin load). They are not hot-reloaded into an already
+ * running runtime. Lowering a cap never cancels a worker that is already running;
+ * later dispatch and promotion use the new caps.
  * @param {unknown} config
  * @param {string | undefined} envText
  */
@@ -138,6 +202,7 @@ export function resolveWorkBudget(config: unknown, envText: string | undefined |
   return {
     budget: { ...DEFAULT_WORK_BUDGET, ...fromEnv.budget, ...fromConfig.budget } as WorkBudget,
     ignored: [...fromEnv.ignored, ...fromConfig.ignored],
+    clamped: [...fromEnv.clamped, ...fromConfig.clamped],
   }
 }
 
@@ -244,6 +309,8 @@ export function estimateWorkerBudget(
     maxTokens: clampInt(suggestion?.maxTokens, 1000, defaults.workerMaxTokens) ?? guessedTokens,
     perBot: defaults.perBot,
     global: defaults.global,
+    perBotQueue: defaults.perBotQueue,
+    globalQueue: defaults.globalQueue,
   }
 }
 

@@ -66,33 +66,47 @@ async function startJob(ctx: any, briefing: any, key: any) {
   return result
 }
 
-test('eval: product defaults reject a second ticket per bot and a third ticket globally', async () => {
-  assert.equal(DEFAULT_WORK_BUDGET.perBot, 1)
-  assert.equal(DEFAULT_WORK_BUDGET.global, 2)
+test('eval: product defaults allow two running workers per bot and four globally', async () => {
+  assert.equal(DEFAULT_WORK_BUDGET.perBot, 2)
+  assert.equal(DEFAULT_WORK_BUDGET.global, 4)
+  assert.equal(DEFAULT_WORK_BUDGET.perBotQueue, 8)
+  assert.equal(DEFAULT_WORK_BUDGET.globalQueue, 16)
   assert.equal(DEFAULT_WORK_BUDGET.mainMaxSteps, 80)
   assert.equal(DEFAULT_WORK_BUDGET.mainWallMs, 30 * 60_000)
   assert.equal(DEFAULT_WORK_BUDGET.chatMaxSteps, 80)
   assert.equal(DEFAULT_WORK_BUDGET.chatWallMs, 30 * 60_000)
   const ctx = boot()
-  assert.equal(ctx.work.limits.perBot, 1)
-  assert.equal(ctx.work.limits.global, 2)
+  assert.equal(ctx.work.limits.perBot, 2)
+  assert.equal(ctx.work.limits.global, 4)
   ctx.engine.markBot('bot-b')
   ctx.engine.markBot('bot-c')
   const first = await ctx.work.dispatch('bot-a', { briefing: 'alpha', idempotencyKey: 'a' })
-  assert.equal(first.ok, true)
   const secondSame = await ctx.work.dispatch('bot-a', { briefing: 'alpha-two', idempotencyKey: 'a2' })
-  assert.equal(secondSame.code, 'BUDGET')
-  const secondBot = await ctx.work.dispatch('bot-b', { briefing: 'beta', idempotencyKey: 'b' })
-  assert.equal(secondBot.ok, true)
-  const third = await ctx.work.dispatch('bot-c', { briefing: 'gamma', idempotencyKey: 'c' })
-  assert.equal(third.code, 'BUDGET')
-  assert.equal(
-    ctx.store.db.prepare(`SELECT COUNT(*) AS n FROM work_tickets WHERE owner_session_id = 'bot-c'`).get().n,
-    0,
-  )
-  assert.equal(ctx.store.db.prepare('SELECT COUNT(*) AS n FROM work_tickets').get().n, 2)
-  assert.equal(DEFAULT_WORK_BUDGET.perBot, 1)
-  assert.equal(DEFAULT_WORK_BUDGET.global, 2)
+  assert.equal(first.ok, true)
+  assert.equal(secondSame.ok, true)
+  assert.equal(first.queued, false)
+  assert.equal(secondSame.queued, false)
+  assert.equal(first.ticketStatus, 'enqueued')
+  assert.equal(secondSame.ticketStatus, 'enqueued')
+  assert.notEqual(first.childSessionId, secondSame.childSessionId)
+  const queued = await ctx.work.dispatch('bot-a', { briefing: 'alpha-three', idempotencyKey: 'a3' })
+  assert.equal(queued.ok, true)
+  assert.equal(queued.queued, true)
+  assert.equal(queued.ticketStatus, 'accepted')
+  assert.equal(queued.childSessionId, null)
+  const botB1 = await ctx.work.dispatch('bot-b', { briefing: 'beta', idempotencyKey: 'b' })
+  const botB2 = await ctx.work.dispatch('bot-b', { briefing: 'beta-two', idempotencyKey: 'b2' })
+  assert.equal(botB1.ok, true)
+  assert.equal(botB1.queued, false)
+  assert.equal(botB2.ok, true)
+  assert.equal(botB2.queued, false)
+  const botC = await ctx.work.dispatch('bot-c', { briefing: 'gamma', idempotencyKey: 'c' })
+  assert.equal(botC.ok, true)
+  assert.equal(botC.queued, true)
+  assert.equal(botC.childSessionId, null)
+  assert.equal(ctx.store.db.prepare('SELECT COUNT(*) AS n FROM work_tickets').get().n, 6)
+  assert.equal(DEFAULT_WORK_BUDGET.perBot, 2)
+  assert.equal(DEFAULT_WORK_BUDGET.global, 4)
   ctx.close()
 })
 
@@ -138,11 +152,11 @@ test('eval: three active tickets require an explicit budget and are not the prod
   assert.equal(third!.events[0].payload_hash, hash('the gamma result'))
   assert.equal(first!.events[0].event_id, early.eventId)
   assert.equal(third!.events[0].event_id, late.eventId)
-  assert.equal(DEFAULT_WORK_BUDGET.perBot, 1)
+  assert.equal(DEFAULT_WORK_BUDGET.perBot, 2)
   ctx.close()
 })
 
-test('eval: one failure and one cancel leave the other ticket runnable', async () => {
+test('eval: one budget denial and one cancel leave the other ticket runnable', async () => {
   const ctx = boot({ perBot: 3, global: 3 })
   const jobs = []
   for (const key of ['keep', 'stop', 'drop']) {
@@ -162,6 +176,8 @@ test('eval: one failure and one cancel leave the other ticket runnable', async (
     )
   ctx.work.observeSession(drop.childSessionId, { type: 'turn/start', data: { turn: 2 } })
   ctx.scheduled()!.fn()
+  assert.equal(JSON.parse(ctx.work.detail(drop.ticketId)!.ticket.budget_json).quota.waiting, true)
+  await ctx.work.grant('bot-a', { ticketId: drop.ticketId, deny: true })
   assert.equal(ctx.work.detail(drop.ticketId)!.ticket.status, 'failed')
   assert.equal(ctx.work.detail(keep.ticketId)!.ticket.status, 'started')
   assert.equal(ctx.work.detail(stop.ticketId)!.ticket.status, 'started')

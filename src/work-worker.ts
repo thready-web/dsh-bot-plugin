@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { sha256 } from './fs-safe.ts'
 import { toolError } from './errors.ts'
 import { createTicketBook } from './work-tickets.ts'
-import { decideAdmission, budgetTrip, estimateWorkerBudget, DEFAULT_WORK_BUDGET } from './work-admit.ts'
+import {
+  decideAdmission,
+  budgetTrip,
+  estimateWorkerBudget,
+  DEFAULT_WORK_BUDGET,
+  effectiveWorkLimits,
+} from './work-admit.ts'
 import {
   messageIdOf,
   pushInput,
@@ -26,6 +32,7 @@ const LABEL: Record<string, string> = {
 }
 
 type BudgetArm = {
+  attemptId: string | null
   turn: number
   startedAt: number
   steps: number
@@ -39,6 +46,8 @@ type BudgetArm = {
   budgetNotice: boolean
   extensionOpen: boolean
   closing: boolean
+  pausedAt: number | null
+  atBoundary: boolean
   clear: () => void
 }
 
@@ -67,7 +76,11 @@ type WorkHostOptions = {
   /** Called once per main-session budget trip so the host can tell the user. */
   onMainBudget?: (sessionId: string, trip: MainBudgetTrip) => void
   snapshot?: (sessionId: string) => Promise<Array<Record<string, any>>> | Array<Record<string, any>>
+  /** True when this process still holds a live child handle. */
+  childPresent?: (sessionId: string) => Promise<boolean> | boolean
   resident?: boolean
+  /** Explicit grants may re-enter the existing detached child via the durable inbox. */
+  resumePaused?: boolean
   pid?: number
   now?: () => Date
   budget?: Partial<typeof DEFAULT_WORK_BUDGET>
@@ -105,10 +118,15 @@ export function createWorkRuntime(
 ) {
   const now = options.now ?? (() => new Date())
   const limits = { ...DEFAULT_WORK_BUDGET, ...options.budget }
+  const slots = effectiveWorkLimits(limits)
   const pid = options.pid ?? process.pid
   const resident = options.resident !== false
   const book = createTicketBook(store.db, store.root, now)
   const inflight = new Set<string>()
+  /** Ticket ids currently in ensureChild / flush, so a tick cannot start the same ticket twice. */
+  const starting = new Set<string>()
+  /** In-flight startReserved promises, so a later promoteQueued can join them. */
+  const startingPromises = new Map<string, Promise<any>>()
   /** @type {Map<string, { messageId: string, turn: number | null, seq: number | null }>} */
   const turns: Map<string, { messageId: string; turn: number | null; seq: number | null }> = new Map()
   /** @type {Map<string, string>} */
@@ -117,6 +135,8 @@ export function createWorkRuntime(
   const arms: Map<string, BudgetArm> = new Map()
   /** @type {Map<string, number>} */
   const holds: Map<string, number> = new Map()
+  const admitting = new Set<string>()
+  const budgetWaiters = new Map<string, Set<(allowed: boolean) => void>>()
   const schedule =
     options.schedule ??
     ((fn, ms) => {
@@ -154,9 +174,11 @@ export function createWorkRuntime(
     releaseHold,
     tick,
     admit,
+    promoteQueued,
     observeSession,
     observeClaimed,
     gateStep,
+    waitForBudget,
     isWorkerSession,
     summaries: (owner: string) => book.summaries(owner),
     detail: (id: string) => book.detail(id),
@@ -171,6 +193,179 @@ export function createWorkRuntime(
    */
   function isWorkerSession(sessionId: string) {
     return book.attemptForChild(sessionId) != null
+  }
+
+  /**
+   * A running slot is free when both the per-bot and global running caps have room.
+   * needs_user does not occupy a running slot.
+   * @param {string} owner
+   */
+  function hasSlot(owner: string) {
+    return book.countSlots(owner) < slots.perBot && book.countGlobalSlots() < slots.global
+  }
+
+  /**
+   * Queue room is separate from running slots. The combined unfinished cap is
+   * slots + queue, so parked needs_user tickets cannot grow without bound.
+   * @param {string} owner
+   */
+  function canQueue(owner: string) {
+    return (
+      book.countQueued(owner) < slots.perBotQueue &&
+      book.countGlobalQueued() < slots.globalQueue &&
+      book.countActive(owner) < slots.perBot + slots.perBotQueue &&
+      book.countGlobal() < slots.global + slots.globalQueue
+    )
+  }
+
+  /**
+   * @param {string} owner
+   * @returns {'start' | 'queue' | 'refuse'}
+   */
+  function underCombinedCap(owner: string) {
+    return (
+      book.countActive(owner) < slots.perBot + slots.perBotQueue &&
+      book.countGlobal() < slots.global + slots.globalQueue
+    )
+  }
+
+  /**
+   * @param {string} owner
+   * @returns {'start' | 'queue' | 'refuse'}
+   */
+  function decideDispatch(owner: string) {
+    // needs_user does not occupy a running slot, but it still counts as unfinished.
+    // A free slot must not admit a new ticket once the combined cap is full.
+    if (!underCombinedCap(owner)) return 'refuse'
+    if (hasSlot(owner)) return 'start'
+    if (canQueue(owner)) return 'queue'
+    return 'refuse'
+  }
+
+  /**
+   * Create the child if needed and flush the current briefing or supply.
+   * @param {Record<string, any>} ticket
+   */
+  async function startReserved(ticket: Record<string, any>) {
+    if (!resident) {
+      return { ...publicDispatch(ticket), flush: 'pending', resident: false, message: 'Only a resident host continues' }
+    }
+    if (starting.has(ticket.id)) {
+      return startingPromises.get(ticket.id) ?? publicDispatch(book.ticket(ticket.id) ?? ticket, { flush: 'pending' })
+    }
+    starting.add(ticket.id)
+    const run = (async () => {
+      const current = book.ticket(ticket.id)
+      if (!current) return toolError('NOT_FOUND', 'No such ticket.')
+      if (current.status === 'cancelled' || current.status === 'failed' || current.status === 'delivered') {
+        return publicDispatch(current)
+      }
+      const created = await ensureChild(current)
+      if (created.error) return created.error
+      if (created.rejected) return publicDispatch(created.ticket ?? book.ticket(ticket.id) ?? current)
+      const liveAfterStart = book.ticket(ticket.id)
+      if (
+        !liveAfterStart ||
+        liveAfterStart.status === 'cancelled' ||
+        liveAfterStart.status === 'failed' ||
+        liveAfterStart.status === 'delivered'
+      ) {
+        return publicDispatch(liveAfterStart ?? current)
+      }
+      const input = await store.write('work', () => {
+        const live = book.ticket(ticket.id)
+        const liveAttempt = book.attempt(live.active_attempt_id)
+        if (liveAttempt?.current_input_id) {
+          const existing = book.input(liveAttempt.current_input_id)
+          if (existing) return existing
+        }
+        const text = book.readBriefing(live.briefing_hash)
+        return book.insertInput({
+          ticketId: live.id,
+          attemptId: liveAttempt.id,
+          revision: live.briefing_revision,
+          kind: 'briefing',
+          text,
+        })
+      })
+      if (input.flush_status === 'accepted') {
+        return publicDispatch(book.ticket(ticket.id), { flush: 'accepted', nativeMessageId: input.native_message_id })
+      }
+      const flushed = await pushInput(book, input, deps)
+      return publicDispatch(book.ticket(ticket.id), {
+        flush: flushWord(flushed),
+        nativeMessageId: input.native_message_id,
+      })
+    })()
+    startingPromises.set(ticket.id, run)
+    try {
+      return await run
+    } finally {
+      starting.delete(ticket.id)
+      startingPromises.delete(ticket.id)
+    }
+  }
+
+  /**
+   * Start waiting tickets that now fit a slot. Awaits only starts this call
+   * launched, so a hung createChild from an earlier call cannot deadlock
+   * later ticks or cancel. The earlier promise stays owned until it finishes
+   * and is then attached or cleaned up.
+   */
+  async function promoteQueued() {
+    if (!resident) return { started: [] }
+    const started: string[] = []
+    const launched: Promise<unknown>[] = []
+    const launch = (ticket: Record<string, any> | null) => {
+      if (!ticket?.id || starting.has(ticket.id)) return
+      started.push(ticket.id)
+      launched.push(
+        startReserved(ticket).catch(error => {
+          options.log?.(
+            'warn',
+            `session-foundations: startReserved failed ticket=${ticket.id} ${error instanceof Error ? error.message : String(error)}`,
+          )
+          return error
+        }),
+      )
+    }
+    for (const ticket of book.heldStarts()) launch(ticket)
+    for (;;) {
+      const claimed = await store.write('work', () => {
+        for (const ticket of book.nextPromotable()) {
+          if (book.slotHeld(ticket)) continue
+          if (ticket.status !== 'accepted' && ticket.status !== 'needs_user') continue
+          if (!hasSlot(ticket.owner_session_id)) continue
+          return book.reserveSlot(ticket.id)
+        }
+        return null
+      })
+      if (!claimed) break
+      launch(claimed)
+    }
+    await Promise.all(launched)
+    // Join in-flight starts that are still allowed to attach. Do not join a
+    // hung createChild after the ticket has already been cancelled, failed, or
+    // expired, so a later tick can free the slot and start the next waiter.
+    const pending = [...startingPromises.entries()]
+      .filter(([id]) => {
+        const ticket = book.ticket(id)
+        return (
+          ticket != null && ticket.status !== 'failed' && ticket.status !== 'cancelled' && ticket.status !== 'delivered'
+        )
+      })
+      .map(([, promise]) => promise)
+    await Promise.all(pending)
+    return { started }
+  }
+
+  function schedulePromote() {
+    void promoteQueued().catch(error => {
+      options.log?.(
+        'warn',
+        `session-foundations: promoteQueued failed ${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
   }
 
   /**
@@ -200,49 +395,40 @@ export function createWorkRuntime(
           return { replay: existing }
         }
       }
-      if (book.countActive(owner) >= limits.perBot || book.countGlobal() >= limits.global) {
+      const decision = decideDispatch(owner)
+      if (decision === 'refuse') {
         return {
           error: toolError(
             'BUDGET',
-            'Unfinished tickets already hit the host concurrency limit, so no row was created.',
+            'Unfinished tickets already hit the host slot and queue limits, so no row was created.',
           ),
         }
       }
-      return {
-        created: book.insertAccepted({
-          owner,
-          briefing,
-          idempotencyKey: key,
-          correlationId: correlationOf(owner, args.correlationId),
-          budget,
-        }),
-      }
+      const created = book.insertAccepted({
+        owner,
+        briefing,
+        idempotencyKey: key,
+        correlationId: correlationOf(owner, args.correlationId),
+        budget,
+      })
+      if (decision === 'start') book.reserveSlot(created.ticket.id)
+      return { created, start: decision === 'start' }
     })
     if (prepared.error) return prepared.error
     if (prepared.replay) return publicDispatch(prepared.replay, { replayed: true })
     const ticket = prepared.created.ticket
+    if (!prepared.start) {
+      return publicDispatch(book.ticket(ticket.id), {
+        flush: 'pending',
+        queued: true,
+        childSessionId: null,
+        nativeMessageId: null,
+      })
+    }
     if (!resident) {
       return { ...publicDispatch(ticket), flush: 'pending', resident: false, message: 'Only a resident host continues' }
     }
-    const created = await ensureChild(ticket)
-    if (created.error) return created.error
-    const input = await store.write('work', () => {
-      const current = book.ticket(ticket.id)
-      const attempt = book.attempt(current.active_attempt_id)
-      if (attempt?.current_input_id) return book.input(attempt.current_input_id)
-      return book.insertInput({
-        ticketId: current.id,
-        attemptId: attempt.id,
-        revision: current.briefing_revision,
-        kind: 'briefing',
-        text: briefing,
-      })
-    })
-    const flushed = await pushInput(book, input, deps)
-    return publicDispatch(book.ticket(ticket.id), {
-      flush: flushWord(flushed),
-      nativeMessageId: input.native_message_id,
-    })
+    return startReserved(ticket)
   }
 
   /**
@@ -273,8 +459,25 @@ export function createWorkRuntime(
     const found = resolveTicket(owner, args.ticketId, kind === 'supply' ? ['needs_user', 'enqueued'] : null)
     if (found.error) return found.error
     const expected = revisionOf(args.expectedRevision)
-    const advanced = await store.write('work', () => book.advanceGeneration(found.ticket.id, expected, kind, text))
+    const advanced = await store.write('work', () => {
+      const result = book.advanceGeneration(found.ticket.id, expected, kind, text)
+      if (result.error) return result
+      // A supply into needs_user must take a running slot. If none is free, keep
+      // the input durable and start it when promoteQueued reserves one.
+      if (kind === 'supply' && result.ticket.status === 'needs_user' && !hasSlot(owner)) {
+        return { ...result, queued: true }
+      }
+      if (kind === 'supply' && result.ticket.status === 'needs_user') book.reserveSlot(result.ticket.id)
+      return result
+    })
     if (advanced.error) return toolError(advanced.error, advanced.message ?? 'Changing the generation failed.')
+    if (advanced.queued) {
+      return publicDispatch(book.ticket(found.ticket.id), {
+        flush: 'pending',
+        queued: true,
+        nativeMessageId: advanced.input.native_message_id,
+      })
+    }
     if (!resident)
       return { ...publicDispatch(advanced.ticket), flush: 'pending', message: 'Only a resident host continues' }
     const flushed = await pushInput(book, advanced.input, deps)
@@ -297,11 +500,13 @@ export function createWorkRuntime(
     const cancelled = await store.write('work', () => book.markCancelled(found.ticket.id, expected, note))
     if (cancelled.error) return toolError(cancelled.error, cancelled.message ?? 'Cancel failed.')
     const child = cancelled.ticket.child_session_id
+    if (child) closeBudgetWait(child)
     if (resident && child && options.cancel) {
       await options.cancel(child, { keepInbox: note !== '', reason: 'ticket-cancel' })
     }
     if (resident && note !== '' && cancelled.input) await pushInput(book, cancelled.input, deps)
     await removeUnclaimed(owner, cancelled.ticket.id)
+    schedulePromote()
     return {
       ok: true,
       ticketId: cancelled.ticket.id,
@@ -322,13 +527,17 @@ export function createWorkRuntime(
       const failed = await store.write('work', () => book.failRunning(found.ticket.id, 'grant-denied'))
       const child = failed?.child_session_id
       const state = child ? arms.get(child) : null
+      if (child) closeBudgetWait(child)
       if (state) {
         state.closing = true
         state.clear?.()
       }
       if (resident && child && options.cancel) await options.cancel(child, { keepInbox: false, reason: 'grant-denied' })
+      schedulePromote()
       return { ok: true, ticketId: found.ticket.id, ticketStatus: 'failed', denied: true }
     }
+    const live = found.ticket.child_session_id ? arms.get(found.ticket.child_session_id) : null
+    if (live?.role === 'worker') saveQuota(found.ticket.child_session_id, live)
     const added = await store.write('work', () =>
       book.extendBudget(
         found.ticket.id,
@@ -339,15 +548,72 @@ export function createWorkRuntime(
         { wallMs: limits.workerWallMs, maxTokens: limits.workerMaxTokens },
       ),
     )
-    if (added.error) return toolError(added.error, added.message ?? 'No budget was added.')
+    if (added.error)
+      return { ...toolError(added.error, added.message ?? 'No budget was added.'), ...quotaFeedback(found.ticket.id) }
     const child = added.ticket.child_session_id
     if (child) releaseArm(child, added.budget)
+    let resumedInput = null
+    const quota = quotaOf(added.ticket.id)
+    if (
+      child &&
+      !arms.has(child) &&
+      quota?.waiting &&
+      options.resumePaused &&
+      resident &&
+      options.push &&
+      ['started', 'enqueued'].includes(added.ticket.status) &&
+      added.budget.maxTokens > quota.tokens &&
+      added.budget.wallMs > quota.activeMs &&
+      quota.tokens < limits.workerMaxTokens &&
+      quota.activeMs < limits.workerWallMs &&
+      !(await isChildLive(child))
+    ) {
+      resumedInput = await store.write('work', () => {
+        const fresh = book.ticket(added.ticket.id)
+        if (
+          !fresh ||
+          !['started', 'enqueued'].includes(fresh.status) ||
+          fresh.active_attempt_id !== added.ticket.active_attempt_id
+        )
+          return null
+        const current = quotaOf(fresh.id)
+        if (!current?.waiting) return null
+        if (current.resumeInputId) return book.input(current.resumeInputId)
+        // A detached native turn ended (possibly disposed). Advance only the
+        // input generation, not the attempt/fence/session, so replay of that
+        // old turn/end cannot finalize a new pending result.
+        store.db
+          .prepare(
+            'UPDATE work_tickets SET revision = revision + 1, briefing_revision = briefing_revision + 1, updated_at = ? WHERE id = ?',
+          )
+          .run(now().toISOString(), fresh.id)
+        const input = book.insertInput({
+          ticketId: fresh.id,
+          attemptId: fresh.active_attempt_id,
+          revision: fresh.briefing_revision + 1,
+          kind: 'supply',
+          text: '[foundations:budget-resume] Budget was explicitly granted. Continue the SAME ticket from durable history; do not repeat completed effects. Inspect current state before continuing. This is a new host turn after detachment, not a new task.',
+        })
+        writeQuota(fresh.id, { ...current, resumeInputId: input.id })
+        return input
+      })
+      if (resumedInput) await pushInput(book, resumedInput, deps)
+    }
     return {
       ok: true,
       ticketId: added.ticket.id,
-      ticketStatus: added.ticket.status,
+      ticketStatus: book.ticket(added.ticket.id)?.status ?? added.ticket.status,
+      briefingRevision: book.ticket(added.ticket.id)?.briefing_revision,
       wallMs: added.budget.wallMs,
       maxTokens: added.budget.maxTokens,
+      hostCeilingTokens: limits.workerMaxTokens,
+      hostCeilingWallMs: limits.workerWallMs,
+      ...quotaFeedback(added.ticket.id),
+      continuation: resumedInput
+        ? 'same-session-new-turn'
+        : child && arms.has(child)
+          ? 'same-turn'
+          : 'awaiting-host-turn',
     }
   }
 
@@ -356,17 +622,24 @@ export function createWorkRuntime(
     const found = resolveTicket(owner, args.ticketId, ['failed', 'cancelled'])
     if (found.error) return found.error
     const expected = revisionOf(args.expectedRevision)
-    const retried = await store.write('work', () => book.insertRetry(found.ticket.id, expected))
+    const retried = await store.write('work', () => {
+      const result = book.insertRetry(found.ticket.id, expected)
+      if (result.error) return result
+      if (!hasSlot(owner)) return { ...result, queued: true }
+      book.reserveSlot(result.ticket.id)
+      return result
+    })
     if (retried.error) return toolError(retried.error, retried.message ?? 'Retry failed.')
+    if (retried.queued) {
+      return publicDispatch(book.ticket(retried.ticket.id), {
+        flush: 'pending',
+        queued: true,
+        nativeMessageId: retried.input?.native_message_id ?? null,
+      })
+    }
     if (!resident)
       return { ...publicDispatch(retried.ticket), flush: 'pending', message: 'Only a resident host continues' }
-    const ensured = await ensureChild(retried.ticket)
-    if (ensured.error) return ensured.error
-    const flushed = await pushInput(book, retried.input, deps)
-    return publicDispatch(book.ticket(retried.ticket.id), {
-      flush: flushWord(flushed),
-      nativeMessageId: retried.input.native_message_id,
-    })
+    return startReserved(book.ticket(retried.ticket.id))
   }
 
   /**
@@ -500,20 +773,138 @@ export function createWorkRuntime(
   async function tick() {
     await reconcileInputs(book, deps)
     await reconcileNotices(book, deps)
-    await store.write('work', () => {
-      book.expireQuiet()
-    })
+    await renewLiveLeases()
+    const expired = await store.write('work', () => book.expireQuiet())
+    await stopExpiredChildren(expired)
     for (const owner of book.ownerIds()) {
       if (engine.isBot(owner)) await admit(owner)
     }
     for (const child of book.childIds()) await reconcileChild(child)
     for (const owner of book.ownerIds()) await reconcileOwner(owner)
+    await promoteQueued()
+  }
+
+  /**
+   * Renew the lease of a started worker that is still alive, so a silent
+   * model or tool turn longer than leaseMs does not false-expire it.
+   */
+  async function renewLiveLeases() {
+    const renewals: string[] = []
+    for (const child of book.childIds()) {
+      const attempt = book.attemptForChild(child)
+      if (!attempt || (attempt.status !== 'started' && attempt.status !== 'enqueued')) continue
+      if (!(await isChildLive(child))) continue
+      renewals.push(attempt.id)
+    }
+    if (renewals.length === 0) return
+    await store.write('work', () => {
+      const until = new Date(now().getTime() + limits.leaseMs).toISOString()
+      for (const id of renewals) {
+        const attempt = book.attempt(id)
+        if (!attempt || (attempt.status !== 'started' && attempt.status !== 'enqueued')) continue
+        book.touchLease(id, until, typeof attempt.lease_observed_seq === 'number' ? attempt.lease_observed_seq : null)
+      }
+    })
+  }
+
+  /**
+   * @param {string} sessionId
+   */
+  async function isChildLive(sessionId: string) {
+    if (options.childPresent) {
+      try {
+        if (!(await options.childPresent(sessionId))) return false
+      } catch {
+        return false
+      }
+    } else if (!options.snapshot) {
+      return false
+    }
+    if (!options.snapshot) return true
+    try {
+      const events = await options.snapshot(sessionId)
+      return !latestTurnEnded(events)
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * @param {Array<{ ticketId: string, reason: string, childSessionId?: string | null }>} expired
+   */
+  async function stopExpiredChildren(
+    expired: Array<{ ticketId: string; reason: string; childSessionId?: string | null }>,
+  ) {
+    if (!Array.isArray(expired) || expired.length === 0) return
+    for (const item of expired) {
+      const child = item.childSessionId
+      if (!child || !options.cancel) continue
+      const state = arms.get(child)
+      if (state) {
+        state.closing = true
+        state.clear?.()
+      }
+      try {
+        await options.cancel(child, { keepInbox: false, reason: `worker-expire:${item.reason}` })
+      } catch {
+        /* best-effort stop; the ledger already failed the ticket */
+      }
+    }
+  }
+
+  /**
+   * @param {Record<string, any>} event
+   */
+  function eventText(event: Record<string, any>) {
+    if (typeof event.text === 'string' && event.text !== '') return event.text
+    return book.detail(event.ticket_id)?.events?.find(item => item.event_id === event.event_id)?.text ?? ''
+  }
+
+  /**
+   * @param {Record<string, any>} event
+   */
+  function isExtensionAsk(event: Record<string, any>) {
+    return event.kind === 'progress' && eventText(event).startsWith('[foundations:extension]')
+  }
+
+  /**
+   * Extension asks are decision-required: they may starve-bypass notice-open,
+   * user-pending, and delivery-open. Ordinary progress does not.
+   * @param {Record<string, any>} event
+   */
+  function isDecisionRequiredEvent(event: Record<string, any>) {
+    return event.kind === 'question' || event.kind === 'result' || event.kind === 'failure' || isExtensionAsk(event)
+  }
+
+  /**
+   * @param {Record<string, any>} ticket
+   */
+  function isFinishedTicket(ticket: Record<string, any>) {
+    const status = String(ticket.status)
+    return status === 'failed' || status === 'cancelled' || status === 'delivered'
   }
 
   /**
    * @param {string} owner
    */
   async function admit(owner: string) {
+    if (admitting.has(owner)) return { admitted: false, reason: 'admission-inflight' }
+    admitting.add(owner)
+    try {
+      return await admitOnce(owner)
+    } finally {
+      admitting.delete(owner)
+    }
+  }
+  function currentExtension(event: Record<string, any>) {
+    const ticket = book.ticket(event.ticket_id)
+    if (!ticket || !['started', 'enqueued'].includes(ticket.status)) return false
+    const budget = JSON.parse(ticket.budget_json)
+    if (budget.extension !== 'open') return false
+    const latest = book.detail(ticket.id)?.events.filter(isExtensionAsk).at(-1)
+    return latest?.event_id === event.event_id
+  }
+  async function admitOnce(owner: string) {
     const wake = book.pendingWake(owner)
     if (wake.events.length === 0 && wake.cancels.length === 0) return { admitted: false, reason: 'empty' }
     let pending = null
@@ -525,15 +916,18 @@ export function createWorkRuntime(
     const terminalTimes = []
     for (const event of wake.events) {
       if (
-        (event.kind === 'question' || event.kind === 'result' || event.kind === 'failure') &&
-        event.apply_status === 'applied'
+        event.apply_status === 'applied' &&
+        isDecisionRequiredEvent(event) &&
+        (!isExtensionAsk(event) || currentExtension(event))
       ) {
         terminalTimes.push(Date.parse(event.created_at))
       }
     }
     for (const ticket of wake.cancels) terminalTimes.push(Date.parse(ticket.updated_at))
+    const urgent = wake.events.filter(event => isExtensionAsk(event) && currentExtension(event))
     const heldUntil = holds.get(owner)
-    if (heldUntil != null && now().getTime() < heldUntil) return { admitted: false, reason: 'interrupt-hold' }
+    if (!urgent.length && heldUntil != null && now().getTime() < heldUntil)
+      return { admitted: false, reason: 'interrupt-hold' }
     if (heldUntil != null) holds.delete(owner)
     const decision = decideAdmission({
       pendingIds: pending,
@@ -546,19 +940,21 @@ export function createWorkRuntime(
       terminalSince: terminalTimes.length === 0 ? null : Math.min(...terminalTimes),
       starveMs: limits.starveMs,
     })
-    if (!decision.admit) return { admitted: false, ...decision }
+    if (!urgent.length && !decision.admit) return { admitted: false, ...decision }
     const nativeId = randomUUID()
     const items: Array<{ ticketId: string; eventId: string; line: string }> = []
-    for (const event of wake.events) {
+    for (const event of urgent.length ? urgent : wake.events) {
       const ticket = book.ticket(event.ticket_id)
       if (!ticket) continue
+      // A grant cannot revive a finished ticket, so drop a stale extension ask.
+      if (isExtensionAsk(event) && !currentExtension(event)) continue
       items.push({
         ticketId: ticket.id,
         eventId: event.event_id,
         line: noticeLine(ticket, event),
       })
     }
-    for (const ticket of wake.cancels) {
+    for (const ticket of urgent.length ? [] : wake.cancels) {
       items.push({
         ticketId: ticket.id,
         eventId: `cancel:${ticket.cancel_requested_revision}`,
@@ -567,10 +963,25 @@ export function createWorkRuntime(
     }
     if (items.length === 0) return { admitted: false, reason: 'empty' }
     await store.write('work', () => {
-      book.insertNotices(nativeId, owner, items)
+      // Revalidate after the write queue: a grant/cancel may have raced admission.
+      const valid = items.filter(
+        item =>
+          item.eventId.startsWith('cancel:') ||
+          (!book.event(item.eventId)?.notice_id &&
+            (!isExtensionAsk(book.event(item.eventId) ?? {}) || currentExtension(book.event(item.eventId)!))),
+      )
+      items.splice(0, items.length, ...valid)
+      if (items.length) book.insertNotices(nativeId, owner, items)
     })
+    if (!items.length) return { admitted: false, reason: 'superseded' }
     const flushed = await pushNotice(book, nativeId, owner, renderNotice(items.map(item => item.line)), 0, deps)
-    return { admitted: true, nativeMessageId: nativeId, flush: flushWord(flushed), ...decision }
+    return {
+      ...decision,
+      admitted: true,
+      reason: urgent.length ? 'budget-decision' : decision.reason,
+      nativeMessageId: nativeId,
+      flush: flushWord(flushed),
+    }
   }
 
   /**
@@ -584,6 +995,7 @@ export function createWorkRuntime(
     const head = `${ticket.id} ${status} (${LABEL[status] ?? status}) rev ${ticket.briefing_revision} ${event.kind}`
     const text = book.detail(ticket.id)?.events?.find(item => item.event_id === event.event_id)?.text ?? ''
     if (text.startsWith('[foundations:extension]')) {
+      if (isFinishedTicket(ticket)) return head
       return [head, `eventId: ${event.event_id}`, text].join('\n')
     }
     if (event.kind !== 'result' && event.kind !== 'failure') return head
@@ -632,7 +1044,14 @@ export function createWorkRuntime(
         if (event.data?.turn != null) wakeTurns.set(`${sessionId}:${event.data.turn}`, nativeId)
       }
     }
-    if (event.type === 'turn/end') applyTurnEnd(sessionId, event.data?.turn ?? null, reasonKindOf(event))
+    if (event.type === 'turn/end') {
+      if (isWorkerSession(sessionId) && event.data?.reason?.reason?.kind === 'user') {
+        const attempt = book.attemptForChild(sessionId)
+        if (attempt) book.markCancelled(attempt.ticket_id, null, 'Worker cancelled by user.')
+        closeBudgetWait(sessionId)
+      }
+      applyTurnEnd(sessionId, event.data?.turn ?? null, reasonKindOf(event))
+    }
     if (isWorkerSession(sessionId) && typeof event.seq === 'number') {
       const attempt = book.attemptForChild(sessionId)
       if (attempt && (attempt.status === 'started' || attempt.status === 'enqueued')) {
@@ -649,6 +1068,7 @@ export function createWorkRuntime(
   function observeClaimed(sessionId: string, messageId: string, turn: number | null) {
     if (book.inputByNative(messageId)) turns.set(sessionId, { messageId, turn, seq: null })
     book.setNoticeObserve(messageId, 'claimed')
+    if (turn != null && book.noticeIds(sessionId).has(messageId)) wakeTurns.set(`${sessionId}:${turn}`, messageId)
   }
 
   /**
@@ -658,17 +1078,27 @@ export function createWorkRuntime(
     if (ticket.child_session_id) return { ticket }
     if (!options.createChild) return { error: publicDispatch(ticket, { flush: 'pending' }) }
     const sessionId = `worker-${ticket.id}`
+    const attemptId = ticket.active_attempt_id
+    const fencingToken = book.attempt(attemptId)?.fencing_token ?? 1
     try {
       const created = await options.createChild({
         sessionId,
         ownerSessionId: ticket.owner_session_id,
         ticketId: ticket.id,
-        fencingToken: book.attempt(ticket.active_attempt_id)?.fencing_token ?? 1,
+        fencingToken,
       })
       const child = typeof created === 'string' && created !== '' ? created : sessionId
+      const saved = await store.write('work', () => book.setChildIfEmpty(ticket.id, child, { attemptId, fencingToken }))
+      if (!saved?.attached) {
+        try {
+          if (options.cancel) await options.cancel(child, { keepInbox: false, reason: 'stale-start' })
+        } catch {
+          /* best-effort cleanup of a late or fenced child */
+        }
+        return { rejected: true, ticket: saved?.ticket ?? book.ticket(ticket.id) ?? ticket }
+      }
       engine.ensureSession(child)
-      const saved = await store.write('work', () => book.setChildIfEmpty(ticket.id, child))
-      return { ticket: saved }
+      return { ticket: saved.ticket }
     } catch {
       return {
         error: publicDispatch(book.ticket(ticket.id), {
@@ -729,7 +1159,13 @@ export function createWorkRuntime(
    */
   function publicDispatch(
     ticket: Record<string, any>,
-    extra: { replayed?: boolean; flush?: string; nativeMessageId?: string | null; childSessionId?: string | null } = {},
+    extra: {
+      replayed?: boolean
+      flush?: string
+      nativeMessageId?: string | null
+      childSessionId?: string | null
+      queued?: boolean
+    } = {},
   ) {
     const fresh = book.ticket(ticket.id) ?? ticket
     const attempt = fresh.active_attempt_id ? book.attempt(fresh.active_attempt_id) : null
@@ -750,11 +1186,13 @@ export function createWorkRuntime(
       briefingRevision: fresh.briefing_revision,
       status: dispatched && flush === 'accepted' ? 'enqueued' : 'accepted',
       ticketStatus: fresh.status,
+      ...quotaFeedback(fresh.id),
       childSessionId: extra.childSessionId === null ? null : fresh.child_session_id,
       fencingToken: attempt?.fencing_token ?? null,
       nativeMessageId: extra.nativeMessageId === undefined ? (input?.native_message_id ?? null) : extra.nativeMessageId,
       flush,
       replayed: extra.replayed === true,
+      queued: extra.queued === true || (fresh.status === 'accepted' && !book.slotHeld(fresh)),
     }
   }
 
@@ -789,12 +1227,15 @@ export function createWorkRuntime(
     if (!input) return
     const found = book.detail(input.ticket_id)
     if (!found) return
+    let released = false
     for (const event of found.events) {
       if (event.attempt_id !== input.attempt_id) continue
       if (event.briefing_revision !== input.briefing_revision) continue
       if (event.apply_status !== 'pending_completion') continue
       book.applyTerminal(event.event_id, reason)
+      released = true
     }
+    if (released) void promoteQueued().catch(() => {})
   }
 
   /**
@@ -822,7 +1263,7 @@ export function createWorkRuntime(
       if (event.type !== 'turn/end') continue
       const nativeId = byTurn.get(event.data?.turn)
       if (!nativeId) continue
-      turns.set(sessionId, { messageId: nativeId, turn: event.data?.turn ?? null, seq: null })
+      // Historical turn endings must not overwrite the latest live input binding.
       const input = book.inputByNative(nativeId)
       if (!input) continue
       const found = book.detail(input.ticket_id)
@@ -937,6 +1378,7 @@ export function createWorkRuntime(
       if (typeof total === 'number' && total > 0) {
         state.tokens += total
         if (seq != null) state.lastSeq = seq
+        saveQuota(sessionId, state)
         consider(sessionId, state, false)
       }
       return
@@ -1102,11 +1544,12 @@ export function createWorkRuntime(
           }
         : workerCaps(sessionId)
     const state = {
+      attemptId: role === 'worker' ? (book.attemptForChild(sessionId)?.id ?? null) : null,
       turn,
-      startedAt: previous?.startedAt ?? now().getTime(),
+      startedAt: role === 'worker' ? now().getTime() : (previous?.startedAt ?? now().getTime()),
       steps: 0,
-      tokens: previous?.tokens ?? 0,
-      lastSeq: previous?.lastSeq ?? null,
+      tokens: role === 'worker' ? 0 : (previous?.tokens ?? 0),
+      lastSeq: role === 'worker' ? null : (previous?.lastSeq ?? null),
       role,
       tight: false,
       limits: caps,
@@ -1114,20 +1557,42 @@ export function createWorkRuntime(
       budgetNotice: false,
       extensionOpen: false,
       closing: false,
+      pausedAt: null as number | null,
+      atBoundary: false,
       clear: () => {},
     }
-    const elapsed = Math.max(0, now().getTime() - state.startedAt)
-    state.extensionOpen = previous?.extensionOpen === true || caps.extensionOpen === true
-    const target = state.extensionOpen ? caps.ceilingWall : caps.wallMs
-    state.clear = schedule(
-      () => {
-        const live = arms.get(sessionId)
-        if (!live || live !== state || live.closing) return
-        consider(sessionId, live, true)
-      },
-      Math.max(1, target - elapsed),
+    if (role === 'worker') {
+      const attempt = book.attemptForChild(sessionId)
+      const quota = attempt ? quotaOf(attempt.ticket_id) : null
+      if (quota) {
+        state.tokens = quota.tokens ?? 0
+        state.lastSeq = quota.lastSeq ?? null
+        const elapsed =
+          (quota.activeMs ?? 0) + (quota.runningSince == null ? 0 : Math.max(0, now().getTime() - quota.runningSince))
+        state.startedAt = now().getTime() - elapsed
+        if (quota.waiting) {
+          state.pausedAt = now().getTime()
+          state.atBoundary = true
+        }
+      }
+    }
+    const elapsed = Math.max(
+      0,
+      (state.pausedAt != null && state.atBoundary ? state.pausedAt : now().getTime()) - state.startedAt,
     )
+    state.extensionOpen = previous?.extensionOpen === true || caps.extensionOpen === true
+    const target = caps.wallMs
+    if (state.pausedAt == null)
+      state.clear = schedule(
+        () => {
+          const live = arms.get(sessionId)
+          if (!live || live !== state || live.closing) return
+          consider(sessionId, live, true)
+        },
+        Math.max(1, target - elapsed),
+      )
     arms.set(sessionId, state)
+    if (role === 'worker') saveQuota(sessionId, state)
     return state
   }
 
@@ -1178,28 +1643,12 @@ export function createWorkRuntime(
       Promise.resolve(options.cancel?.(sessionId, { keepInbox: true, reason: trip.cause })).catch(() => {})
       return
     }
+    if (state.pausedAt != null) return
     const elapsed = Math.max(0, now().getTime() - state.startedAt)
-    if (state.tokens >= state.limits.ceilingTokens || elapsed >= state.limits.ceilingWall) {
-      finishWorker(
-        sessionId,
-        state,
-        state.tokens >= state.limits.ceilingTokens && elapsed < state.limits.ceilingWall ? 'tokens' : 'wall',
-      )
-      return
-    }
-    if (state.extensionOpen) return
     const overWall = fromTimer || elapsed >= state.limits.wallMs
     const overTokens = state.tokens >= state.limits.maxTokens
     if (!overWall && !overTokens) return
-    if (overWall && state.limits.wallMs < state.limits.ceilingWall) {
-      askForQuota(sessionId, state, 'wall', elapsed)
-      return
-    }
-    if (overTokens && state.limits.maxTokens < state.limits.ceilingTokens) {
-      askForQuota(sessionId, state, 'tokens', elapsed)
-      return
-    }
-    finishWorker(sessionId, state, overTokens ? 'tokens' : 'wall')
+    askForQuota(sessionId, state, overTokens ? 'tokens' : 'wall', elapsed)
   }
 
   /**
@@ -1211,12 +1660,14 @@ export function createWorkRuntime(
   function askForQuota(sessionId: string, state: BudgetArm, reason: 'wall' | 'tokens', elapsed: number) {
     state.extensionOpen = true
     state.clear?.()
-    watchHostCeiling(sessionId, state)
+    state.pausedAt = now().getTime()
+    state.atBoundary = false
+    saveQuota(sessionId, state, reason)
     const attempt = book.attemptForChild(sessionId)
     if (!attempt) return
     const ticket = book.ticket(attempt.ticket_id)
     if (!ticket || ticket.status === 'failed' || ticket.status === 'cancelled' || ticket.status === 'delivered') {
-      finishWorker(sessionId, state, reason)
+      closeBudgetWait(sessionId)
       return
     }
     const marked = book.markExtensionOpen(ticket.id)
@@ -1228,7 +1679,10 @@ export function createWorkRuntime(
       `granted wall ms: ${state.limits.wallMs}`,
       `tokens used: ${state.tokens}`,
       `granted tokens: ${state.limits.maxTokens}`,
-      'Do not mark the ticket failed. Call foundations_grant to add budget. wallMs and maxTokens are amounts to add. Pass deny=true to refuse the grant.',
+      `host ceiling tokens: ${state.limits.ceilingTokens}; host ceiling active wall ms: ${state.limits.ceilingWall}`,
+      `required total tokens: ${state.tokens + 1}; required total active wall ms: ${elapsed + 1}`,
+      'Worker is waiting for budget at the next safe loop boundary. It will not dispatch another step until sufficient budget is granted. Budget wait does not expire.',
+      'Call foundations_grant with amounts to ADD, sufficient to exceed current cumulative usage. Host ceilings cannot be raised by this tool; at a host ceiling an explicit deny/cancel is required. Pass deny=true to stop. Do not redispatch a replacement ticket.',
     ].join('\n')
     book.insertEvent({
       ticketId: ticket.id,
@@ -1242,65 +1696,161 @@ export function createWorkRuntime(
   }
 
   /**
-   * After a quota request, the worker keeps running until the host ceiling.
-   * An early timer is rearmed. It does not fail the ticket by itself.
-   * @param {string} sessionId
-   * @param {{ startedAt: number, limits: { ceilingWall: number }, closing: boolean, clear: () => void }} state
-   */
-  function watchHostCeiling(sessionId: string, state: BudgetArm) {
-    const elapsed = Math.max(0, now().getTime() - state.startedAt)
-    state.clear = schedule(
-      () => {
-        const live = arms.get(sessionId)
-        if (!live || live !== state || live.closing) return
-        const at = Math.max(0, now().getTime() - live.startedAt)
-        if (at >= live.limits.ceilingWall) {
-          finishWorker(sessionId, live, 'wall')
-          return
-        }
-        watchHostCeiling(sessionId, live)
-      },
-      Math.max(1000, state.limits.ceilingWall - elapsed),
-    )
-  }
-
-  /**
-   * @param {string} sessionId
-   * @param {{ closing: boolean, clear: () => void }} state
-   * @param {string} reason
-   */
-  function finishWorker(sessionId: string, state: BudgetArm, reason: string) {
-    if (state.closing) return
-    state.closing = true
-    state.clear?.()
-    Promise.resolve(options.cancel?.(sessionId, { keepInbox: false, reason: `worker-budget:${reason}` })).catch(
-      () => {},
-    )
-    const attempt = book.attemptForChild(sessionId)
-    if (attempt) book.failRunning(attempt.ticket_id, reason)
-  }
-
-  /**
    * @param {string} sessionId
    * @param {{ wallMs: number, maxTokens: number }} budget
    */
   function releaseArm(sessionId: string, budget: { wallMs: number; maxTokens: number }) {
     const state = arms.get(sessionId)
-    if (!state || state.role !== 'worker' || state.closing) return
-    state.extensionOpen = false
+    const attempt = book.attemptForChild(sessionId)
+    if (!attempt) return
+    const quota = quotaOf(attempt.ticket_id)
+    if (!state || state.role !== 'worker' || state.closing) {
+      // A detached turn stays parked until the grant path queues a durable continuation.
+      if (quota) writeQuota(attempt.ticket_id, { ...quota, waiting: true, runningSince: null })
+      return
+    }
     state.limits.wallMs = budget.wallMs
     state.limits.maxTokens = budget.maxTokens
+    const elapsed = Math.max(
+      0,
+      (state.pausedAt != null && state.atBoundary ? state.pausedAt : now().getTime()) - state.startedAt,
+    )
+    if (
+      state.tokens >= budget.maxTokens ||
+      elapsed >= budget.wallMs ||
+      state.tokens >= state.limits.ceilingTokens ||
+      elapsed >= state.limits.ceilingWall
+    ) {
+      state.extensionOpen = true
+      if (state.pausedAt == null) state.pausedAt = now().getTime()
+      state.clear()
+      saveQuota(sessionId, state)
+      book.markExtensionOpen(attempt.ticket_id)
+      return
+    }
+    state.extensionOpen = false
+    state.startedAt = now().getTime() - elapsed
+    state.pausedAt = null
+    state.atBoundary = false
     state.clear?.()
-    const elapsed = Math.max(0, now().getTime() - state.startedAt)
+    saveQuota(sessionId, state)
     state.clear = schedule(
       () => {
-        const live = arms.get(sessionId)
-        if (!live || live !== state || live.closing) return
-        consider(sessionId, live, true)
+        if (arms.get(sessionId) === state && !state.closing) consider(sessionId, state, true)
       },
       Math.max(1, budget.wallMs - elapsed),
     )
-    if (state.tokens >= budget.maxTokens || elapsed >= budget.wallMs) consider(sessionId, state, false)
+    for (const resolve of budgetWaiters.get(sessionId) ?? []) resolve(true)
+    budgetWaiters.delete(sessionId)
+  }
+
+  type Quota = {
+    tokens: number
+    lastSeq: number | null
+    activeMs: number
+    runningSince: number | null
+    waiting: boolean
+    reason?: string
+    phase?: 'requested' | 'waiting'
+    resumeInputId?: string
+  }
+  function quotaOf(ticketId: string): Quota | null {
+    try {
+      return JSON.parse(book.ticket(ticketId)?.budget_json ?? '{}').quota ?? null
+    } catch {
+      return null
+    }
+  }
+  function writeQuota(ticketId: string, quota: Quota) {
+    const ticket = book.ticket(ticketId)
+    if (!ticket) return
+    const budget = JSON.parse(ticket.budget_json)
+    budget.quota = quota
+    store.db
+      .prepare('UPDATE work_tickets SET budget_json = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(budget), now().toISOString(), ticketId)
+  }
+  function saveQuota(sessionId: string, state: BudgetArm, reason?: string) {
+    const attempt = book.attemptForChild(sessionId)
+    if (!attempt || attempt.id !== state.attemptId) return
+    const activeMs = Math.max(
+      0,
+      (state.pausedAt != null && state.atBoundary ? state.pausedAt : now().getTime()) - state.startedAt,
+    )
+    writeQuota(attempt.ticket_id, {
+      tokens: state.tokens,
+      lastSeq: state.lastSeq,
+      activeMs,
+      runningSince: state.pausedAt == null ? now().getTime() : null,
+      waiting: state.pausedAt != null,
+      phase: state.atBoundary ? 'waiting' : 'requested',
+      reason:
+        state.pausedAt == null
+          ? undefined
+          : state.tokens >= state.limits.ceilingTokens || activeMs >= state.limits.ceilingWall
+            ? 'host-ceiling'
+            : (reason ?? quotaOf(attempt.ticket_id)?.reason),
+    })
+  }
+  function quotaFeedback(ticketId: string) {
+    const quota = quotaOf(ticketId)
+    const budget = JSON.parse(book.ticket(ticketId)?.budget_json ?? '{}')
+    return {
+      waitingBudget: quota?.waiting === true,
+      budgetReason: quota?.reason ?? null,
+      usedTokens: quota?.tokens ?? 0,
+      activeElapsedMs: quota?.activeMs ?? 0,
+      requiredMaxTokens: (quota?.tokens ?? 0) + 1,
+      requiredWallMs: (quota?.activeMs ?? 0) + 1,
+      minimumAdditionalTokens: Math.max(0, (quota?.tokens ?? 0) + 1 - (budget.maxTokens ?? 0)),
+      minimumAdditionalWallMs: Math.max(0, (quota?.activeMs ?? 0) + 1 - (budget.wallMs ?? 0)),
+      hostTokenHeadroom: Math.max(0, limits.workerMaxTokens - (quota?.tokens ?? 0)),
+      hostWallHeadroomMs: Math.max(0, limits.workerWallMs - (quota?.activeMs ?? 0)),
+    }
+  }
+  function closeBudgetWait(sessionId: string) {
+    const state = arms.get(sessionId)
+    if (state) {
+      state.closing = true
+      state.clear()
+    }
+    for (const resolve of budgetWaiters.get(sessionId) ?? []) resolve(false)
+    budgetWaiters.delete(sessionId)
+  }
+  /** Awaiting this official pre-step waterfall suspends admission, not the turn. */
+  async function waitForBudget(sessionId: string, signal?: AbortSignal): Promise<boolean> {
+    if (!isWorkerSession(sessionId)) return true
+    const attempt = book.attemptForChild(sessionId)
+    const ticket = attempt ? book.ticket(attempt.ticket_id) : null
+    if (!ticket || isFinishedTicket(ticket) || signal?.aborted) return false
+    const state = arms.get(sessionId) ?? arm(sessionId, 0, 'worker')
+    if (state.closing) return false
+    consider(sessionId, state, false)
+    if (state.pausedAt == null) return true
+    if (!state.atBoundary) {
+      // The already-admitted request/tool batch may finish; account for that
+      // active time before freezing the clock at this safe loop boundary.
+      state.pausedAt = now().getTime()
+      state.atBoundary = true
+      saveQuota(sessionId, state)
+    }
+    const caps = workerCaps(sessionId)
+    releaseArm(sessionId, caps)
+    if (state.pausedAt == null) return true
+    return new Promise(resolve => {
+      const waiters = budgetWaiters.get(sessionId) ?? new Set()
+      const done = (allowed: boolean) => {
+        signal?.removeEventListener('abort', aborted)
+        waiters.delete(done)
+        if (!waiters.size) budgetWaiters.delete(sessionId)
+        resolve(allowed)
+      }
+      const aborted = () => done(false)
+      waiters.add(done)
+      budgetWaiters.set(sessionId, waiters)
+      signal?.addEventListener('abort', aborted, { once: true })
+      if (signal?.aborted) done(false)
+    })
   }
 
   /**
@@ -1308,10 +1858,33 @@ export function createWorkRuntime(
    */
   function clearBudget(sessionId: string) {
     const state = arms.get(sessionId)
+    if (state?.role === 'worker') saveQuota(sessionId, state)
     if (!state) return
     state.clear?.()
     arms.delete(sessionId)
   }
+}
+
+/**
+ * A later turn/end for every started turn means the child is idle.
+ * No turn at all, or an open turn, means it may still be running.
+ * @param {Array<Record<string, any>>} events
+ */
+function latestTurnEnded(events: Array<Record<string, any>>) {
+  const open = new Set()
+  let sawTurn = false
+  for (const event of events) {
+    const turn = event.data?.turn
+    if (turn == null) continue
+    if (event.type === 'turn/start' || event.type === 'user/message') {
+      sawTurn = true
+      open.add(turn)
+    } else if (event.type === 'turn/end') {
+      sawTurn = true
+      open.delete(turn)
+    }
+  }
+  return sawTurn && open.size === 0
 }
 
 /**

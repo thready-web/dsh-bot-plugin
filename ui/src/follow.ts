@@ -1,5 +1,7 @@
+import { resultStatus, toolState, ACTIVE_TOOL_STATES, statusLabel, redactText } from './activity.ts'
 import { parseBotMail } from './bot-message.ts'
 import { isTicketNotice, parseBriefing } from './work.ts'
+import { isUserQuestionTool } from './user-question.ts'
 import {
   type LiveBlock,
   type RetryAttempt,
@@ -280,21 +282,30 @@ export type ActivitySegment = Extract<Segment, { kind: 'think' | 'tool' }>
 export type TurnPiece =
   | { type: 'text'; segment: Extract<Segment, { kind: 'assistant' }> }
   | { type: 'activity'; id: string; segments: ActivitySegment[] }
+  | { type: 'question'; segment: Extract<Segment, { kind: 'tool' }> }
 
 /** Keep each assistant sentence where it was emitted, and bundle only the activity between sentences. */
 export function turnPieces(segments: readonly Segment[]): TurnPiece[] {
   const pieces: TurnPiece[] = []
   let activity: ActivitySegment[] = []
+  let activityIndex = 0
   const flush = () => {
-    const first = activity[0]
-    if (!first) return
-    pieces.push({ type: 'activity', id: first.id, segments: activity })
+    if (activity.length === 0) return
+    // A run keeps its identity when live block ids become durable event ids.
+    pieces.push({
+      type: 'activity',
+      id: `activity:${activityIndex++}`,
+      segments: activity,
+    })
     activity = []
   }
   for (const segment of segments) {
     if (segment.kind === 'assistant') {
       flush()
       pieces.push({ type: 'text', segment })
+    } else if (segment.kind === 'tool' && isUserQuestionTool(segment.name)) {
+      flush()
+      pieces.push({ type: 'question', segment })
     } else if (segment.kind === 'think' || segment.kind === 'tool') {
       activity.push(segment)
     }
@@ -470,10 +481,12 @@ export function thinkPreview(text: string): string {
 
 function liveActivity(state: ThreadState): string {
   if (!state.drafting) return ''
-  const tool = [...state.segments].reverse().find((item): item is ToolSegment => item.kind === 'tool' && item.running)
+  const tool = [...state.segments]
+    .reverse()
+    .find((item): item is ToolSegment => item.kind === 'tool' && ACTIVE_TOOL_STATES.has(toolState(item)))
   if (tool) {
-    const detail = toolDetail(tool.name, tool.args)
-    const label = toolTitle(tool)
+    const detail = redactText(toolDetail(tool.name, tool.args))
+    const label = statusLabel(toolState(tool))
     return detail ? `${label} · ${detail}` : label
   }
   if (state.segments.some(item => item.kind === 'assistant' && item.streaming)) return 'Replying'
@@ -488,24 +501,45 @@ function withActivity(state: ThreadState): ThreadState {
 
 function upsertTool(segments: Segment[], tool: ToolSegment): Segment[] {
   const index = segments.findIndex(item => item.kind === 'tool' && item.callId === tool.callId)
-  if (index >= 0) {
-    const next = segments.slice()
-    const previous = next[index]
-    if (!previous || previous.kind !== 'tool') return segments
-    const result = tool.result || previous.result
-    next[index] = {
-      ...previous,
-      name: tool.name || previous.name,
-      args: tool.args || previous.args,
-      result,
-      error: tool.error || previous.error,
-      running: result ? false : tool.running || previous.running,
-      turn: tool.turn ?? previous.turn,
-      step: tool.step ?? previous.step,
-    }
-    return next
+  if (index < 0) return sortSegments([...segments, tool])
+  const previous = segments[index]
+  if (!previous || previous.kind !== 'tool') return segments
+  const next = segments.slice()
+  const hasResult = previous.resultReceived === true || tool.resultReceived === true
+  const newerResult =
+    tool.resultReceived && (!previous.resultReceived || (tool.resultSeq ?? -1) > (previous.resultSeq ?? -1))
+  const result = newerResult ? tool : previous
+  const newerCall = tool.callReceived && (!previous.callReceived || (tool.callSeq ?? -1) > (previous.callSeq ?? -1))
+  const call = newerCall ? tool : previous
+  const name = (call.name !== 'tool' ? call.name : tool.name) || previous.name
+  next[index] = {
+    ...previous,
+    // A result-first placeholder has no call position yet. Recover it from a late call.
+    seq:
+      !previous.callReceived && previous.resultReceived && tool.callReceived
+        ? Math.min(previous.seq, tool.seq)
+        : previous.seq,
+    id: `tool:${tool.callId}`,
+    name,
+    args: call.callReceived ? call.args : tool.args || previous.args,
+    callReceived: previous.callReceived || tool.callReceived,
+    callSeq: call.callSeq,
+    requestedAt: call.requestedAt,
+    resultReceived: hasResult,
+    result: hasResult ? result.result : '',
+    error: hasResult ? result.error : false,
+    errorCode: result.errorCode,
+    meta: result.meta,
+    resultSeq: result.resultSeq,
+    settledAt: result.settledAt,
+    status: hasResult
+      ? resultStatus(name, result.result, result.error, result.errorCode)
+      : (tool.status ?? previous.status),
+    running: !hasResult && (tool.running || previous.running),
+    turn: previous.turn ?? tool.turn,
+    step: previous.step ?? tool.step,
   }
-  return sortSegments([...segments, tool])
+  return sortSegments(next)
 }
 
 function projectLive(
@@ -518,7 +552,9 @@ function projectLive(
 ): Segment[] {
   const prefix = `live:${key}:`
   const prior = state.segments.filter(item => item.id.startsWith(prefix))
-  let kept = state.segments.filter(item => !item.id.startsWith(prefix))
+  let kept = state.segments.filter(
+    item => !item.id.startsWith(prefix) || (item.kind === 'tool' && (item.callReceived || item.resultReceived)),
+  )
   const added: Segment[] = []
   for (const block of blocks) {
     const part = seq + block.index / 100
@@ -550,13 +586,14 @@ function projectLive(
       const durable = kept.findIndex(item => item.kind === 'tool' && item.callId === callId)
       if (durable >= 0) {
         const previous = kept[durable]
-        if (previous && previous.kind === 'tool') {
+        if (previous && previous.kind === 'tool' && !previous.callReceived && !previous.resultReceived) {
           const next = kept.slice()
           next[durable] = {
             ...previous,
             name: block.name || previous.name,
             args: block.args || previous.args,
-            running: previous.result ? false : true,
+            running: previous.resultReceived ? false : previous.running,
+            status: previous.resultReceived || previous.callReceived ? previous.status : 'preparing',
           }
           kept = next
         }
@@ -569,7 +606,9 @@ function projectLive(
           args: block.args || existing?.args || '',
           result: existing?.result ?? '',
           error: existing?.error ?? false,
-          running: existing?.result ? false : true,
+          running: existing?.resultReceived ? false : true,
+          status: existing?.status ?? 'preparing',
+          resultReceived: existing?.resultReceived,
           seq: existing?.seq ?? part,
           turn,
           step,
@@ -701,15 +740,31 @@ function applyAssistant(state: ThreadState, event: SessionEvent): ThreadState {
       const existing = segments.find(item => item.kind === 'tool' && item.callId === callId)
       segments = segments.filter(item => !(item.kind === 'tool' && item.callId === callId))
       segments.push({
+        ...(existing?.kind === 'tool' ? existing : {}),
         kind: 'tool',
         id: `tool:${callId}`,
         callId,
-        name: block.name || (existing?.kind === 'tool' ? existing.name : '') || 'tool',
-        args: asString(block.arguments) || (existing?.kind === 'tool' ? existing.args : ''),
+        name:
+          existing?.kind === 'tool' && existing.callReceived
+            ? existing.name
+            : block.name || (existing?.kind === 'tool' ? existing.name : '') || 'tool',
+        args:
+          existing?.kind === 'tool' && existing.callReceived
+            ? existing.args
+            : asString(block.arguments) || (existing?.kind === 'tool' ? existing.args : ''),
         result: existing?.kind === 'tool' ? existing.result : '',
         error: existing?.kind === 'tool' ? existing.error : false,
-        running: existing?.kind === 'tool' ? existing.running && !existing.result : true,
-        seq: existing?.seq ?? seq,
+        running: existing?.kind === 'tool' ? existing.running && !existing.resultReceived : true,
+        status:
+          existing?.kind === 'tool'
+            ? existing.resultReceived
+              ? resultStatus(block.name || existing.name, existing.result, existing.error, existing.errorCode)
+              : existing.status
+            : 'preparing',
+        // The committed content order is authoritative. A held stream can receive
+        // tool/call before stream end; keeping its provisional seq would hoist the
+        // tool ahead of this message's reasoning/text on commit (unlike replay).
+        seq,
         turn,
         step,
       })
@@ -732,6 +787,10 @@ function applyToolCall(state: ThreadState, event: SessionEvent): ThreadState {
       callId,
       name: typeof data.name === 'string' ? data.name : 'tool',
       args: asString(data.arguments),
+      status: state.turnEnds?.[turn ?? -1] ? 'unknown' : 'waiting',
+      callReceived: true,
+      callSeq: event.seq,
+      requestedAt: event.time,
       result: '',
       error: false,
       running: true,
@@ -760,6 +819,22 @@ function applyToolResult(state: ThreadState, event: SessionEvent): ThreadState {
       name: existing?.kind === 'tool' ? existing.name : 'tool',
       args: existing?.kind === 'tool' ? existing.args : '',
       result,
+      resultReceived: true,
+      resultSeq: event.seq,
+      settledAt: event.time,
+      meta: data.meta,
+      errorCode:
+        typeof (data.error as { code?: string } | undefined)?.code === 'string'
+          ? (data.error as { code: string }).code
+          : undefined,
+      status: resultStatus(
+        existing?.kind === 'tool' ? existing.name : 'tool',
+        result,
+        message?.isError === true,
+        typeof (data.error as { code?: string } | undefined)?.code === 'string'
+          ? (data.error as { code: string }).code
+          : undefined,
+      ),
       error: message?.isError === true,
       running: false,
       seq: existing?.seq ?? event.seq ?? Number.MAX_SAFE_INTEGER,
@@ -865,7 +940,8 @@ function clearStepLive(state: ThreadState, turn: number, step: number, settled =
     ...state,
     live,
     segments: state.segments.filter(item => {
-      if (item.id.startsWith(`live:${key}:`)) return false
+      if (item.id.startsWith(`live:${key}:`))
+        return item.kind === 'tool' && (item.callReceived === true || item.resultReceived === true)
       if (
         settled &&
         item.kind !== 'user' &&
@@ -902,15 +978,38 @@ function freezeLive(state: ThreadState, turn: number, step: number): ThreadState
     segments: state.segments.map(item => {
       if (item.kind === 'user' || item.turn !== turn || item.step !== step) return item
       if (item.kind === 'think') return { ...item, running: false }
-      if (item.kind === 'tool') return { ...item, running: false }
+      if (item.kind === 'tool')
+        return {
+          ...item,
+          running: false,
+          status: item.resultReceived || !ACTIVE_TOOL_STATES.has(toolState(item)) ? item.status : ('unknown' as const),
+        }
       if (item.kind === 'assistant') return { ...item, streaming: false }
       return item
     }),
   }
 }
 
+function modelStepSettled(state: ThreadState, turn: number, step: number): boolean {
+  return (
+    Boolean(state.turnEnds?.[turn]) ||
+    state.segments.some(
+      item =>
+        item.kind !== 'user' &&
+        item.turn === turn &&
+        item.step === step &&
+        (item.kind === 'tool'
+          ? item.callReceived || item.resultReceived
+          : item.kind === 'assistant'
+            ? !item.id.startsWith('live:') && !item.streaming
+            : item.kind === 'think' && !item.id.startsWith('live:') && !item.running),
+    )
+  )
+}
+
 function applyStreamBaseline(state: ThreadState, baseline: Record<string, unknown>): ThreadState {
   const revision = numberOf(baseline.revision) ?? state.streamRevision
+  if (revision < state.streamRevision) return state
   let next: ThreadState = { ...state, streamRevision: revision }
   const attempt = baseline.activeAttempt
   if (!attempt || typeof attempt !== 'object') return { ...next, streamAttempt: null }
@@ -920,6 +1019,8 @@ function applyStreamBaseline(state: ThreadState, baseline: Record<string, unknow
   const step = numberOf(record.step)
   const startedAfterSeq = numberOf(record.startedAfterSeq) ?? revision
   if (!attemptId || turn == null || step == null) return { ...next, streamAttempt: null }
+  if (modelStepSettled(next, turn, step)) return { ...next, streamAttempt: null }
+  next = clearStepLive(next, turn, step)
   const expanded = expandStream(record.stream)
   const count = Math.min(numberOf(record.nextIndex) ?? expanded.length, expanded.length)
   const seq = streamingSeq(next, startedAfterSeq)
@@ -939,11 +1040,11 @@ function applyStreamFrame(state: ThreadState, frame: Record<string, unknown>): T
   const type = typeof frame.type === 'string' ? frame.type : ''
   const revision = numberOf(frame.revision)
   const attemptId = typeof frame.attemptId === 'string' ? frame.attemptId : ''
-  if (revision == null || !attemptId) return state
+  if (revision == null || !attemptId || revision <= state.streamRevision) return state
   if (type === 'start') {
     const turn = numberOf(frame.turn)
     const step = numberOf(frame.step)
-    if (turn == null || step == null) return state
+    if (turn == null || step == null || modelStepSettled(state, turn, step)) return state
     const released = state.pendingAssistant ? releasePending(state) : state
     const cleared = clearStepLive(released, turn, step, true)
     return {
@@ -961,7 +1062,8 @@ function applyStreamFrame(state: ThreadState, frame: Record<string, unknown>): T
   }
   if (revision !== state.streamRevision + 1) return { ...releasePending(state), streamRevision: revision }
   const attempt = state.streamAttempt
-  if (!attempt || attempt.attemptId !== attemptId) return { ...state, streamRevision: revision }
+  if (!attempt || state.turnEnds?.[attempt.turn] || attempt.attemptId !== attemptId)
+    return { ...state, streamRevision: revision }
   if (type === 'chunk') {
     const index = numberOf(frame.index)
     const chunk = frame.chunk
@@ -988,7 +1090,19 @@ function applyStreamFrame(state: ThreadState, frame: Record<string, unknown>): T
       frame.outcome && typeof frame.outcome === 'object' ? (frame.outcome as { kind?: string; eventType?: string }) : {}
     const stamped = { ...state, streamRevision: revision }
     if (outcome.kind === 'abandoned') {
-      const cleared = clearStepLive(stamped, attempt.turn, attempt.step)
+      const marked = {
+        ...stamped,
+        segments: stamped.segments.map(item =>
+          item.kind === 'tool' &&
+          !item.callReceived &&
+          !item.resultReceived &&
+          item.turn === attempt.turn &&
+          item.step === attempt.step
+            ? { ...item, id: `tool:${item.callId}`, running: false, status: 'cancelled' as const }
+            : item,
+        ),
+      }
+      const cleared = clearStepLive(marked, attempt.turn, attempt.step)
       return { ...cleared, streamAttempt: null, pendingAssistant: null }
     }
     if (outcome.kind === 'committed' && outcome.eventType === 'assistant/message') {
@@ -999,7 +1113,7 @@ function applyStreamFrame(state: ThreadState, frame: Record<string, unknown>): T
   return { ...state, streamRevision: revision }
 }
 
-function settleTurn(state: ThreadState, turn: number | null): ThreadState {
+function settleTurn(state: ThreadState, turn: number | null, cancelled = false): ThreadState {
   const pendingTurn = numberOf(state.pendingAssistant?.data?.turn)
   const released = state.pendingAssistant && (turn == null || pendingTurn === turn) ? releasePending(state) : state
   const live = Object.fromEntries(Object.entries(released.live).filter(([key]) => !key.startsWith(`${turn ?? ''}:`)))
@@ -1007,11 +1121,21 @@ function settleTurn(state: ThreadState, turn: number | null): ThreadState {
     ...released,
     live,
     segments: released.segments
-      .filter(item => !(typeof turn === 'number' && item.id.startsWith(`live:${turn}:`)))
+      .filter(item => !(typeof turn === 'number' && item.id.startsWith(`live:${turn}:`)) || item.kind === 'tool')
       .map(item => {
         if (item.turn !== turn) return item
         if (item.kind === 'think') return { ...item, running: false }
-        if (item.kind === 'tool') return { ...item, running: false }
+        if (item.kind === 'tool')
+          return {
+            ...item,
+            running: false,
+            status:
+              item.resultReceived || !ACTIVE_TOOL_STATES.has(toolState(item))
+                ? item.status
+                : cancelled && !item.callReceived
+                  ? ('cancelled' as const)
+                  : ('unknown' as const),
+          }
         if (item.kind === 'assistant') return { ...item, streaming: false }
         return item
       }),
@@ -1087,7 +1211,7 @@ export function applyLogEvent(state: ThreadState, event: SessionEvent): ThreadSt
       turn == null
         ? (next.turnEnds ?? {})
         : { ...(next.turnEnds ?? {}), [turn]: endKind || next.turnEnds?.[turn] || 'ended' }
-    next = settleTurn(next, turn)
+    next = settleTurn(next, turn, endKind === 'aborted')
     next = {
       ...next,
       drafting: next.turn === turn ? false : next.drafting,

@@ -1,7 +1,10 @@
 name: CI
 
 on:
-  pull_request:
+  # Do not run on every PR push. Run once on the merge candidate via
+  # "Run workflow", or automatically if a merge queue is used.
+  workflow_dispatch:
+  merge_group:
   push:
     branches: [main]
 

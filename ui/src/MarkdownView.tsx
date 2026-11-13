@@ -1,6 +1,17 @@
-import { Children, isValidElement, useMemo, useState, type ReactElement, type ReactNode } from 'react'
+import {
+  Children,
+  createContext,
+  isValidElement,
+  useContext,
+  useMemo,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { ImagePreview } from './ImagePreview'
+import { useI18n } from './locale'
 
 function CodeBlock({ text, language }: { text: string; language?: string }) {
   const [copied, setCopied] = useState(false)
@@ -65,40 +76,64 @@ function fileTarget(href: string | undefined): { path: string; line?: number } |
   return line != null && Number.isSafeInteger(line) && line > 0 ? { path, line } : { path }
 }
 
-function markdownComponents(streaming: boolean, onOpenFile?: (path: string, line?: number) => void): Components {
-  return {
-    pre: Pre,
-    code({ className, children }) {
-      return <code className={className}>{children}</code>
-    },
-    table({ children }) {
+const MarkdownContext = createContext<{ streaming: boolean; onOpenFile?: (path: string, line?: number) => void }>({
+  streaming: false,
+})
+
+// Stable component identities: callback/streaming/locale updates flow through
+// context, not a fresh component map that remounts <img> on every poll.
+const MARKDOWN_COMPONENTS: Components = {
+  pre: Pre,
+  img({ src, alt, title }) {
+    const local = typeof src === 'string' && src !== '' && !/^(?:[a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(src)
+    return (
+      <ImagePreview src={local ? `/dsh-bot/${src.replace(/^\.\//, '')}` : src || undefined} alt={alt} title={title} />
+    )
+  },
+  code({ className, children }) {
+    return <code className={className}>{children}</code>
+  },
+  table({ children }) {
+    return (
+      <div className="table-scroll">
+        <table>{children}</table>
+      </div>
+    )
+  },
+  a({ href, children, node }) {
+    const { streaming, onOpenFile } = useContext(MarkdownContext)
+    const { t } = useI18n()
+    // An image preview is interactive. Keep it OUTSIDE its Markdown link;
+    // expose the original destination separately instead of nesting buttons in anchors.
+    if (node?.children.some(child => child.type === 'element' && child.tagName === 'img')) {
       return (
-        <div className="table-scroll">
-          <table>{children}</table>
-        </div>
-      )
-    },
-    a({ href, children }) {
-      const file = streaming ? null : fileTarget(href)
-      if (file && onOpenFile) {
-        return (
-          <button
-            type="button"
-            className="file-mention"
-            title={file.path}
-            onClick={() => onOpenFile(file.path, file.line)}
-          >
-            {children}
-          </button>
-        )
-      }
-      return (
-        <a href={href} target="_blank" rel="noreferrer">
+        <span className="image-preview-linked">
           {children}
-        </a>
+          <a href={href} target="_blank" rel="noreferrer">
+            {t('image.openLink')}
+          </a>
+        </span>
       )
-    },
-  }
+    }
+    const file = streaming ? null : fileTarget(href)
+    if (file && onOpenFile) {
+      return (
+        <button
+          type="button"
+          className="file-mention"
+          title={file.path}
+          onClick={() => onOpenFile(file.path, file.line)}
+        >
+          {children}
+        </button>
+      )
+    }
+    return (
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    )
+  },
 }
 
 function streamingSource(text: string, streaming: boolean): string {
@@ -117,12 +152,14 @@ export function MarkdownView({
   streaming?: boolean
   onOpenFile?: (path: string, line?: number) => void
 }) {
-  const components = useMemo(() => markdownComponents(streaming, onOpenFile), [streaming, onOpenFile])
+  const context = useMemo(() => ({ streaming, onOpenFile }), [streaming, onOpenFile])
   return (
-    <div className={streaming ? 'markdown streaming' : 'markdown'}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {streamingSource(text, streaming)}
-      </ReactMarkdown>
-    </div>
+    <MarkdownContext.Provider value={context}>
+      <div className={streaming ? 'markdown streaming' : 'markdown'}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+          {streamingSource(text, streaming)}
+        </ReactMarkdown>
+      </div>
+    </MarkdownContext.Provider>
   )
 }

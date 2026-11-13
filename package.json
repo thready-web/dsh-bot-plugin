@@ -32,7 +32,7 @@
     "build": "node build.mjs",
     "type-check": "tsc -p tsconfig.typecheck.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "test": "node scripts/unit-tests.mjs",
-    "test:host": "npm run build && node --test test/host-integration.test.ts && node --test test/triggers-host.test.ts && node --test test/budget-host.test.ts",
+    "test:host": "npm run build && node --test test/host-integration.test.ts && node --test test/triggers-host.test.ts && node --test test/budget-host.test.ts && node --test test/activity-host.test.ts && node --test test/work-host.test.ts && node --test test/work-bash-host.test.ts",
     "format": "biome format --write src test ui/src client.js scripts",
     "format:check": "biome check src test ui/src client.js scripts"
   },
@@ -49,6 +49,7 @@
     "@deepseek-ai/dsh-session-query": "^0.2.2-rc.1",
     "@types/node": "^24.10.0",
     "esbuild": "^0.25.0",
+    "linkedom": "^0.18.15",
     "typescript": "^5.9.3"
   },
   "dsh": {

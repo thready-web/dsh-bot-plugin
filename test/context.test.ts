@@ -17,6 +17,7 @@ test('frozen view does not change mid-turn and soul is not truncated', () => {
   const first = renderSession(engine, 'session-a', 128000)
   assert.match(first.texts['foundations:soul'], /Keep it short/)
   assert.match(first.texts['foundations:chat'], /The latest user message is the current intent/)
+  assert.match(first.texts['foundations:chat'], /Do not foundations_dispatch a replacement ticket/)
   assert.match(first.texts['foundations:rules'], /When ok is false/)
   assert.doesNotMatch(first.texts['foundations:rules'], /accepted is not enqueued/)
   assert.doesNotMatch(first.texts['foundations:rules'], /foundations_grant/)

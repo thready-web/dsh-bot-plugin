@@ -24,6 +24,7 @@ export async function startWorkMock(options: { dataDir: string; port?: number; n
     pendingIds: sessionId => world.pendingIds(sessionId),
     cancel: (sessionId, cancelOptions) => world.cancel(sessionId, cancelOptions),
     snapshot: sessionId => world.snapshot(sessionId),
+    childPresent: sessionId => world.hasSession(sessionId),
     now,
     pid: process.pid,
   })

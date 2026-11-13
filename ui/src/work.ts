@@ -1,6 +1,6 @@
 /** Ticket cards for the main transcript. Labels come from the active catalog. */
 
-import { english, type Copy, type MessageKey } from './i18n.ts'
+import { english, type Copy, type MessageKey } from './i18n/index.ts'
 
 export interface WorkEvent {
   eventId: string
@@ -24,6 +24,7 @@ const STATUS_KEY: Record<string, MessageKey> = {
   accepted: 'work.status.accepted',
   enqueued: 'work.status.enqueued',
   started: 'work.status.started',
+  waiting_budget: 'work.status.waitingBudget',
   needs_user: 'work.status.needs_user',
   ready: 'work.status.ready',
   delivered: 'work.status.delivered',
@@ -32,7 +33,7 @@ const STATUS_KEY: Record<string, MessageKey> = {
 }
 
 const CLOSED = new Set(['delivered', 'cancelled'])
-const BACKGROUND = new Set(['accepted', 'enqueued', 'started', 'needs_user'])
+const BACKGROUND = new Set(['accepted', 'enqueued', 'started', 'needs_user', 'waiting_budget'])
 
 export function workLabel(status: string, t: Copy = english): string {
   const key = STATUS_KEY[status]
@@ -149,10 +150,18 @@ export function readTicket(body: Record<string, unknown>, summary = '', t: Copy 
     | undefined
   const events = Array.isArray(body.events) ? body.events.flatMap(readEvent) : []
   const child = typeof row.child_session_id === 'string' ? row.child_session_id : ''
+  let waitingBudget = row.waiting_budget === true
+  if (typeof row.budget_json === 'string') {
+    try {
+      waitingBudget ||= JSON.parse(row.budget_json).quota?.waiting === true
+    } catch {
+      /* Legacy malformed metadata is not a waiting signal. */
+    }
+  }
   const title = summary.trim() || t('work.ticket')
   return {
     id: row.id,
-    status: row.status,
+    status: waitingBudget && ['started', 'enqueued'].includes(row.status) ? 'waiting_budget' : row.status,
     revision: typeof row.briefing_revision === 'number' ? row.briefing_revision : 1,
     summary: title,
     childSessionId: child.startsWith('worker-') ? child : null,
@@ -206,7 +215,7 @@ export function botSignal(tickets: readonly { status: string }[], live = false):
   let working = false
   for (const ticket of tickets) {
     if (ticket.status === 'delivered' || ticket.status === 'cancelled') continue
-    if (ticket.status === 'needs_user') waiting = true
+    if (ticket.status === 'needs_user' || ticket.status === 'waiting_budget') waiting = true
     else if (WORKING.has(ticket.status)) working = true
   }
   if (waiting) return 'wait'
@@ -233,6 +242,7 @@ export function workPlaceholder(tickets: readonly WorkTicket[], t: Copy = englis
   const focus = focusTicket(tickets)
   if (!focus) return null
   if (focus.status === 'started') return t('work.placeholder.started')
+  if (focus.status === 'waiting_budget') return t('work.fact.waitingBudget')
   if (focus.status === 'needs_user') return t('work.placeholder.needsUser')
   if (focus.status === 'ready') return t('work.placeholder.ready')
   if (focus.status === 'failed') return t('work.placeholder.failed')
@@ -248,6 +258,7 @@ export function ticketFacts(ticket: WorkTicket, now: number, t: Copy = english):
     if (elapsed) lines.push(t('work.fact.elapsed', { time: elapsed }))
     lines.push(t('work.fact.wall'))
   }
+  if (ticket.status === 'waiting_budget') lines.push(t('work.fact.waitingBudget'))
   if (ticket.status === 'needs_user') lines.push(t('work.fact.needsUser'))
   if (ticket.status === 'ready') lines.push(t('work.fact.ready'))
   if (ticket.status === 'delivered') lines.push(t('work.fact.delivered'))
@@ -313,7 +324,7 @@ export function formatElapsed(startedAt: string | null, now: number): string {
 
 function focusTicket(tickets: readonly WorkTicket[]): WorkTicket | null {
   const shown = cardsToShow(tickets)
-  const rank = ['needs_user', 'started', 'enqueued', 'accepted', 'ready', 'failed']
+  const rank = ['waiting_budget', 'needs_user', 'started', 'enqueued', 'accepted', 'ready', 'failed']
   for (const status of rank) {
     const found = shown.find(ticket => ticket.status === status)
     if (found) return found

@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert'
 import test from 'node:test'
 import { createMemoryCheckpoint } from './checkpoint.ts'
 import { createEventLogReader } from './reader.ts'
-import type { BoundedTransport, LiveTransport, TransportOutcome, TransportSink } from './transport.ts'
+import type { BoundedTransport, LiveTransport, TransportOutcome } from './transport.ts'
 import type { LogEvent } from './types.ts'
 import type { ResumeInfo } from './resume.ts'
 

@@ -1,3 +1,4 @@
+import { redactText } from './activity'
 import { Fragment, useState } from 'react'
 import { useI18n } from './locale'
 import { BriefingCard, WorkCard, WorkRefusal } from './WorkCard'
@@ -17,6 +18,9 @@ import { parseBotMail } from './bot-message'
 import { turnPieces } from './follow'
 import { MarkdownView } from './MarkdownView'
 import { ActivityGroup } from './ProcessRow'
+import { UserQuestionCard } from './UserQuestionCard'
+import { ToolApprovalCard, type ToolApprovalView } from './ToolApprovalCard'
+import type { UserQuestionWait } from './user-question'
 import type { RetryAttempt, Segment, TurnFailure } from './types'
 
 function clock(time: number | undefined, locale: string): string {
@@ -27,6 +31,7 @@ function clock(time: number | undefined, locale: string): string {
 }
 
 export function Transcript({
+  sessionId,
   segments,
   completed,
   failures,
@@ -42,7 +47,13 @@ export function Transcript({
   onOpenInbox,
   botLabel,
   chat = false,
+  cwd,
+  connectionPhase,
+  approvals = [],
+  questionWaits,
+  onCompose,
 }: {
+  sessionId?: string
   segments: Segment[]
   completed: Record<number, number>
   failures: Record<number, TurnFailure>
@@ -58,6 +69,11 @@ export function Transcript({
   onOpenInbox: () => void
   botLabel: (sessionId: string) => string
   chat?: boolean
+  cwd?: string
+  connectionPhase?: string
+  approvals?: ToolApprovalView[]
+  questionWaits?: Record<string, { remainingMs?: number; waitState?: UserQuestionWait }>
+  onCompose?: (text: string) => void
 }) {
   const blocks: Array<
     | { type: 'user'; segment: Segment & { kind: 'user' } }
@@ -88,8 +104,13 @@ export function Transcript({
     const turn = Number(key)
     if (!seen.has(turn)) blocks.push({ type: 'turn', turn, seconds: completed[turn], segments: [] })
   }
-  const shown = cardsToShow(tickets)
-  const byId = new Map(tickets.map(ticket => [ticket.id, ticket]))
+  const safeTickets = tickets.map(ticket => ({
+    ...ticket,
+    summary: redactText(ticket.summary),
+    events: ticket.events.map(event => ({ ...event, text: redactText(event.text) })),
+  }))
+  const shown = cardsToShow(safeTickets)
+  const byId = new Map(safeTickets.map(ticket => [ticket.id, ticket]))
   const anchorAt = new Map<string, string>()
   for (const block of blocks) {
     if (block.type !== 'turn') continue
@@ -117,7 +138,10 @@ export function Transcript({
           />
         ) : (
           <TurnBlock
-            key={`turn-${block.turn}-${block.segments[0]?.id ?? 'failed'}`}
+            sessionId={sessionId}
+            cwd={cwd}
+            connectionPhase={connectionPhase}
+            key={`${sessionId}:turn-${block.turn}`}
             block={block}
             index={index}
             blocks={blocks}
@@ -135,6 +159,10 @@ export function Transcript({
             onOpenSession={onOpenSession}
             onOpenFile={onOpenFile}
             chat={chat}
+            approvals={approvals}
+            questionWaits={questionWaits}
+            onCompose={onCompose}
+            trailingApprovals={index === blocks.length - 1}
           />
         ),
       )}
@@ -274,6 +302,7 @@ function TurnFailurePanel({
 }
 
 function TurnBlock({
+  sessionId,
   block,
   index,
   blocks,
@@ -291,7 +320,14 @@ function TurnBlock({
   onOpenSession,
   onOpenFile,
   chat = false,
+  cwd,
+  connectionPhase,
+  approvals = [],
+  questionWaits,
+  onCompose,
+  trailingApprovals = false,
 }: {
+  sessionId?: string
   block: { type: 'turn'; turn: number; seconds?: number; segments: Segment[] }
   index: number
   blocks: Array<{ type: string; segment?: Segment & { kind: 'user' }; turn?: number }>
@@ -309,9 +345,34 @@ function TurnBlock({
   onOpenSession: (sessionId: string) => void
   onOpenFile: (path: string, line?: number) => void
   chat?: boolean
+  cwd?: string
+  connectionPhase?: string
+  approvals?: ToolApprovalView[]
+  questionWaits?: Record<string, { remainingMs?: number; waitState?: UserQuestionWait }>
+  onCompose?: (text: string) => void
+  trailingApprovals?: boolean
 }) {
   const { t } = useI18n()
   const pieces = turnPieces(block.segments)
+  const seenApprovals = new Set<string>()
+  const waitOf = (callId: string) => questionWaits?.[callId] ?? questionWaits?.[`${sessionId}:${callId}`]
+  const approvalsFor = (callIds: string[]) =>
+    approvals.filter(item => {
+      if (seenApprovals.has(item.requestId)) return false
+      if (item.callId && callIds.includes(item.callId)) {
+        seenApprovals.add(item.requestId)
+        return true
+      }
+      return false
+    })
+  const leftoverApprovals = () =>
+    trailingApprovals
+      ? approvals.filter(item => {
+          if (seenApprovals.has(item.requestId)) return false
+          seenApprovals.add(item.requestId)
+          return true
+        })
+      : []
   const hasActivity = pieces.some(piece => piece.type === 'activity')
   const stopped =
     chat && turnEnds[block.turn] === 'aborted' && !failures[block.turn] && !(block.turn === latestTurn && background)
@@ -321,9 +382,30 @@ function TurnBlock({
         {pieces.map(piece => {
           if (piece.type === 'text') {
             return (
-              <div key={piece.segment.id} className={piece.segment.streaming ? 'assistant streaming' : 'assistant'}>
+              <div
+                data-segment={piece.segment.id}
+                key={piece.segment.id}
+                className={piece.segment.streaming ? 'assistant streaming' : 'assistant'}
+              >
                 <MarkdownView text={piece.segment.text} streaming={piece.segment.streaming} onOpenFile={onOpenFile} />
               </div>
+            )
+          }
+          if (piece.type === 'question') {
+            const wait = waitOf(piece.segment.callId)
+            return (
+              <Fragment key={piece.segment.id}>
+                <UserQuestionCard
+                  segment={piece.segment}
+                  sessionId={sessionId}
+                  onCompose={onCompose}
+                  remainingMs={wait?.remainingMs}
+                  waitState={wait?.waitState}
+                />
+                {approvalsFor([piece.segment.callId]).map(item => (
+                  <ToolApprovalCard key={item.requestId} approval={item} sessionId={sessionId} />
+                ))}
+              </Fragment>
             )
           }
           const tools = piece.segments.filter(
@@ -331,11 +413,19 @@ function TurnBlock({
           )
           return (
             <Fragment key={piece.id}>
-              <ActivityGroup segments={piece.segments} quiet={chat} />
+              <ActivityGroup
+                segments={piece.segments}
+                cwd={cwd}
+                tickets={[...byId.values()]}
+                connectionPhase={connectionPhase}
+              />
+              {approvalsFor(tools.map(segment => segment.callId)).map(item => (
+                <ToolApprovalCard key={item.requestId} approval={item} sessionId={sessionId} />
+              ))}
               {tools
                 .filter(segment => isBudgetRefusal(segment))
                 .map(segment => (
-                  <WorkRefusal key={segment.id} text={budgetRefusalText(segment.result, t)} />
+                  <WorkRefusal key={segment.id} text={redactText(budgetRefusalText(segment.result, t))} />
                 ))}
               {tools.flatMap(segment => {
                 const id = dispatchTicketId(segment)
@@ -348,6 +438,9 @@ function TurnBlock({
             </Fragment>
           )
         })}
+        {leftoverApprovals().map(item => (
+          <ToolApprovalCard key={item.requestId} approval={item} sessionId={sessionId} />
+        ))}
         {stopped ? <p className="work-note">{t('bot.stopped')}</p> : null}
         <TurnFailurePanel
           seconds={block.seconds}

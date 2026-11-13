@@ -5,7 +5,15 @@ import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { setImmediate as tick } from 'node:timers/promises'
 import { defaultSessionCwd } from '../src/desk.ts'
-import { DEFAULT_WORK_BUDGET, normalizeWorkBudget, parseWorkBudget, resolveWorkBudget } from '../src/work-admit.ts'
+import {
+  DEFAULT_WORK_BUDGET,
+  WORK_SLOT_MAX,
+  WORK_QUEUE_MAX,
+  effectiveWorkLimits,
+  normalizeWorkBudget,
+  parseWorkBudget,
+  resolveWorkBudget,
+} from '../src/work-admit.ts'
 
 test('default main budget is 80 steps / 30 minutes on both caps', () => {
   assert.equal(DEFAULT_WORK_BUDGET.chatMaxSteps, 80)
@@ -35,6 +43,12 @@ test('work budget text: key=value, JSON, shorthands, durations, and bad keys', (
   assert.deepEqual(parseWorkBudget('').budget, {})
   assert.deepEqual(parseWorkBudget('{not json').budget, {})
   assert.deepEqual(normalizeWorkBudget({ wall: '2h' }).budget.chatWallMs, 7_200_000)
+  assert.deepEqual(parseWorkBudget('perBot=2,global=4,perBotQueue=8,globalQueue=16').budget, {
+    perBot: 2,
+    global: 4,
+    perBotQueue: 8,
+    globalQueue: 16,
+  })
 })
 
 test('config.work overrides the environment, which overrides the defaults', () => {
@@ -185,4 +199,102 @@ test('plugin: the wall timer cancels with { kind: hook, reason: main-budget:wall
     notify: true,
   })
   assert.match(text, /time limit \(1800s of 1800s\)/)
+})
+
+test('slot and queue defaults are perBot=2, global=4, perBotQueue=8, globalQueue=16', () => {
+  const resolved = resolveWorkBudget(undefined, undefined)
+  assert.equal(resolved.budget.perBot, 2)
+  assert.equal(resolved.budget.global, 4)
+  assert.equal(resolved.budget.perBotQueue, 8)
+  assert.equal(resolved.budget.globalQueue, 16)
+  assert.deepEqual(effectiveWorkLimits(resolved.budget), {
+    perBot: 2,
+    global: 4,
+    perBotQueue: 8,
+    globalQueue: 16,
+  })
+})
+
+test('custom perBot=1 and perBot=3 plus a global cap parse from env, JSON, and config.work', () => {
+  const one = parseWorkBudget('perBot=1,global=4,perBotQueue=2,globalQueue=8')
+  assert.deepEqual(one.budget, { perBot: 1, global: 4, perBotQueue: 2, globalQueue: 8 })
+  assert.deepEqual(one.ignored, [])
+  assert.deepEqual(one.clamped, [])
+
+  const three = parseWorkBudget('{"perBot":3,"global":5,"perBotQueue":10,"globalQueue":12}')
+  assert.deepEqual(three.budget, { perBot: 3, global: 5, perBotQueue: 10, globalQueue: 12 })
+
+  const fromEnv = resolveWorkBudget({}, 'perBot=3,global=6,perBotQueue=9,globalQueue=18')
+  assert.equal(fromEnv.budget.perBot, 3)
+  assert.equal(fromEnv.budget.global, 6)
+  assert.equal(fromEnv.budget.perBotQueue, 9)
+  assert.equal(fromEnv.budget.globalQueue, 18)
+  const fromConfig = resolveWorkBudget({ perBot: 1, global: 3 }, 'perBot=3,global=6')
+  assert.equal(fromConfig.budget.perBot, 1)
+  assert.equal(fromConfig.budget.global, 3)
+})
+
+test('illegal slot values are ignored so the default stays, never Infinity', () => {
+  const bad = parseWorkBudget('perBot=0,global=-1,perBotQueue=1.5,globalQueue=abc,perBot=Infinity')
+  // last perBot=Infinity overwrites the 0 entry in the raw object, both ignored
+  assert.equal(Object.keys(bad.budget).length, 0)
+  assert.ok(bad.ignored.includes('perBot'))
+  assert.ok(bad.ignored.includes('global'))
+  assert.ok(bad.ignored.includes('perBotQueue'))
+  assert.ok(bad.ignored.includes('globalQueue'))
+  const resolved = resolveWorkBudget({ perBot: 0, global: Number.POSITIVE_INFINITY, perBotQueue: 2.9 }, 'perBot=-4')
+  assert.equal(resolved.budget.perBot, DEFAULT_WORK_BUDGET.perBot)
+  assert.equal(resolved.budget.global, DEFAULT_WORK_BUDGET.global)
+  assert.equal(resolved.budget.perBotQueue, DEFAULT_WORK_BUDGET.perBotQueue)
+  assert.ok(Number.isFinite(resolved.budget.perBot) && resolved.budget.perBot === 2)
+  const empty = parseWorkBudget('perBot=,global=')
+  assert.deepEqual(empty.budget, {})
+  assert.ok(empty.ignored.includes('perBot'))
+})
+
+test('oversized slot and queue values clamp to the documented maxima', () => {
+  const parsed = parseWorkBudget(
+    `perBot=${WORK_SLOT_MAX + 1},global=1000,perBotQueue=${WORK_QUEUE_MAX + 8},globalQueue=9999`,
+  )
+  assert.equal(parsed.budget.perBot, WORK_SLOT_MAX)
+  assert.equal(parsed.budget.global, WORK_SLOT_MAX)
+  assert.equal(parsed.budget.perBotQueue, WORK_QUEUE_MAX)
+  assert.equal(parsed.budget.globalQueue, WORK_QUEUE_MAX)
+  assert.deepEqual(parsed.clamped.sort(), ['global', 'globalQueue', 'perBot', 'perBotQueue'])
+  assert.deepEqual(parsed.ignored, [])
+})
+
+test('when perBot is greater than global, the effective cap is the minimum', () => {
+  const resolved = resolveWorkBudget({ perBot: 8, global: 3, perBotQueue: 20, globalQueue: 6 }, '')
+  assert.equal(resolved.budget.perBot, 8)
+  assert.equal(resolved.budget.global, 3)
+  assert.deepEqual(effectiveWorkLimits(resolved.budget), {
+    perBot: 3,
+    global: 3,
+    perBotQueue: 6,
+    globalQueue: 6,
+  })
+})
+
+test('plugin apply logs the resolved slot caps from config.work', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sf-budget-slots-'))
+  const host = fakeHost(dir)
+  const previous = process.env.DSH_BOT_WORK_BUDGET
+  process.env.DSH_BOT_WORK_BUDGET = 'perBot=3,global=1,perBotQueue=8,globalQueue=4'
+  try {
+    const plugin = await import('../src/index.ts')
+    plugin.apply(host.ctx, { dataDir: join(dir, 'data'), timerTickMs: 3_600_000, work: { perBot: 5 } })
+  } finally {
+    if (previous == null) delete process.env.DSH_BOT_WORK_BUDGET
+    else process.env.DSH_BOT_WORK_BUDGET = previous
+  }
+  const info = host.logs.find(line => line.level === 'info' && String(line.args[0]).includes('slots perBot='))
+  assert.ok(info, 'startup log includes slot caps')
+  // config.work perBot=5 wins over env perBot=3; global=1 from env; effective perBot=min(5,1)=1
+  assert.equal(info!.args[5], 1)
+  assert.equal(info!.args[6], 1)
+  assert.equal(info!.args[7], 4)
+  assert.equal(info!.args[8], 4)
+  const reduced = host.logs.find(line => line.level === 'info' && String(line.args[0]).includes('per-bot cap reduced'))
+  assert.ok(reduced, 'logs when perBot is reduced to the global cap')
 })

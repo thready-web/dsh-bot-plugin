@@ -8,9 +8,18 @@ import { createTriggers } from './triggers.ts'
 import { followupDurable, liveAgent, logHasMessage, removePending } from './inbox.ts'
 import { createLogSource } from './log/source.ts'
 import { toolError } from './errors.ts'
+import { createQuestionAnswerer, publishQuestionAnswerer, questionAnswererFor } from './questions.ts'
+import { createApprovalAnswerer, publishApprovalAnswerer, approvalAnswererFor } from './approvals.ts'
+import { createAuthorizationController, publishAuthorization, authorizationFor } from './authorization.ts'
 import { publishRuntime, publishWorkRuntime, runtimeFor } from './runtime-registry.ts'
 import { type HostContext, type PluginHost } from './host.ts'
-import { childCreateOptions, resolveWorkBudget, WORK_BUDGET_ENV, type WorkBudget } from './work-admit.ts'
+import {
+  childCreateOptions,
+  effectiveWorkLimits,
+  resolveWorkBudget,
+  WORK_BUDGET_ENV,
+  type WorkBudget,
+} from './work-admit.ts'
 import { ensureWorkerFilePreset, WORKER_FILE_PRESET, workerFileSetup } from './work-child.ts'
 import { BUDGET_NOTICE_PREFIX, createWorkRuntime, type MainBudgetTrip } from './work-worker.ts'
 import { workToolDefinitions } from './work-tools.ts'
@@ -36,6 +45,7 @@ export const inject = [
   'agentPresets',
   'sessionPersistence',
   'sessionQuery',
+  'userQuestions',
 ]
 
 /**
@@ -241,12 +251,19 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
     // step that already ended. A refused step ends the turn as `blocked`.
     ctx.on(
       'agent/pre-step',
-      (
-        payload: { agent?: { id?: string }; turn?: number; step?: number; messages?: unknown[] } | null,
+      async (
+        payload: {
+          agent?: { id?: string }
+          turn?: number
+          step?: number
+          messages?: unknown[]
+          signal?: AbortSignal
+        } | null,
         next: () => Promise<unknown>,
       ) => {
         const sessionId = payload?.agent?.id
         if (typeof sessionId !== 'string' || sessionId === '') return next()
+        if (!(await gate.waitForBudget(sessionId, payload?.signal))) return { kind: 'reject' }
         const decision = gate.gateStep(sessionId, {
           turn: payload?.turn,
           step: payload?.step,
@@ -267,6 +284,27 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
     triggers?.tick().catch(() => {})
     work?.tick().catch(() => {})
   }
+
+  const questions = createQuestionAnswerer()
+  publishQuestionAnswerer(store.root, questions)
+  ctx.effect(() => questions.listen(ctx))
+  ctx.effect(() => () => {
+    if (questionAnswererFor(store.root) === questions) publishQuestionAnswerer(store.root, null)
+  })
+
+  const approvals = createApprovalAnswerer()
+  publishApprovalAnswerer(store.root, approvals)
+  ctx.effect(() => approvals.listen(ctx))
+  ctx.effect(() => () => {
+    if (approvalAnswererFor(store.root) === approvals) publishApprovalAnswerer(store.root, null)
+  })
+
+  const authorization = createAuthorizationController()
+  publishAuthorization(store.root, authorization)
+  ctx.effect(() => authorization.bind(ctx))
+  ctx.effect(() => () => {
+    if (authorizationFor(store.root) === authorization) publishAuthorization(store.root, null)
+  })
 
   ctx.logger?.info?.(
     'session-foundations: ready dir=%s bindings=%s promoted=%s',
@@ -332,14 +370,32 @@ function startWork(
   if (resolved.ignored.length > 0) {
     ctx.logger?.warn?.('session-foundations: ignored work budget keys %s', resolved.ignored.join(','))
   }
+  if (resolved.clamped.length > 0) {
+    ctx.logger?.warn?.('session-foundations: clamped work budget keys %s', resolved.clamped.join(','))
+  }
+  const slots = effectiveWorkLimits(resolved.budget)
   ctx.logger?.info?.(
-    'session-foundations: main budget chat=%s steps/%sms main=%s steps/%sms',
+    'session-foundations: main budget chat=%s steps/%sms main=%s steps/%sms slots perBot=%s global=%s queue perBot=%s global=%s',
     resolved.budget.chatMaxSteps,
     resolved.budget.chatWallMs,
     resolved.budget.mainMaxSteps,
     resolved.budget.mainWallMs,
+    slots.perBot,
+    slots.global,
+    slots.perBotQueue,
+    slots.globalQueue,
   )
+  if (resolved.budget.perBot > resolved.budget.global || resolved.budget.perBotQueue > resolved.budget.globalQueue) {
+    ctx.logger?.info?.(
+      'session-foundations: per-bot cap reduced to the global cap (perBot=%s global=%s perBotQueue=%s globalQueue=%s)',
+      resolved.budget.perBot,
+      resolved.budget.global,
+      resolved.budget.perBotQueue,
+      resolved.budget.globalQueue,
+    )
+  }
   const work = createWorkRuntime(store, engine, {
+    resumePaused: true,
     budget: resolved.budget,
     log: (level, message) => {
       const sink = level === 'warn' ? (ctx.logger?.warn ?? ctx.logger?.info) : ctx.logger?.info
@@ -410,6 +466,7 @@ function startWork(
         return []
       }
     },
+    childPresent: sessionId => liveAgent(ctx, sessionId) != null,
   })
   publishWorkRuntime(store.root, work)
   ctx.effect(() => () => {

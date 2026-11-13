@@ -1,0 +1,26 @@
+export const image = {
+  en: {
+    'image.untitled': 'Image',
+    'image.open': 'Preview image: {name}',
+    'image.enlarge': 'Click to enlarge',
+    'image.fit': 'Fit to screen',
+    'image.original': 'Original size',
+    'image.close': 'Close image preview',
+    'image.scroll': 'Original image. Scroll to inspect details.',
+    'image.openLink': 'Open image link',
+    'image.unavailable': 'Image unavailable; the file may have been removed.',
+    'image.retry': 'Retry image',
+  },
+  zh: {
+    'image.untitled': '图片',
+    'image.open': '预览图片：{name}',
+    'image.enlarge': '点击放大',
+    'image.fit': '适应屏幕',
+    'image.original': '原始大小',
+    'image.close': '关闭图片预览',
+    'image.scroll': '原始图片，可滚动查看细节。',
+    'image.openLink': '打开图片链接',
+    'image.unavailable': '图片不可用，文件可能已被清理。',
+    'image.retry': '重试图片',
+  },
+} as const

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { explain, type Copy } from './i18n'
+import { explain, type Copy } from './i18n/index.ts'
 import { useI18n } from './locale'
 import type { HealthBody, ThreadState, UsageBody } from './types'
 

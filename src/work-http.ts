@@ -148,6 +148,7 @@ export function openPageLive(
     workStamp: () => string
     workBoard: () => unknown
     loadDesk: () => Promise<unknown>
+    interactions?: () => unknown
     deskIntervalMs?: number
     intervalMs?: number
   },
@@ -174,10 +175,30 @@ export function openPageLive(
   const intervalMs = source.intervalMs ?? 1000
   /** @type {ReturnType<typeof setInterval> | null} */
   let timer: ReturnType<typeof setInterval> | null = null
+  let interactionTimer: ReturnType<typeof setInterval> | null = null
+  let lastInteractions = ''
+  let interactionFailed = false
+  const pumpInteractions = () => {
+    if (stopped || !source.interactions) return
+    try {
+      const text = JSON.stringify(source.interactions())
+      if (text === lastInteractions && !interactionFailed) return
+      interactionFailed = false
+      lastInteractions = text
+      res.write(`event: interactions\ndata: ${text}\n\n`)
+    } catch {
+      // Downgrade the client to REST fallback without closing desk/work updates.
+      if (!interactionFailed) {
+        interactionFailed = true
+        res.write('event: interaction-error\ndata: {}\n\n')
+      }
+    }
+  }
   const stop = () => {
     if (stopped) return
     stopped = true
     if (timer) clearInterval(timer)
+    if (interactionTimer) clearInterval(interactionTimer)
     if (!res.writableEnded) res.end()
   }
   const pump = async () => {
@@ -223,6 +244,11 @@ export function openPageLive(
     } finally {
       busy = false
     }
+  }
+  pumpInteractions()
+  if (source.interactions) {
+    interactionTimer = setInterval(pumpInteractions, intervalMs)
+    interactionTimer.unref?.()
   }
   void pump()
   timer = setInterval(() => {

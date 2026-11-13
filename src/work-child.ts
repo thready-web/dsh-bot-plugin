@@ -1,9 +1,12 @@
 /**
  * File tools for a worker. Plugin-created agents do not inherit the web preset,
  * so their request header otherwise lists only host tools.
- * This preset is tool-fs only: read, write, and edit. It does not add bash,
- * and it does not change the sandbox mode or add writable roots.
- * The session cwd copied at create remains the workspace-write boundary.
+ * This preset mounts official file tools and official command tools
+ * (`@deepseek-ai/dsh-tool-bash`, `@deepseek-ai/dsh-tool-jobs`). It does not
+ * change the host sandbox mode, add writable roots, or mount the web preset
+ * (no web_fetch, subagent, or other profile tools). The session cwd copied
+ * at create remains the workspace-write boundary; bash uses the already
+ * composed host bash-sandbox and approval policy.
  */
 
 export const WORKER_FILE_PRESET = 'foundations-files'
@@ -41,6 +44,8 @@ export function ensureWorkerFilePreset(ctx: import('./host.ts').HostContext) {
           name: '@deepseek-ai/dsh-tool-fs',
           config: { applyPatch: false, readImage: false },
         },
+        { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash' },
+        { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
       ],
     })
     .then(() => WORKER_FILE_PRESET)

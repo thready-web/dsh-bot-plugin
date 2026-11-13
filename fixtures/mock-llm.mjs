@@ -82,6 +82,20 @@ async function* generate(options) {
     yield { type: 'finish', reason: { kind: 'tool-calls' } }
     return
   }
+  // Deterministic quota-loop fixture: first request consumes 2k and reports
+  // progress; after the gate resumes the next request reports the result.
+  const quotaHistory = JSON.stringify(messages)
+  if (!directed && options.purpose == null && quotaHistory.includes('FOUNDATIONS_QUOTA_LOOP') && !quotaHistory.includes('quota-finished')) {
+    const first = !quotaHistory.includes('quota-progress')
+    const args = JSON.stringify({ kind: first ? 'progress' : 'result', text: first ? 'quota-progress' : 'quota-finished' })
+    const id = `call_mock_quota_${Date.now()}`
+    yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+    yield { type: 'tool-call-delta', index: 0, id, name: 'foundations_report', argumentsDelta: args }
+    yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name: 'foundations_report', arguments: args } }
+    yield { type: 'usage', usage: { inputTokens: first ? 1992 : 8, outputTokens: 8, totalTokens: first ? 2000 : 16 } }
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+    return
+  }
   const briefingArgs = !directed && options.purpose == null && briefingIsLatest(messages)
     ? briefingReport(plainUserText(messages))
     : null
@@ -118,7 +132,8 @@ async function* generate(options) {
   )
   if (directed) {
     const match = /^FOUNDATIONS_TOOL\s+(\S+)\s+(\{[\s\S]*\})\s*$/.exec(text.trim())
-    const name = match?.[1]?.startsWith('foundations_') ? match[1] : `foundations_${match?.[1] ?? 'recall'}`
+    // Explicit native tools used by the activity API regression; all other directives keep the foundations prefix.
+    const name = ['bash', 'todo_write'].includes(match?.[1]) || match?.[1]?.startsWith('foundations_') ? match[1] : `foundations_${match?.[1] ?? 'recall'}`
     const args = match?.[2] ?? '{}'
     const id = `call_mock_${Date.now()}`
     yield { type: 'block-start', index: 0, blockType: 'tool-call' }
@@ -191,7 +206,7 @@ function nextHostTool(messages) {
     }
   })
   if (index < 0) return null
-  const lines = [...text.matchAll(/^FOUNDATIONS_HOST_TOOL\s+(write|edit)\s+(\{[\s\S]*?\})\s*$/gm)]
+  const lines = [...text.matchAll(/^FOUNDATIONS_HOST_TOOL\s+(write|edit|bash)\s+(\{[\s\S]*?\})\s*$/gm)]
   if (lines.length === 0) return null
   const after = messages.slice(index + 1)
   const done = after.filter(message => message?.role === 'tool').length

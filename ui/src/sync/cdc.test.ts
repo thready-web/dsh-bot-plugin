@@ -21,7 +21,7 @@ async function chunk(fromSeq: number, toSeq: number, events: LogEvent[]) {
 
 test('a 6-wide window starts that many requests and still delivers in seq order', async () => {
   const events = Array.from({ length: 12 }, (_, seq) => ev(seq))
-  const parts = []
+  const parts: Awaited<ReturnType<typeof chunk>>[] = []
   for (let i = 0; i < 12; i += 2) parts.push(await chunk(i, i + 1, events))
   const started: number[] = []
   const inflightMax = { n: 0, max: 0 }
@@ -150,7 +150,7 @@ test('AbortSignal cancels in-flight chunk fetches', async () => {
       )
     }
     started += 1
-    return await new Promise<Response>((resolve, reject) => {
+    return await new Promise<Response>((_resolve, reject) => {
       const signal = init?.signal
       if (signal?.aborted) {
         aborted += 1

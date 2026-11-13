@@ -184,6 +184,15 @@ export async function pushInput(
   const attempt = book.attempt(input.attempt_id)
   const ticket = book.ticket(input.ticket_id)
   if (!attempt?.child_session_id || !ticket) return { ok: false, status: 'pending' }
+  if (
+    input.kind !== 'cancel_note' &&
+    (['failed', 'cancelled', 'delivered'].includes(ticket.status) ||
+      ticket.active_attempt_id !== input.attempt_id ||
+      ticket.briefing_revision !== input.briefing_revision)
+  ) {
+    book.markInputFlush(input.id, 'dead', deps.pid, 'ticket-finished-or-superseded', null, false)
+    return { ok: false, status: 'dead' }
+  }
   let budget = { wallMs: 600_000, maxTokens: 400_000 }
   try {
     budget = { ...budget, ...JSON.parse(ticket.budget_json) }
