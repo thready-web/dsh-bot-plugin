@@ -1508,9 +1508,6 @@ button.chip {
   margin: 2px 0 8px;
 }
 .activity-group .official-leading svg:not(.chevron) {
-  color: rgb(34, 197, 94);
-}
-.activity-group[data-state="running"] .official-leading svg:not(.chevron) {
   color: var(--tertiary);
 }
 .activity-body {
