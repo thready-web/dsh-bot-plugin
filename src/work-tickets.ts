@@ -751,15 +751,16 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
   }
 
   /**
-   * Add granted runtime or tokens, capped by the host ceiling, and close the request.
+   * Add granted runtime or tokens and close the request when the new totals
+   * exceed current usage. There is no cumulative ceiling and no grant-count cap.
    * @param {string} ticketId
    * @param {{ wallMs?: number, maxTokens?: number }} add
-   * @param {{ wallMs: number, maxTokens: number }} ceilings
+   * @param {{ wallMs: number, maxTokens: number }} [baseline]
    */
   function extendBudget(
     ticketId: string,
     add: { wallMs?: number; maxTokens?: number },
-    ceilings: { wallMs: number; maxTokens: number },
+    baseline?: { wallMs: number; maxTokens: number },
   ) {
     const ticket = row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
     if (!ticket) return { error: 'NOT_FOUND', message: 'No such ticket.' }
@@ -767,26 +768,17 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
       return { error: 'VALIDATION', message: 'This ticket has finished and cannot be granted more budget.' }
     }
     const budget = budgetObject(ticket)
-    const beforeWall = Number(budget.wallMs) || ceilings.wallMs
-    const beforeTokens = Number(budget.maxTokens) || ceilings.maxTokens
+    const beforeWall = Number(budget.wallMs) || baseline?.wallMs || 0
+    const beforeTokens = Number(budget.maxTokens) || baseline?.maxTokens || 0
     const wallAdd = Number(add.wallMs)
     const tokenAdd = Number(add.maxTokens)
-    const wallMs =
-      Number.isFinite(wallAdd) && wallAdd > 0 ? Math.min(ceilings.wallMs, beforeWall + Math.floor(wallAdd)) : beforeWall
-    const maxTokens =
-      Number.isFinite(tokenAdd) && tokenAdd > 0
-        ? Math.min(ceilings.maxTokens, beforeTokens + Math.floor(tokenAdd))
-        : beforeTokens
+    const wallMs = Number.isFinite(wallAdd) && wallAdd > 0 ? beforeWall + Math.floor(wallAdd) : beforeWall
+    const maxTokens = Number.isFinite(tokenAdd) && tokenAdd > 0 ? beforeTokens + Math.floor(tokenAdd) : beforeTokens
     if (wallMs === beforeWall && maxTokens === beforeTokens) {
-      return { error: 'VALIDATION', message: 'Nothing more can be granted. The host ceiling is already used.' }
+      return { error: 'VALIDATION', message: 'Pass wallMs or maxTokens to add.' }
     }
     const quota = budget.quota
-    const enough =
-      !quota?.waiting ||
-      (maxTokens > quota.tokens &&
-        wallMs > quota.activeMs &&
-        quota.tokens < ceilings.maxTokens &&
-        quota.activeMs < ceilings.wallMs)
+    const enough = !quota?.waiting || (maxTokens > quota.tokens && wallMs > quota.activeMs)
     const next = {
       ...budget,
       wallMs,

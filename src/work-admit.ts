@@ -42,8 +42,10 @@ export const DEFAULT_WORK_BUDGET: WorkBudget = Object.freeze({
   chatWallMs: 30 * 60 * 1000,
   holdMs: 15_000,
   workerMaxSteps: 8,
-  workerWallMs: 10 * 60 * 1000,
-  workerMaxTokens: 400_000,
+  /** One budget slice. A grant adds another slice; there is no cumulative ceiling. */
+  workerWallMs: 30 * 60 * 1000,
+  /** One budget slice. A grant adds another slice; there is no cumulative ceiling. */
+  workerMaxTokens: 1_000_000,
   perBot: 2,
   global: 4,
   perBotQueue: 8,
@@ -277,36 +279,32 @@ export function budgetTrip(input: {
 }
 
 /**
- * Positive integer inside an inclusive range.
+ * Positive integer at or above `min`. A non-finite value is omitted.
  * @param {unknown} value
  * @param {number} min
- * @param {number} max
  */
-function clampInt(value: unknown, min: number, max: number) {
+function clampAtLeast(value: unknown, min: number) {
   const number = Number(value)
   if (!Number.isFinite(number)) return null
-  return Math.max(min, Math.min(max, Math.floor(number)))
+  return Math.max(min, Math.floor(number))
 }
 
 /**
  * Ticket budget chosen when the main bot dispatches.
- * An explicit estimate is kept inside the host ceiling. An omitted field is
- * derived from the briefing length so every ticket gets its own numbers.
- * @param {string} briefing
+ * An omitted field is one standard slice. An explicit estimate is kept, with a
+ * floor of 1000. Later grants add on top and are not capped by this slice.
+ * @param {string} _briefing
  * @param {{ wallMs?: number, maxTokens?: number } | null | undefined} suggestion
  * @param {typeof DEFAULT_WORK_BUDGET} defaults
  */
 export function estimateWorkerBudget(
-  briefing: string,
+  _briefing: string,
   suggestion: { wallMs?: number; maxTokens?: number } | null | undefined,
   defaults: typeof DEFAULT_WORK_BUDGET = DEFAULT_WORK_BUDGET,
 ) {
-  const chars = typeof briefing === 'string' ? briefing.length : 0
-  const guessedWall = Math.min(defaults.workerWallMs, 180_000 + chars * 100)
-  const guessedTokens = Math.min(defaults.workerMaxTokens, 24_000 + chars * 8)
   return {
-    wallMs: clampInt(suggestion?.wallMs, 1000, defaults.workerWallMs) ?? guessedWall,
-    maxTokens: clampInt(suggestion?.maxTokens, 1000, defaults.workerMaxTokens) ?? guessedTokens,
+    wallMs: clampAtLeast(suggestion?.wallMs, 1000) ?? defaults.workerWallMs,
+    maxTokens: clampAtLeast(suggestion?.maxTokens, 1000) ?? defaults.workerMaxTokens,
     perBot: defaults.perBot,
     global: defaults.global,
     perBotQueue: defaults.perBotQueue,

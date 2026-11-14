@@ -501,7 +501,7 @@ test('concurrent promoteQueued does not start the same reserved ticket twice', a
   ctx.close()
 })
 
-test('grant-deny returns without waiting for a slow createChild of the next ticket', async () => {
+test('a budget refusal does not fail the ticket or wait for the next createChild', async () => {
   const ctx = boot({ perBot: 1, global: 2, perBotQueue: 2, globalQueue: 2 })
   let releaseNext: (value?: unknown) => void = () => {}
   const blocked = new Promise(resolve => {
@@ -532,10 +532,11 @@ test('grant-deny returns without waiting for a slow createChild of the next tick
     'grant-deny waited for the next createChild',
   )
   assert.equal(denied.ok, true)
-  assert.equal(denied.denied, true)
+  assert.equal(denied.denied, false)
+  assert.equal(denied.refusalIgnored, true)
   releaseNext()
   await work.promoteQueued()
-  assert.equal(work.detail(first.ticketId)!.ticket.status, 'failed')
-  assert.equal(work.detail(second.ticketId!)!.ticket.status, 'enqueued')
+  assert.equal(work.detail(first.ticketId)!.ticket.status, 'enqueued')
+  assert.equal(work.detail(second.ticketId!)!.ticket.status, 'accepted')
   ctx.close()
 })

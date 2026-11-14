@@ -1,5 +1,6 @@
 import { durableFollowup } from './work-durable.ts'
 import { sha256 } from './fs-safe.ts'
+import { DEFAULT_WORK_BUDGET } from './work-admit.ts'
 
 /**
  * Child inputs and main-session wakes share one durability algorithm.
@@ -193,7 +194,7 @@ export async function pushInput(
     book.markInputFlush(input.id, 'dead', deps.pid, 'ticket-finished-or-superseded', null, false)
     return { ok: false, status: 'dead' }
   }
-  let budget = { wallMs: 600_000, maxTokens: 400_000 }
+  let budget = { wallMs: DEFAULT_WORK_BUDGET.workerWallMs, maxTokens: DEFAULT_WORK_BUDGET.workerMaxTokens }
   try {
     budget = { ...budget, ...JSON.parse(ticket.budget_json) }
   } catch {

@@ -522,7 +522,7 @@ test('main budget refuses the next step at pre-step, and the wall timer cancels 
   assert.equal(ctx.world.cancels.length, cancels)
   assert.equal(ctx.work.gateStep(job.childSessionId, { turn: 1, step: 31 }).kind, 'enter')
   assert.notEqual(ctx.work.detail(job.ticketId)!.ticket.status, 'failed')
-  assert.equal(ctx.scheduled()!.ms, 600_000)
+  assert.equal(ctx.scheduled()!.ms, DEFAULT_WORK_BUDGET.workerWallMs)
   ctx.scheduled()!.fn()
   assert.equal(ctx.world.cancels.length, cancels)
   assert.equal(JSON.parse(ctx.work.detail(job.ticketId)!.ticket.budget_json).quota.waiting, true)
@@ -625,7 +625,7 @@ test('an interrupt hold blocks ticket notices until the next user message or the
   ctx.close()
 })
 
-test('worker budget follows the briefing estimate and clamps an explicit one', async () => {
+test('worker budget uses one standard slice unless the dispatch names its own', async () => {
   const ctx = boot()
   const omitted = await dispatched(ctx, 'take your time', 'estimate')
   const expected = estimateWorkerBudget('take your time', null)
@@ -650,8 +650,8 @@ test('worker budget follows the briefing estimate and clamps an explicit one', a
     budget: { wallMs: 9_999_999, maxTokens: 9_999_999 },
   })
   const capped = JSON.parse(ctx.work.detail(high.ticketId)!.ticket.budget_json)
-  assert.equal(capped.wallMs, DEFAULT_WORK_BUDGET.workerWallMs)
-  assert.equal(capped.maxTokens, DEFAULT_WORK_BUDGET.workerMaxTokens)
+  assert.equal(capped.wallMs, 9_999_999)
+  assert.equal(capped.maxTokens, 9_999_999)
   ctx.close()
 })
 
@@ -691,6 +691,7 @@ test('a granted limit asks the main bot for more instead of failing the ticket',
   const asked = ctx.work.detail(job.ticketId)!.events.at(-1)
   assert.match(asked.text, /\[foundations:extension\]/)
   assert.match(asked.text, /foundations_grant/)
+  assert.match(asked.text, /Do not take over the task/)
 
   ctx.work.observeSession(job.childSessionId, {
     type: 'assistant/message',
@@ -727,18 +728,24 @@ test('a granted limit asks the main bot for more instead of failing the ticket',
     { ticketId: job.ticketId, deny: true },
     { agent: { id: 'bot-a' } },
   )
-  assert.equal(denied.denied, true)
-  assert.equal(ctx.work.detail(job.ticketId)!.ticket.status, 'failed')
+  assert.equal(denied.ok, true)
+  assert.equal(denied.denied, false)
+  assert.equal(denied.refusalIgnored, true)
+  assert.equal(denied.maxTokens, 25_000 + DEFAULT_WORK_BUDGET.workerMaxTokens)
+  assert.equal(denied.wallMs, 180_000 + DEFAULT_WORK_BUDGET.workerWallMs)
+  assert.equal(ctx.work.detail(job.ticketId)!.ticket.status, 'started')
   assert.equal(
-    ctx.world.cancels.some(call => call.sessionId === job.childSessionId && call.keepInbox === false),
-    true,
+    ctx.world.cancels.some(call => call.sessionId === job.childSessionId),
+    false,
   )
-  const failure = ctx.work.detail(job.ticketId)!.events.find((event: any) => event!.kind === 'failure')
-  assert.match(failure.text, /refused more budget/)
+  assert.equal(
+    ctx.work.detail(job.ticketId)!.events.some((event: any) => event!.kind === 'failure'),
+    false,
+  )
   ctx.close()
 })
 
-test('token usage at the host ceiling pauses for an explicit decision', async () => {
+test('using up a token slice pauses for another grant, and the next grant adds a full slice', async () => {
   const ctx = boot()
   const job = await ctx.work.dispatch('bot-a', {
     briefing: 'take your time',
@@ -754,13 +761,19 @@ test('token usage at the host ceiling pauses for an explicit decision', async ()
   })
   const quota = JSON.parse(ctx.work.detail(job.ticketId)!.ticket.budget_json).quota
   assert.equal(quota.waiting, true)
-  assert.equal(quota.reason, 'host-ceiling')
+  assert.equal(quota.reason, 'tokens')
   assert.equal(ctx.world.cancels.length, 0)
-  assert.equal(
-    ctx.work.detail(job.ticketId)!.events.filter((event: any) => event.text?.includes('[foundations:extension]'))
-      .length,
-    1,
-  )
+  const asked = ctx.work.detail(job.ticketId)!.events.filter((event: any) => event.text?.includes('[foundations:extension]'))
+  assert.equal(asked.length, 1)
+  assert.match(asked[0].text, /no cumulative ceiling/)
+  assert.match(asked[0].text, /no limit on how many times/)
+  const granted = await ctx.work.grant('bot-a', {
+    ticketId: job.ticketId,
+    maxTokens: DEFAULT_WORK_BUDGET.workerMaxTokens,
+  })
+  assert.equal(granted.ok, true)
+  assert.equal(granted.maxTokens, DEFAULT_WORK_BUDGET.workerMaxTokens * 2)
+  assert.notEqual(ctx.work.detail(job.ticketId)!.ticket.status, 'failed')
   ctx.close()
 })
 
@@ -932,10 +945,11 @@ test('investigation: a full wall grant waits at the host ceiling without failing
       detail.events.some((e: any) => e.text?.includes('[foundations:extension]')),
       true,
     )
-    assert.equal(JSON.parse(detail.ticket.budget_json).quota.reason, 'host-ceiling')
+    assert.equal(JSON.parse(detail.ticket.budget_json).quota.reason, 'wall')
     assert.equal(ctx.world.cancels.length, 0)
     const granted = await ctx.work.grant('bot-a', { ticketId: job.ticketId, wallMs: 60_000 })
-    assert.equal(granted.code, 'VALIDATION')
+    assert.equal(granted.ok, true)
+    assert.equal(granted.wallMs, DEFAULT_WORK_BUDGET.workerWallMs + 60_000)
     for (let i = 0; i < 3; i++) await ctx.work.tick()
     assert.equal(ctx.work.detail(job.ticketId)!.attempts.length, 1)
     assert.equal(ctx.world.calls.length, 1)
@@ -967,7 +981,7 @@ test('investigation: one usage overshoot pauses at the host ceiling rather than 
       data: { usage: { totalTokens: DEFAULT_WORK_BUDGET.workerMaxTokens } },
     })
     const detail = ctx.work.detail(job.ticketId)!
-    assert.equal(JSON.parse(detail.ticket.budget_json).quota.reason, 'host-ceiling')
+    assert.equal(JSON.parse(detail.ticket.budget_json).quota.reason, 'tokens')
     assert.equal(
       detail.events.some((e: any) => e.text?.includes('[foundations:extension]')),
       true,
@@ -1181,7 +1195,9 @@ test('an extension and a later failure are not delivered as one contradictory gr
       seq: 11,
       data: { usage: { totalTokens: DEFAULT_WORK_BUDGET.workerMaxTokens } },
     })
-    await other.work.grant('bot-a', { ticketId: late.ticketId, deny: true })
+    const reported = await other.work.report(late.childSessionId, { kind: 'failure', text: 'stopped' })
+    assert.equal(reported.ok, true)
+    other.work.observeSession(late.childSessionId, other.world.endTurn(late.childSessionId, 1, 'completed'))
     assert.equal(other.work.detail(late.ticketId)!.ticket.status, 'failed')
     other.clock.ms += DEFAULT_WORK_BUDGET.starveMs + 1
     const delivered = await other.work.admit('bot-a')
@@ -1349,27 +1365,42 @@ test('budget pre-step suspension makes no next dispatch across lease/host-wall t
   }
 })
 
-test('waiting at an unextendable ceiling survives clock advances and deny terminates the suspended loop', async () => {
-  const ctx = boot({ workerWallMs: 1000 })
+test('repeated grants keep adding and a refusal does not cancel the worker', async () => {
+  const ctx = boot({ workerWallMs: 1000, workerMaxTokens: 1000 })
   try {
-    const job = await ctx.work.dispatch('bot-a', { briefing: 'hard wall', budget: { wallMs: 1000 } })
+    const job = await ctx.work.dispatch('bot-a', {
+      briefing: 'hard wall',
+      budget: { wallMs: 1000, maxTokens: 1000 },
+    })
     ctx.work.observeSession(job.childSessionId, ctx.world.seeUser(job.childSessionId, job.nativeMessageId, 1))
     ctx.work.observeSession(job.childSessionId, { type: 'turn/start', data: { turn: 1 } })
     ctx.clock.ms += 1000
     ctx.scheduled()!.fn()
     const blocked = ctx.work.waitForBudget(job.childSessionId)
     const grant = await ctx.work.grant('bot-a', { ticketId: job.ticketId, wallMs: 500000 })
-    assert.equal(grant.code, 'VALIDATION')
-    assert.equal(grant.waitingBudget, true)
-    assert.equal(grant.budgetReason, 'host-ceiling')
-    assert.equal(grant.hostWallHeadroomMs, 0)
+    assert.equal(grant.ok, true)
+    assert.equal(grant.wallMs, 501000)
+    assert.equal(grant.waitingBudget, false)
+    const again = await ctx.work.grant('bot-a', { ticketId: job.ticketId, wallMs: 500000, maxTokens: 500000 })
+    assert.equal(again.ok, true)
+    assert.equal(again.wallMs, 1_001_000)
+    assert.equal(again.maxTokens, 501000)
     ctx.clock.ms += 10000000
     await ctx.work.tick()
     assert.equal(ctx.work.detail(job.ticketId)!.ticket.status, 'started')
     const deny = await ctx.work.grant('bot-a', { ticketId: job.ticketId, deny: true })
-    assert.equal(deny.denied, true)
-    assert.equal(await blocked, false)
-    assert.equal(ctx.world.cancels.at(-1)?.reason, 'grant-denied')
+    assert.equal(deny.ok, true)
+    assert.equal(deny.denied, false)
+    assert.equal(deny.refusalIgnored, true)
+    assert.equal(deny.wallMs, 1_001_000 + 1000)
+    assert.equal(deny.maxTokens, 501000 + 1000)
+    assert.equal(ctx.work.detail(job.ticketId)!.ticket.status, 'started')
+    assert.equal(
+      ctx.world.cancels.some(call => call.reason === 'grant-denied'),
+      false,
+    )
+    assert.equal(await blocked, true)
+    await ctx.work.cancelTicket('bot-a', { ticketId: job.ticketId })
     assert.equal(ctx.scheduled(), null)
   } finally {
     ctx.close()
@@ -1464,12 +1495,13 @@ test('a finishing in-flight batch counts toward active host ceilings before the 
     const abort = new AbortController()
     const wait = ctx.work.waitForBudget(job.childSessionId, abort.signal)
     const grant = await ctx.work.grant('bot-a', { ticketId: job.ticketId, maxTokens: 10000, wallMs: 10000 })
-    assert.equal(grant.waitingBudget, true)
+    assert.equal(grant.waitingBudget, false)
     assert.equal(grant.activeElapsedMs, 3000)
-    assert.equal(grant.hostWallHeadroomMs, 0)
-    assert.equal(grant.budgetReason, 'host-ceiling')
+    assert.equal(grant.wallMs, 11000)
+    assert.equal(grant.maxTokens, 11000)
+    assert.equal(grant.budgetReason, null)
+    assert.equal(await wait, true)
     abort.abort()
-    assert.equal(await wait, false)
   } finally {
     ctx.close()
   }

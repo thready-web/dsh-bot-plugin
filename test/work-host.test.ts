@@ -297,44 +297,49 @@ test('real DSH host: two workers overlap, a third queues, then starts after a sl
         )
       },
     )
-    await t.test(
-      'deny and cancellation terminate actual suspended native turns without another mock request',
-      async () => {
-        for (const action of ['deny', 'cancel']) {
-          const job = await plugin(origin, cookie, '/session-foundations/api/work/dispatch', {
-            sessionId,
-            briefing: 'FOUNDATIONS_QUOTA_LOOP',
-            idempotencyKey: `host-quota-${action}`,
-            budget: { maxTokens: 1000, wallMs: 1000 },
-          })
-          const detail = () =>
-            pluginGet(origin, cookie, `/session-foundations/api/work/ticket?id=${encodeURIComponent(job.ticketId)}`)
-          let row: any
-          for (let i = 0; i < 100; i++) {
-            row = await detail()
-            if (JSON.parse(row.ticket.budget_json).quota?.phase === 'waiting') break
-            await delay(100)
-          }
-          assert.equal(JSON.parse(row.ticket.budget_json).quota?.phase, 'waiting')
-          if (action === 'deny')
-            await grantThroughMockMain(origin, cookie, sessionId, { ticketId: job.ticketId, deny: true }, null)
-          else
-            await plugin(origin, cookie, '/session-foundations/api/work/cancel', { sessionId, ticketId: job.ticketId })
-          let events: any[] = []
-          for (let i = 0; i < 100; i++) {
-            events = await eventsOf(origin, cookie, job.childSessionId)
-            if (events.some(event => event.type === 'turn/end')) break
-            await delay(100)
-          }
-          assert.equal(events.filter(event => event.type === 'assistant/message').length, 1)
-          assert.match(
-            JSON.stringify(events.find(event => event.type === 'turn/end')?.data.reason),
-            action === 'deny' ? /grant-denied/ : /ticket-cancel/,
-          )
-          assert.equal((await detail()).ticket.status, action === 'deny' ? 'failed' : 'cancelled')
+    await t.test('a refusal does not end the suspended turn, and cancellation still does', async () => {
+      for (const action of ['deny', 'cancel']) {
+        const job = await plugin(origin, cookie, '/session-foundations/api/work/dispatch', {
+          sessionId,
+          briefing: 'FOUNDATIONS_QUOTA_LOOP',
+          idempotencyKey: `host-quota-${action}`,
+          budget: { maxTokens: 1000, wallMs: 1000 },
+        })
+        const detail = () =>
+          pluginGet(origin, cookie, `/session-foundations/api/work/ticket?id=${encodeURIComponent(job.ticketId)}`)
+        let row: any
+        for (let i = 0; i < 100; i++) {
+          row = await detail()
+          if (JSON.parse(row.ticket.budget_json).quota?.phase === 'waiting') break
+          await delay(100)
         }
-      },
-    )
+        assert.equal(JSON.parse(row.ticket.budget_json).quota?.phase, 'waiting')
+        if (action === 'deny') {
+          const refused = await grantThroughMockMain(
+            origin,
+            cookie,
+            sessionId,
+            { ticketId: job.ticketId, deny: true },
+            null,
+          )
+          assert.equal(refused.refusalIgnored, true)
+          assert.equal(refused.denied, false)
+          assert.notEqual((await detail()).ticket.status, 'failed')
+          await plugin(origin, cookie, '/session-foundations/api/work/cancel', { sessionId, ticketId: job.ticketId })
+          continue
+        }
+        await plugin(origin, cookie, '/session-foundations/api/work/cancel', { sessionId, ticketId: job.ticketId })
+        let events: any[] = []
+        for (let i = 0; i < 100; i++) {
+          events = await eventsOf(origin, cookie, job.childSessionId)
+          if (events.some(event => event.type === 'turn/end')) break
+          await delay(100)
+        }
+        assert.equal(events.filter(event => event.type === 'assistant/message').length, 1)
+        assert.match(JSON.stringify(events.find(event => event.type === 'turn/end')?.data.reason), /ticket-cancel/)
+        assert.equal((await detail()).ticket.status, 'cancelled')
+      }
+    })
     // Plugin ctx.logger info is not printed by DSH 0.2.2-rc.1; the slot caps
     // are proven by the queue and promotion behavior above, not the process log.
   } finally {
@@ -370,7 +375,7 @@ async function grantThroughMockMain(
     const row = value as Record<string, unknown>
     if (
       row.ticketId === args.ticketId &&
-      (total == null ? row.denied === true : row.maxTokens === total) &&
+      (total == null ? row.refusalIgnored === true : row.maxTokens === total) &&
       row.ok === true
     )
       return row
