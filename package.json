@@ -1,6 +1,6 @@
 {
   "name": "@thready-web/dsh-bot-plugin",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "type": "module",
   "description": "DSH bot plugin: session persona, memory, work, hash routing, and the workbench. Pinned to @deepseek-ai/dsh 0.2.2-rc.1.",
   "license": "MIT",
