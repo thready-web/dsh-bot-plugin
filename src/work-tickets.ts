@@ -92,6 +92,8 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     attemptsOf,
     ownerIds,
     childIds,
+    ownerIdsForReconcile,
+    childIdsForReconcile,
   }
 
   /**
@@ -1444,6 +1446,58 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
       .prepare(`
       SELECT DISTINCT child_session_id AS id FROM work_attempts
       WHERE child_session_id IS NOT NULL
+    `)
+      .all()
+      .map(item => item.id)
+  }
+
+  /**
+   * Owners whose log can still bind a publish intent to an assistant seq.
+   * Delivered, abandoned, and absent rows have nothing left to read.
+   */
+  function ownerIdsForReconcile() {
+    return db
+      .prepare(`
+      SELECT DISTINCT owner_session_id AS id FROM user_deliveries
+      WHERE status = 'intent'
+    `)
+      .all()
+      .map(item => item.id)
+  }
+
+  /**
+   * Child logs that can still move a ticket.
+   * A running attempt is included. A needs_user attempt is not, once its
+   * question/result/failure is applied, because that log no longer changes
+   * the ledger until a supply or retry enqueues the attempt again.
+   * A terminal attempt is included only while a terminal report for the
+   * active attempt is still pending_completion, so the final turn/end is
+   * applied or staled once and then the closed log is left alone.
+   */
+  function childIdsForReconcile() {
+    return db
+      .prepare(`
+      SELECT DISTINCT a.child_session_id AS id
+      FROM work_attempts a
+      JOIN work_tickets t ON t.id = a.ticket_id
+      WHERE a.child_session_id IS NOT NULL
+        AND (
+          a.status IN ('starting', 'enqueued')
+          OR (
+            a.status = 'started'
+            AND t.status IN ('accepted', 'enqueued', 'started')
+          )
+          OR (
+            t.active_attempt_id = a.id
+            AND EXISTS (
+              SELECT 1 FROM work_events e
+              WHERE e.attempt_id = a.id
+                AND e.briefing_revision = t.briefing_revision
+                AND e.apply_status = 'pending_completion'
+                AND e.kind IN ('question', 'result', 'failure')
+            )
+          )
+        )
     `)
       .all()
       .map(item => item.id)
