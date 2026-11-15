@@ -97,6 +97,36 @@ export function renderMainHistory(
 }
 
 /**
+ * Recent worker activity for the owning main session. Assistant prose and a
+ * one-line tool hint are kept. File bodies, command text, and tool results
+ * are left out. An empty log returns ''.
+ * @param {readonly Record<string, any>[] | null | undefined} events
+ * @param {{ maxMessages?: number, maxLine?: number, maxChars?: number }} [limits]
+ */
+export function renderWorkerHistory(
+  events: readonly Record<string, any>[] | null | undefined,
+  limits: { maxMessages?: number; maxLine?: number; maxChars?: number } = {},
+) {
+  if (!Array.isArray(events) || events.length === 0) return ''
+  const maxMessages = clampHistory(limits.maxMessages, HISTORY_MESSAGES, 1, 40)
+  const maxLine = clampHistory(limits.maxLine, HISTORY_LINE, 200, 4000)
+  const maxChars = clampHistory(limits.maxChars, HISTORY_TOTAL, 500, 24000)
+  const lines: string[] = []
+  for (const event of events) {
+    const line = workerHistoryLine(event, maxLine)
+    if (line) lines.push(line)
+  }
+  const kept = tailHistory(lines, maxMessages, maxChars)
+  if (kept.length === 0) return ''
+  return [
+    '[foundations:worker-history]',
+    'This execution record was read directly from the worker session log. The worker was not notified, and no authorization prompt was raised.',
+    "This is not a result. Do not call foundations_publish from it. Do not read, edit, or build the worker's files, and do not finish the task from this excerpt.",
+    ...kept,
+  ].join('\n')
+}
+
+/**
  * @param {unknown} value
  * @param {number} fallback
  * @param {number} min
@@ -142,6 +172,94 @@ function isHostNoise(text: string) {
     text.startsWith('Current runtime context.') ||
     text.startsWith('Time sampled')
   )
+}
+
+/**
+ * @param {Record<string, any> | null | undefined} event
+ * @param {number} maxLine
+ */
+function workerHistoryLine(event: Record<string, any> | null | undefined, maxLine: number) {
+  if (!event) return ''
+  if (event.type === 'assistant/message') {
+    const text = messageBody(event).replace(/\r/g, '').trim()
+    if (text === '' || isHostNoise(text)) return ''
+    const line = `assistant: ${text}`
+    return line.length > maxLine ? `${line.slice(0, maxLine)}…` : line
+  }
+  if (event.type !== 'tool/call') return ''
+  const data = event.data
+  if (!data || typeof data !== 'object') return ''
+  const name = callName(data)
+  if (name === '') return ''
+  const hint = toolHint(name, callArguments(data)).replace(/\s+/g, ' ').trim()
+  const line = hint === '' ? `tool ${name}` : `tool ${name} ${hint}`
+  return line.length > maxLine ? `${line.slice(0, maxLine)}…` : line
+}
+
+/**
+ * @param {Record<string, any>} data
+ */
+function callName(data: Record<string, any>) {
+  if (typeof data.name === 'string' && data.name.trim() !== '') return data.name.trim()
+  if (typeof data.tool === 'string' && data.tool.trim() !== '') return data.tool.trim()
+  return ''
+}
+
+/**
+ * @param {Record<string, any>} data
+ */
+function callArguments(data: Record<string, any>) {
+  const raw = data.arguments ?? data.args ?? data.input
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw)
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, any>) : {}
+    } catch {
+      return {}
+    }
+  }
+  return raw && typeof raw === 'object' ? (raw as Record<string, any>) : {}
+}
+
+/**
+ * A path, or a bash description. Never the file body or the command text.
+ * @param {string} name
+ * @param {Record<string, any>} args
+ */
+function toolHint(name: string, args: Record<string, any>) {
+  const path = firstString(args.file_path, args.filePath, args.path)
+  if (path !== '') return path
+  if (name === 'bash' || typeof args.command === 'string') return firstString(args.description)
+  return ''
+}
+
+/**
+ * @param {unknown[]} values
+ */
+function firstString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim() !== '') return value.trim()
+  }
+  return ''
+}
+
+/**
+ * @param {string[]} lines
+ * @param {number} maxMessages
+ * @param {number} maxChars
+ */
+function tailHistory(lines: string[], maxMessages: number, maxChars: number) {
+  const tail = lines.slice(-maxMessages)
+  const kept: string[] = []
+  let used = 0
+  for (let index = tail.length - 1; index >= 0; index -= 1) {
+    const line = tail[index] ?? ''
+    const next = used + line.length + (kept.length > 0 ? 1 : 0)
+    if (kept.length > 0 && next > maxChars) break
+    kept.unshift(line)
+    used = next
+  }
+  return kept
 }
 
 /**

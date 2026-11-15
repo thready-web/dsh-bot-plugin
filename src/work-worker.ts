@@ -18,9 +18,11 @@ import {
   reconcileNotices,
   renderMainHistory,
   renderNotice,
+  renderWorkerHistory,
 } from './work-ledger.ts'
 
 const KINDS = new Set(['progress', 'question', 'artifact', 'result', 'failure'])
+const OPEN_TICKET_STATUSES = ['accepted', 'enqueued', 'started', 'needs_user', 'ready']
 const LABEL: Record<string, string> = {
   accepted: 'accepted',
   enqueued: 'enqueued',
@@ -173,6 +175,7 @@ export function createWorkRuntime(
     reject,
     report,
     mainHistory,
+    workerHistory,
     holdNotices,
     releaseHold,
     tick,
@@ -226,6 +229,75 @@ export function createWorkRuntime(
     if (!options.snapshot) return ''
     const events = await options.snapshot(ownerSessionId)
     return renderMainHistory(events)
+  }
+
+  /**
+   * Direct read of a worker session owned by this main bot. No inbox write,
+   * and the worker is not notified.
+   * @param {string} sessionId
+   * @param {{ ticketId?: unknown, maxChars?: number }} [args]
+   */
+  async function workerHistory(sessionId: string, args: { ticketId?: unknown; maxChars?: number } = {}) {
+    if (!engine.isBot(sessionId))
+      return toolError('FORBIDDEN', 'Only the main session that owns the ticket can read the worker log.')
+    const requested = typeof args.ticketId === 'string' ? args.ticketId.trim() : ''
+    let ticket: Record<string, any> | null = null
+    if (requested !== '') {
+      ticket = book.ticket(requested)
+      if (!ticket) return toolError('NOT_FOUND', 'No such ticket.')
+      if (ticket.owner_session_id !== sessionId)
+        return toolError('FORBIDDEN', 'Only the main session that owns the ticket can read the worker log.')
+    } else {
+      const rows = openTickets(sessionId)
+      if (rows.length === 0) return toolError('NOT_FOUND', 'No unfinished ticket.')
+      if (rows.length > 1) {
+        return {
+          ok: true,
+          direct: true,
+          tickets: rows.map(row => ({ ticketId: row.id, status: row.status })),
+          text: '',
+        }
+      }
+      ticket = rows[0] ?? null
+    }
+    if (!ticket) return toolError('NOT_FOUND', 'No such ticket.')
+    const child = typeof ticket.child_session_id === 'string' ? ticket.child_session_id : ''
+    if (child === '') {
+      return {
+        ok: true,
+        direct: true,
+        ticketId: ticket.id,
+        status: ticket.status,
+        childSessionId: null,
+        text: '',
+      }
+    }
+    if (!options.snapshot) return toolError('UNAVAILABLE', 'The host cannot read the worker session log.')
+    const events = await options.snapshot(child)
+    const limits = Number.isFinite(args.maxChars) ? { maxChars: args.maxChars } : undefined
+    return {
+      ok: true,
+      direct: true,
+      ticketId: ticket.id,
+      status: ticket.status,
+      childSessionId: child,
+      text: renderWorkerHistory(events, limits),
+    }
+  }
+
+  /**
+   * @param {string} owner
+   */
+  function openTickets(owner: string) {
+    return store.db
+      .prepare(
+        `
+      SELECT * FROM work_tickets
+      WHERE owner_session_id = ? AND status IN (${OPEN_TICKET_STATUSES.map(() => '?').join(',')})
+      ORDER BY updated_at DESC
+    `,
+      )
+      .all(owner, ...OPEN_TICKET_STATUSES) as Record<string, any>[]
   }
 
   /**

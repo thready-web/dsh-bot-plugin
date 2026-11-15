@@ -177,6 +177,149 @@ test('a ticket carries main-session dialogue and the worker reads it without aut
   ctx.close()
 })
 
+test('the owning bot reads the worker log and the worker is not notified', async () => {
+  const ctx = boot()
+  ctx.engine.markBot('bot-b')
+  const result = await dispatched(ctx, 'write the page', 'page')
+  const child = result.childSessionId
+  const pushes = ctx.world.pushes.length
+  const splices = () => ctx.world.events(child).filter(event => event.type === 'agent/inbox/spliced').length
+  const before = splices()
+  ctx.world.record(child, 'assistant/message', {
+    message: {
+      content: [
+        { type: 'reasoning', text: 'hidden thought' },
+        { type: 'text', text: 'Writing the coffee page.' },
+        { type: 'tool-call', name: 'write', arguments: { content: 'SECRET_FILE_BODY' } },
+      ],
+    },
+  })
+  ctx.world.record(child, 'tool/call', {
+    name: 'write',
+    arguments: { file_path: 'coffee-site/src/App.jsx', content: 'SECRET_FILE_BODY' },
+  })
+  ctx.world.record(child, 'tool/call', {
+    name: 'bash',
+    arguments: JSON.stringify({ command: 'node secret-command', description: 'syntax-check jsx' }),
+  })
+  ctx.world.record(child, 'tool/result', {
+    content: [{ type: 'text', text: 'SECRET_RESULT' }],
+  })
+  ctx.world.record(child, 'user/message', {
+    content: [{ type: 'text', text: '[foundations:briefing]\nsecret briefing' }],
+  })
+  const tools = Object.fromEntries(workToolDefinitions(ctx.work, ctx.engine).map(item => [item.name, item]))
+  const read = await tools.foundations_worker_history.execute(
+    { ticketId: result.ticketId, maxChars: 4000 },
+    { agent: { id: 'bot-a' } },
+  )
+  assert.equal(read.ok, true)
+  assert.equal(read.direct, true)
+  assert.equal(read.ticketId, result.ticketId)
+  assert.equal(read.childSessionId, child)
+  assert.match(read.text, /Writing the coffee page/)
+  assert.match(read.text, /tool write coffee-site\/src\/App\.jsx/)
+  assert.match(read.text, /tool bash syntax-check jsx/)
+  assert.match(read.text, /worker was not notified/)
+  assert.doesNotMatch(read.text, /SECRET_FILE_BODY/)
+  assert.doesNotMatch(read.text, /SECRET_RESULT/)
+  assert.doesNotMatch(read.text, /secret-command/)
+  assert.doesNotMatch(read.text, /hidden thought/)
+  assert.doesNotMatch(read.text, /secret briefing/)
+  assert.equal(ctx.world.pushes.length, pushes)
+  assert.equal(splices(), before)
+  const foreign = await tools.foundations_worker_history.execute(
+    { ticketId: result.ticketId },
+    { agent: { id: 'bot-b' } },
+  )
+  assert.equal(foreign.code, 'FORBIDDEN')
+  const worker = await tools.foundations_worker_history.execute(
+    { ticketId: result.ticketId },
+    { agent: { id: child } },
+  )
+  assert.equal(worker.code, 'FORBIDDEN')
+  const plain = await tools.foundations_worker_history.execute(
+    { ticketId: result.ticketId },
+    { agent: { id: 'plain-a' } },
+  )
+  assert.equal(plain.code, 'FORBIDDEN')
+  const missing = await tools.foundations_worker_history.execute({ ticketId: 'missing' }, { agent: { id: 'bot-a' } })
+  assert.equal(missing.code, 'NOT_FOUND')
+  assert.equal(ctx.world.pushes.length, pushes)
+  assert.equal(splices(), before)
+  ctx.close()
+})
+
+test('a ticket with no worker session returns an empty excerpt and does not read a log', async () => {
+  const ctx = boot()
+  const result = await dispatched(ctx, 'wait for a slot', 'empty-child')
+  const child = result.childSessionId
+  ctx.store.db.prepare('UPDATE work_tickets SET child_session_id = NULL WHERE id = ?').run(result.ticketId)
+  ctx.world.dropChild(child)
+  const pushes = ctx.world.pushes.length
+  const read = await ctx.work.workerHistory('bot-a', { ticketId: result.ticketId })
+  assert.equal(read.ok, true)
+  assert.equal(read.direct, true)
+  assert.equal(read.ticketId, result.ticketId)
+  assert.equal(read.childSessionId, null)
+  assert.equal(read.text, '')
+  assert.equal(ctx.world.hasSession(child), false)
+  assert.equal(ctx.world.pushes.length, pushes)
+  ctx.close()
+})
+
+test('several unfinished tickets are listed until one ticketId is named', async () => {
+  const ctx = boot()
+  const first = await dispatched(ctx, 'first page', 'first')
+  ctx.world.record(first.childSessionId, 'assistant/message', {
+    message: { content: [{ type: 'text', text: 'only-open-progress' }] },
+  })
+  const sole = await ctx.work.workerHistory('bot-a', {})
+  assert.match(sole.text, /only-open-progress/)
+  const second = await dispatched(ctx, 'second page', 'second')
+  ctx.world.record(second.childSessionId, 'assistant/message', {
+    message: { content: [{ type: 'text', text: 'second-progress' }] },
+  })
+  const listed = await ctx.work.workerHistory('bot-a', {})
+  assert.equal(listed.ok, true)
+  assert.equal(listed.direct, true)
+  assert.equal(listed.text, '')
+  assert.deepEqual(
+    listed.tickets.map((row: { ticketId: string }) => row.ticketId).sort(),
+    [first.ticketId, second.ticketId].sort(),
+  )
+  assert.equal(
+    listed.tickets.every((row: { status: string }) => typeof row.status === 'string' && row.status !== ''),
+    true,
+  )
+  const one = await ctx.work.workerHistory('bot-a', { ticketId: first.ticketId })
+  assert.match(one.text, /only-open-progress/)
+  assert.doesNotMatch(one.text, /second-progress/)
+  ctx.store.db
+    .prepare(`UPDATE work_tickets SET status = 'delivered' WHERE id IN (?, ?)`)
+    .run(first.ticketId, second.ticketId)
+  const none = await ctx.work.workerHistory('bot-a', {})
+  assert.equal(none.code, 'NOT_FOUND')
+  const closed = await ctx.work.workerHistory('bot-a', { ticketId: first.ticketId })
+  assert.equal(closed.ok, true)
+  assert.match(closed.text, /only-open-progress/)
+  ctx.close()
+})
+
+test('worker history needs the host log snapshot', async () => {
+  const ctx = boot()
+  const result = await dispatched(ctx, 'needs a log', 'blind')
+  const blind = createWorkRuntime(ctx.store, ctx.engine, {
+    createChild: spec => ctx.world.createChild(spec),
+    push: (sessionId, messageId, text) => ctx.world.push(sessionId, messageId, text),
+    now: () => new Date(ctx.clock.ms),
+    schedule: () => () => {},
+  })
+  const read = await blind.workerHistory('bot-a', { ticketId: result.ticketId })
+  assert.equal(read.code, 'UNAVAILABLE')
+  ctx.close()
+})
+
 test('dispatch ignores a foreign owner and does not wait for the worker turn', async () => {
   const ctx = boot()
   let release

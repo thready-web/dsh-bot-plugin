@@ -161,6 +161,31 @@ export function workToolDefinitions(
       'bot',
     ),
     tool(
+      'foundations_worker_history',
+      "Read the worker session log for a ticket this main session owns. The host queries that log directly. The worker is not notified and no authorization prompt is raised. Call it once when the user asks how an unfinished ticket is progressing. The excerpt is not a result: do not call foundations_publish from it, and do not read, edit, or build the worker's files. Omit ticketId only when this session has one unfinished ticket. When several are unfinished, the result lists their ids and does not include a log.",
+      {
+        type: 'object',
+        properties: {
+          ticketId: {
+            type: 'string',
+            description: 'Ticket to read. Omit only when one unfinished ticket is open.',
+          },
+          maxChars: {
+            type: 'integer',
+            description: 'Optional cap for the returned excerpt, from 500 to 24000. Omit it for the default excerpt.',
+          },
+        },
+      },
+      async (args, hostId) => {
+        const maxChars = Number(args.maxChars)
+        return work.workerHistory(hostId, {
+          ...(typeof args.ticketId === 'string' ? { ticketId: args.ticketId } : {}),
+          ...(Number.isFinite(maxChars) ? { maxChars } : {}),
+        })
+      },
+      'bot',
+    ),
+    tool(
       'foundations_main_history',
       'Read the main session that owns this ticket. The host queries the session log directly and does not raise an authorization prompt. Use it when the attached excerpt is missing a line you need. Do not write the main session.',
       {

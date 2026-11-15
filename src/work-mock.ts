@@ -57,6 +57,9 @@ export function createMockWorld() {
       const slot = session(sessionId)
       return append(slot, 'tool/call', { name, arguments: args })
     },
+    record(sessionId: string, type: string, data: Record<string, any>) {
+      return append(session(sessionId), type, data)
+    },
     assistant(sessionId: string, text: string) {
       const slot = session(sessionId)
       return append(slot, 'assistant/message', { text, message: { content: [{ type: 'text', text }] } })

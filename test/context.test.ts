@@ -190,6 +190,7 @@ test('ticket protocol stays on the ticket block and a private draft is labeled',
   assert.match(tickets, /accepted is not enqueued/)
   assert.match(tickets, /foundations_grant/)
   assert.match(tickets, /Do not take over the unfinished task/)
+  assert.match(tickets, /foundations_worker_history/)
   assert.match(tickets, /Do not say accepted, enqueued, or publish/)
   assert.equal(renderTickets([]), '')
 
