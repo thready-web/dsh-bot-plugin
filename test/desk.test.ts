@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { createDesk } from '../src/desk.ts'
 import { openLedger } from '../src/desk-ledger.ts'
+import { sessionDirectory } from '../src/session-files.ts'
 
 const API = '/session-foundations/api'
 
@@ -372,6 +373,163 @@ test('a session preview is stored on disk, returned with the list, and dropped w
     assert.equal(purged.status, 200)
     const after = await desk.handle('GET', `${API}/sessions`, url('/sessions'), incoming())
     assert.equal(after.body.previews['session-abc'], undefined)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('delete removes a session that already has messages, detaches an idle one, and leaves a running turn', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-bot-delete-'))
+  const cwd = '/work'
+  const full = 'session-full'
+  const live = 'session-live'
+  const open = 'session-open'
+  const stuck = 'session-stuck'
+  const blank = 'session-blank'
+  const log = sessionDirectory(join(dir, 'sessions'), cwd, full)
+  const openLog = sessionDirectory(join(dir, 'sessions'), cwd, open)
+  mkdirSync(log, { recursive: true })
+  mkdirSync(openLog, { recursive: true })
+  writeFileSync(join(log, 'session.v4.jsonl.zstd'), 'messages')
+  writeFileSync(join(openLog, 'session.v4.jsonl.zstd'), 'open')
+  const cache = join(dir, 'storages', 'session_projcache', 'sessions')
+  mkdirSync(cache, { recursive: true })
+  writeFileSync(join(cache, `${full}.json`), '{}')
+  const workspace = join(dir, 'storages', 'workspace.json')
+  writeFileSync(
+    workspace,
+    JSON.stringify({
+      global: { archivedSessionIds: [full, live] },
+      tables: { workspaces: { a: { sessionIds: [full, live, open, stuck] } } },
+    }),
+  )
+  const released: string[] = []
+  const unloaded: string[] = []
+  const attached = new Set([open, stuck])
+  const items = [
+    { sessionId: full, running: false, blank: false, cwd },
+    { sessionId: live, running: true, blank: false, cwd },
+    { sessionId: open, running: false, blank: false, cwd },
+    { sessionId: stuck, running: false, blank: false, cwd },
+    { sessionId: blank, running: false, blank: true, cwd },
+  ]
+  const desk = createDesk({
+    ledgerFile: join(dir, 'desk-ledger.json'),
+    profileDir: dir,
+    sessionCwd: '',
+    isBot: () => false,
+    mark: () => ({ kind: 'bot' }),
+    hold: () => {},
+    release: () => {},
+    releaseLoaded: sessionId => {
+      released.push(sessionId)
+    },
+    releaseAttached: sessionId => {
+      unloaded.push(sessionId)
+      if (sessionId === open) attached.delete(sessionId)
+    },
+    stillAttached: sessionId => attached.has(sessionId),
+    usage: async () => ({ connected: false }),
+    rpc: async (endpoint: any) => {
+      if (endpoint === 'session/list') {
+        return { status: 200, body: { result: { ok: true, value: { items } } } }
+      }
+      return { status: 404, body: { result: { ok: false } } }
+    },
+  })
+  try {
+    assert.equal(desk.owns('POST', `${API}/sessions/${full}/delete`), true)
+    const saved = await desk.handle(
+      'POST',
+      `${API}/sessions/previews`,
+      url('/sessions/previews'),
+      incoming({ sessionId: full, preview: 'hello' }),
+    )
+    assert.equal(saved.status, 200)
+    const deleted = await desk.handle('POST', `${API}/sessions/${full}/delete`, url('/delete'), incoming({}))
+    assert.equal(deleted.status, 200)
+    assert.equal(deleted.body.deleted, true)
+    assert.deepEqual(released, [full])
+    assert.deepEqual(unloaded, [])
+    assert.equal(existsSync(log), false)
+    assert.equal(existsSync(join(cache, `${full}.json`)), false)
+    const stored = JSON.parse(readFileSync(workspace, 'utf8'))
+    assert.deepEqual(stored.global.archivedSessionIds, [live])
+    assert.deepEqual(stored.tables.workspaces.a.sessionIds, [live, open, stuck])
+    const listed = await desk.handle('GET', `${API}/sessions`, url('/sessions'), incoming())
+    assert.equal(listed.body.previews[full], undefined)
+    const running = await desk.handle('POST', `${API}/sessions/${live}/delete`, url('/delete'), incoming({}))
+    assert.equal(running.status, 409)
+    assert.equal(running.body.error, 'running')
+    assert.deepEqual(released, [full])
+    assert.deepEqual(unloaded, [])
+    const detached = await desk.handle('POST', `${API}/sessions/${open}/delete`, url('/delete'), incoming({}))
+    assert.equal(detached.status, 200)
+    assert.equal(detached.body.deleted, true)
+    assert.deepEqual(unloaded, [open])
+    assert.equal(existsSync(openLog), false)
+    assert.deepEqual(JSON.parse(readFileSync(workspace, 'utf8')).tables.workspaces.a.sessionIds, [live, stuck])
+    const held = await desk.handle('POST', `${API}/sessions/${stuck}/delete`, url('/delete'), incoming({}))
+    assert.equal(held.status, 409)
+    assert.equal(held.body.error, 'attached')
+    assert.deepEqual(released, [full, open, stuck])
+    assert.deepEqual(unloaded, [open, stuck])
+    assert.deepEqual(JSON.parse(readFileSync(workspace, 'utf8')).tables.workspaces.a.sessionIds, [live, stuck])
+    const purged = await desk.handle('POST', `${API}/sessions/${full}/purge`, url('/purge'), incoming({}))
+    assert.equal(purged.status, 409)
+    assert.equal(purged.body.error, 'not_blank')
+    const missing = await desk.handle('POST', `${API}/sessions/session-missing/delete`, url('/delete'), incoming({}))
+    assert.equal(missing.status, 404)
+    const removedBlank = await desk.handle('POST', `${API}/sessions/${blank}/delete`, url('/delete'), incoming({}))
+    assert.equal(removedBlank.status, 200)
+    assert.equal(removedBlank.body.deleted, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('delete removes the persistence log, not the copy under the profile directory', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-bot-delete-root-'))
+  const home = join(dir, 'home')
+  const profile = join(home, 'profiles', 'primary')
+  const cwd = '/work'
+  const id = 'session-real'
+  const real = sessionDirectory(join(home, 'sessions'), cwd, id)
+  mkdirSync(real, { recursive: true })
+  writeFileSync(join(real, 'session.v4.jsonl.zstd'), 'log')
+  const decoy = sessionDirectory(join(profile, 'sessions'), cwd, id)
+  mkdirSync(decoy, { recursive: true })
+  writeFileSync(join(decoy, 'bot.json'), '{}\n')
+  mkdirSync(join(home, 'storages', 'session_projcache', 'sessions'), { recursive: true })
+  writeFileSync(join(home, 'storages', 'session_projcache', 'sessions', `${id}.json`), '{}')
+  const desk = createDesk({
+    ledgerFile: join(profile, 'session-foundations', 'desk-ledger.json'),
+    profileDir: profile,
+    sessionsRoot: join(home, 'sessions'),
+    stateRoot: home,
+    sessionCwd: '',
+    isBot: () => false,
+    mark: () => ({ kind: 'bot' }),
+    hold: () => {},
+    release: () => {},
+    usage: async () => ({ connected: false }),
+    rpc: async (endpoint: any) => {
+      if (endpoint === 'session/list') {
+        return {
+          status: 200,
+          body: { result: { ok: true, value: { items: [{ sessionId: id, running: false, blank: false, cwd }] } } },
+        }
+      }
+      return { status: 404, body: { result: { ok: false } } }
+    },
+  })
+  try {
+    const deleted = await desk.handle('POST', `${API}/sessions/${id}/delete`, url('/delete'), incoming({}))
+    assert.equal(deleted.status, 200)
+    assert.equal(deleted.body.deleted, true)
+    assert.equal(existsSync(real), false)
+    assert.equal(existsSync(decoy), true)
+    assert.equal(existsSync(join(home, 'storages', 'session_projcache', 'sessions', `${id}.json`)), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

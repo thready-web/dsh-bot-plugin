@@ -10,7 +10,7 @@ import { authorizationFor } from './authorization.ts'
 import { runtimeFor, workRuntimeFor } from './runtime-registry.ts'
 
 export const name = 'session-foundations-http'
-export const inject = ['webServer', 'agents', 'sessionPersistence', 'sessionQuery']
+export const inject = ['webServer', 'agents', 'sessionPersistence', 'sessionQuery', 'sessions']
 
 /**
  * Local management routes for the same SQLite the main plugin uses.

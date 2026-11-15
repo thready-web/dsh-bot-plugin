@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { foundations, foundationsError } from './foundations'
 import { useI18n } from './locale'
@@ -69,6 +69,14 @@ function hashSession(): string {
     if (key === 's' && value) return decodeURIComponent(value)
   }
   return ''
+}
+
+function dropStored(key: string, current: Record<string, string>, id: string) {
+  if (!(id in current)) return current
+  const next = { ...current }
+  delete next[id]
+  sessionStorage.setItem(key, JSON.stringify(next))
+  return next
 }
 
 function loadMap(key: string): Record<string, string> {
@@ -170,6 +178,7 @@ export function App() {
   const [mentionClosed, setMentionClosed] = useState('')
   const [reason, setReason] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [sessionMenu, setSessionMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [settings, setSettings] = useState<'permission' | 'authorization' | 'cua' | null>(null)
   const [approvals, setApprovals] = useState<ToolApprovalView[]>([])
   const [questionWaits, setQuestionWaits] = useState<
@@ -277,6 +286,8 @@ export function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef<HTMLTextAreaElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const sessionMenuRef = useRef<HTMLDivElement>(null)
+  const deletedSessions = useRef(new Set<string>())
   const localSeq = useRef(0)
   const previewQueue = useRef(new Map<string, string>())
   const previewTimer = useRef(0)
@@ -386,14 +397,15 @@ export function App() {
         setSessionNote(value?.error?.message || String(sessionBody.error || t('session.listUnavailable')))
       } else {
         setSessionNote('')
-        setItems(value.value?.items ?? [])
+        setItems(acceptSessions(value.value?.items))
         takePreviews(sessionBody.previews)
         if (!previewSeeded.current) {
           previewSeeded.current = true
           const disk = previewMap(sessionBody.previews)
           const missing: Record<string, string> = {}
           for (const [id, text] of Object.entries(loadMap('dsh-bot.previews'))) {
-            if (!disk[id] && text) missing[id] = text
+            if (deletedSessions.current.has(id) || disk[id] || !text) continue
+            missing[id] = text
           }
           if (Object.keys(missing).length > 0) putPreviews({ previews: missing })
         }
@@ -447,7 +459,7 @@ export function App() {
           | undefined
         if (result?.ok === true) {
           setSessionNote('')
-          setItems(result.value?.items ?? [])
+          setItems(acceptSessions(result.value?.items))
           takePreviews(listed.body.previews)
         } else if (listed.status !== 200) {
           setSessionNote(result?.error?.message || t('session.listUnavailable'))
@@ -750,6 +762,38 @@ export function App() {
     previewTimer.current = window.setTimeout(flushPreviews, 400)
   }, [sessionId, threadSession, thread.segments])
 
+  useLayoutEffect(() => {
+    const node = sessionMenuRef.current
+    if (!node || !sessionMenu) return
+    const rect = node.getBoundingClientRect()
+    const x = Math.max(8, Math.min(sessionMenu.x, window.innerWidth - rect.width - 8))
+    const y = Math.max(8, Math.min(sessionMenu.y, window.innerHeight - rect.height - 8))
+    if (x !== sessionMenu.x || y !== sessionMenu.y)
+      setSessionMenu(current => (current ? { ...current, x, y } : current))
+    node.querySelector('button')?.focus()
+  }, [sessionMenu])
+
+  useEffect(() => {
+    if (!sessionMenu) return
+    const close = () => setSessionMenu(null)
+    const onPointer = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Node && sessionMenuRef.current?.contains(target)) return
+      close()
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    document.addEventListener('pointerdown', onPointer)
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('scroll', close, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer)
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('scroll', close, true)
+    }
+  }, [sessionMenu])
+
   useEffect(() => {
     if (!menuOpen) return
     const close = (event: PointerEvent) => {
@@ -822,6 +866,38 @@ export function App() {
     setMentionIndex(0)
   }, [mentionKey])
 
+  function acceptSessions(rows: SessionItem[] | undefined) {
+    const gone = deletedSessions.current
+    return (rows ?? []).filter(item => !gone.has(item.sessionId))
+  }
+
+  function forgetSession(id: string) {
+    deletedSessions.current.add(id)
+    previewQueue.current.delete(id)
+    previewKnown.current.delete(id)
+    setItems(current => current.filter(entry => entry.sessionId !== id))
+    setArchived(current => {
+      const next = new Set(current)
+      next.delete(id)
+      return next
+    })
+    setTitles(current => dropStored('dsh-bot.titles', current, id))
+    setPreviews(current => dropStored('dsh-bot.previews', current, id))
+    setBots(current => {
+      if (!current.has(id)) return current
+      const next = new Set(current)
+      next.delete(id)
+      return next
+    })
+    setBotNames(current => {
+      if (!(id in current)) return current
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+    if (sessionId === id) selectSession('')
+  }
+
   function rememberArchived(ids: unknown, removed: string[]) {
     const next = new Set(archived)
     for (const id of removed) next.add(id)
@@ -844,6 +920,29 @@ export function App() {
     }
     setSessionNote('')
     rememberArchived(result.body.archivedSessionIds, [id])
+  }
+
+  function openSessionMenu(event: { preventDefault(): void; clientX: number; clientY: number }, id: string) {
+    event.preventDefault()
+    setSessionMenu({ id, x: event.clientX, y: event.clientY })
+  }
+
+  async function deleteSession(id: string) {
+    const result = await api(`/sessions/${encodeURIComponent(id)}/delete`, { method: 'POST' })
+    if (result.status !== 200) {
+      const error = result.body.error
+      const message = typeof result.body.message === 'string' ? result.body.message : ''
+      setSessionNote(
+        error === 'running'
+          ? t('session.deleteRunning')
+          : error === 'attached'
+            ? t('session.deleteAttached')
+            : message || t('session.deleteFailed'),
+      )
+      return
+    }
+    setSessionNote('')
+    forgetSession(id)
   }
 
   async function removeBlanks() {
@@ -873,13 +972,7 @@ export function App() {
       setSessionNote(result.body.error === 'not_blank' ? t('session.purgeNotBlank') : t('session.purgeFailed'))
       return
     }
-    setItems(current => current.filter(entry => entry.sessionId !== id))
-    setArchived(current => {
-      const next = new Set(current)
-      next.delete(id)
-      return next
-    })
-    if (sessionId === id) selectSession('')
+    forgetSession(id)
   }
 
   async function purgeBlanks() {
@@ -894,16 +987,9 @@ export function App() {
         break
       }
       removed.push(item.sessionId)
+      forgetSession(item.sessionId)
     }
     if (removed.length === 0) return
-    const gone = new Set(removed)
-    setItems(current => current.filter(entry => !gone.has(entry.sessionId)))
-    setArchived(current => {
-      const next = new Set(current)
-      for (const id of removed) next.delete(id)
-      return next
-    })
-    if (gone.has(sessionId)) selectSession('')
   }
 
   async function finishCreate(id: string, note: string, name: string) {
@@ -919,7 +1005,7 @@ export function App() {
     }
     const listed = await api('/sessions')
     const value = listed.body.result as { value?: { items?: SessionItem[] } } | undefined
-    setItems(value?.value?.items ?? [])
+    setItems(acceptSessions(value?.value?.items))
     selectSession(id)
     setSetupNote(note)
     setBasisRevision(current => current + 1)
@@ -1065,7 +1151,7 @@ export function App() {
           {conversations.map(item => {
             const name = sessionName(item)
             return (
-              <li key={item.sessionId}>
+              <li key={item.sessionId} onContextMenu={event => openSessionMenu(event, item.sessionId)}>
                 <button
                   type="button"
                   className={item.sessionId === sessionId ? 'session selected' : 'session'}
@@ -1116,7 +1202,11 @@ export function App() {
             ? blanks.map(item => {
                 const name = sessionName(item)
                 return (
-                  <li key={item.sessionId} className="session-row">
+                  <li
+                    key={item.sessionId}
+                    className="session-row"
+                    onContextMenu={event => openSessionMenu(event, item.sessionId)}
+                  >
                     <button
                       type="button"
                       className={item.sessionId === sessionId ? 'session selected' : 'session'}
@@ -1490,6 +1580,28 @@ export function App() {
           line={filePreview.line}
           onClose={() => setFilePreview(null)}
         />
+      ) : null}
+      {sessionMenu ? (
+        <div
+          ref={sessionMenuRef}
+          className="session-menu"
+          role="menu"
+          aria-label={t('session.menu')}
+          style={{ left: sessionMenu.x, top: sessionMenu.y }}
+          onContextMenu={event => event.preventDefault()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const id = sessionMenu.id
+              setSessionMenu(null)
+              void deleteSession(id)
+            }}
+          >
+            {t('session.delete')}
+          </button>
+        </div>
       ) : null}
       {setupOpen ? (
         <NewSessionSheet

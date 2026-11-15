@@ -9,6 +9,7 @@ import { permissionView, setPermission } from './permissions.ts'
 import { cuaAction, cuaSnapshot } from './cua-access.ts'
 import { provisionSession } from './provision.ts'
 import { handleWorkApi, openPageLive, openWorkLive } from './work-http.ts'
+import { releaseLoadedAgent } from './inbox.ts'
 import { createLogSource } from './log/source.ts'
 import { createLogSnapshotService } from './log/snapshot-service.ts'
 import { dispatchLogRequest, probeConnection, registerLogRoutes } from './log/routes.ts'
@@ -39,12 +40,15 @@ export function registerHttp(
   const profileDir = ctx.profileContext?.dir || (storeDir !== '' ? dirname(storeDir) : '')
   const logService = createLogSnapshotService(createLogSource(ctx))
   const logOnConnection = registerLogRoutes(ctx, logService)
+  const persistence = ctx.sessionPersistence as { root?: unknown } | undefined
+  const sessionsRoot = typeof persistence?.root === 'string' ? persistence.root : ''
   const desk =
     profileDir === ''
       ? null
       : createDesk({
           ledgerFile: join(storeDir, 'desk-ledger.json'),
           profileDir,
+          ...(sessionsRoot !== '' ? { sessionsRoot, stateRoot: dirname(sessionsRoot) } : {}),
           sessionCwd: defaultSessionCwd(process.env),
           isBot: sessionId => engine.isBot(sessionId),
           mark: sessionId => engine.markBot(sessionId),
@@ -54,6 +58,9 @@ export function registerHttp(
           release: sessionId => {
             getWork()?.releaseHold(sessionId)
           },
+          releaseLoaded: sessionId => releaseLoadedAgent(sessionId),
+          releaseAttached: sessionId => unloadAttachedSession(ctx, sessionId),
+          stillAttached: sessionId => attachedSession(ctx, sessionId),
           rpc: (endpoint, args, req) => hostRpc(req, endpoint, args),
           usage: req => hostUsage(req),
         })
@@ -546,6 +553,83 @@ export function memoryView(engine: import('./engine.ts').Engine, sessionId: stri
       .all(sessionId),
     state: engine.statePayload(sessionId),
   }
+}
+
+/**
+ * A live store entry means some fiber still has the session open.
+ * The caller must inject `sessions`. Reading it without inject throws.
+ * @param {import('./host.ts').HostContext} ctx
+ * @param {string} sessionId
+ */
+export function attachedSession(ctx: HostContext, sessionId: string) {
+  const sessions = ctx.sessions as { get?: (id: string) => unknown } | undefined
+  return typeof sessions?.get === 'function' && sessions.get(sessionId) != null
+}
+
+/**
+ * Drop an idle session another fiber still has open, then let the caller delete its log.
+ * The host has no delete RPC. The store entry's detach is the same disposer `enter` keeps,
+ * and it emits `session/disposed`, which closes the JSONL writer.
+ * @param {import('./host.ts').HostContext} ctx
+ * @param {string} sessionId
+ */
+export async function unloadAttachedSession(ctx: HostContext, sessionId: string) {
+  const agent = liveAgentOf(ctx, sessionId)
+  if (agent && typeof agent.cancel === 'function') {
+    try {
+      agent.cancel({ kind: 'hook', reason: 'session-delete' }, { keepInbox: false })
+    } catch {
+      /* already idle */
+    }
+  }
+  if (agent && typeof agent.whenIdle === 'function') await agent.whenIdle()
+  const writer = sessionWriter(ctx, sessionId)
+  if (writer && typeof writer.close === 'function') await writer.close()
+  detachAgentEntry(ctx, sessionId)
+  detachSessionEntry(ctx, sessionId)
+}
+
+/**
+ * @param {import('./host.ts').HostContext} ctx
+ * @param {string} sessionId
+ */
+function liveAgentOf(ctx: HostContext, sessionId: string) {
+  try {
+    return ctx.agents?.get?.(sessionId) ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * @param {import('./host.ts').HostContext} ctx
+ * @param {string} sessionId
+ */
+function sessionWriter(ctx: HostContext, sessionId: string) {
+  const writers = ctx.sessionPersistence?.tracker?.writers
+  if (!writers || typeof writers.get !== 'function') return null
+  const writer = writers.get(sessionId)
+  return writer && typeof writer === 'object' ? writer : null
+}
+
+/**
+ * @param {import('./host.ts').HostContext} ctx
+ * @param {string} sessionId
+ */
+function detachAgentEntry(ctx: HostContext, sessionId: string) {
+  const agents = ctx.agents
+  const entry = agents?.store?.get?.(sessionId)
+  if (!entry || typeof agents.detachEntered !== 'function') return
+  agents.detachEntered(entry)
+}
+
+/**
+ * @param {import('./host.ts').HostContext} ctx
+ * @param {string} sessionId
+ */
+function detachSessionEntry(ctx: HostContext, sessionId: string) {
+  const entry = ctx.sessions?.store?.get?.(sessionId)
+  if (entry && typeof entry.detach === 'function') entry.detach()
 }
 
 /**

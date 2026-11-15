@@ -16,7 +16,9 @@ import { type HostContext, type PluginHost } from './host.ts'
 import {
   childCreateOptions,
   effectiveWorkLimits,
+  pinMainReasoning,
   resolveWorkBudget,
+  workerModelSelection,
   WORK_BUDGET_ENV,
   type WorkBudget,
 } from './work-admit.ts'
@@ -226,6 +228,7 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
 
   ctx.on('agent/created', (payload: { agent?: { id?: string } } | null) => {
     const agent = payload?.agent
+    pinMainReasoning(agent, id => engine.isBot(id))
     if (!agent?.id || !engine.isBot(agent.id)) return
     let session = null
     try {
@@ -237,6 +240,9 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
       parentSessionId: session?.header?.parentSession ?? null,
       seeded: session?.header?.isSeeded === true,
     })
+  })
+  ctx.on('agent/inbox/inserted', (payload: { agent?: { id?: string } } | null) => {
+    pinMainReasoning(payload?.agent, id => engine.isBot(id))
   })
 
   triggers = ctx.agents ? startTriggers(ctx, store, engine) : null
@@ -416,14 +422,14 @@ function startWork(
       try {
         const owner = ctx.agents?.get(spec.ownerSessionId)
         cwd = owner?.session?.header?.cwd ?? ctx.sessions?.get(spec.ownerSessionId)?.header?.cwd ?? ''
-        model = owner?.model?.current?.() ?? null
+        model = workerModelSelection(owner?.model?.current?.() ?? null)
       } catch {
         cwd = ''
         model = null
       }
       if (!model?.provider || !model?.model) {
         try {
-          model = ctx.agentDefaultModel?.currentSelection?.() ?? null
+          model = workerModelSelection(ctx.agentDefaultModel?.currentSelection?.() ?? null)
         } catch {
           model = null
         }

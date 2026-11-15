@@ -50,22 +50,32 @@ const SECRET_KEY = /token|secret|password|authorization|api[-_]?key|cookie/i
  * @param {object} options
  * @param {string} options.ledgerFile
  * @param {string} options.profileDir
+ * @param {string} [options.sessionsRoot] JSONL persistence root. Defaults to <profileDir>/sessions.
+ * @param {string} [options.stateRoot] Directory that holds storages/. Defaults to profileDir.
  * @param {string} options.sessionCwd
  * @param {(sessionId: string) => boolean} options.isBot
  * @param {(sessionId: string) => { kind?: string } | null | undefined} options.mark
  * @param {(sessionId: string) => void | Promise<void>} options.hold
  * @param {(sessionId: string) => void | Promise<void>} options.release
+ * @param {(sessionId: string) => void | Promise<void>} [options.releaseLoaded]
+ * @param {(sessionId: string) => void | Promise<void>} [options.releaseAttached]
+ * @param {(sessionId: string) => boolean} [options.stillAttached]
  * @param {(endpoint: string, args: Record<string, unknown>, req: DeskRequest) => Promise<{ status: number, body: RpcEnvelope }>} options.rpc
  * @param {(req: DeskRequest) => Promise<Record<string, unknown>>} options.usage
  */
 export function createDesk(options: {
   ledgerFile: string
   profileDir: string
+  sessionsRoot?: string
+  stateRoot?: string
   sessionCwd: string
   isBot: (sessionId: string) => boolean
   mark: (sessionId: string) => { kind?: string } | null | undefined
   hold: (sessionId: string) => void | Promise<void>
   release: (sessionId: string) => void | Promise<void>
+  releaseLoaded?: (sessionId: string) => void | Promise<void>
+  releaseAttached?: (sessionId: string) => void | Promise<void>
+  stillAttached?: (sessionId: string) => boolean
   rpc: (
     endpoint: string,
     args: Record<string, unknown>,
@@ -77,7 +87,11 @@ export function createDesk(options: {
   const sessionPreviews = openSessionPreviews(join(dirname(options.ledgerFile), 'session-previews.json'))
   /** @type {Map<string, Promise<void>>} */
   const promptLocks: Map<string, Promise<void>> = new Map()
-  const sessionsRoot = join(options.profileDir, 'sessions')
+  const sessionsRoot =
+    options.sessionsRoot !== undefined && options.sessionsRoot !== ''
+      ? options.sessionsRoot
+      : join(options.profileDir, 'sessions')
+  const stateRoot = options.stateRoot !== undefined && options.stateRoot !== '' ? options.stateRoot : options.profileDir
 
   return {
     /**
@@ -93,7 +107,7 @@ export function createDesk(options: {
       )
         return true
       if (method === 'POST' && (sub === '/sessions' || sub === '/sessions/previews' || sub === '/tasks')) return true
-      if (method === 'POST' && /^\/sessions\/session-[A-Za-z0-9-]+\/(?:archive|purge)$/.test(sub)) return true
+      if (method === 'POST' && /^\/sessions\/session-[A-Za-z0-9-]+\/(?:archive|purge|delete)$/.test(sub)) return true
       if (method === 'POST' && /^\/tasks\/[0-9a-f-]{36}\/cancel$/.test(sub)) return true
       return false
     },
@@ -117,6 +131,8 @@ export function createDesk(options: {
       if (method === 'POST' && archive) return archiveBlank(req, archive[1])
       const purge = sub.match(/^\/sessions\/(session-[A-Za-z0-9-]+)\/purge$/)
       if (method === 'POST' && purge) return purgeBlank(req, purge[1])
+      const remove = sub.match(/^\/sessions\/(session-[A-Za-z0-9-]+)\/delete$/)
+      if (method === 'POST' && remove) return deleteSession(req, remove[1])
       if (method === 'GET' && sub === '/tasks') return { status: 200, body: { items: ledger.tasks() } }
       if (method === 'POST' && sub === '/tasks') return createTask(req, body)
       const cancel = sub.match(/^\/tasks\/([0-9a-f-]{36})\/cancel$/)
@@ -239,23 +255,77 @@ export function createDesk(options: {
    * @param {string} sessionId
    */
   async function purgeBlank(req: DeskRequest, sessionId: string) {
-    const listed = await options.rpc('session/list', { _request: {} }, req)
-    const items = listed.body?.result?.value?.items
-    if (listed.body?.result?.ok !== true || !Array.isArray(items)) {
-      return { status: 502, body: { error: 'session_list_failed', upstream: listed.body?.result?.error ?? null } }
-    }
-    const item = items.find(entry => entry?.sessionId === sessionId)
-    if (!item) return { status: 404, body: { error: 'session_not_found' } }
+    const found = await findListedSession(req, sessionId)
+    if (found.error) return found.error
+    const item = found.item
     if (item.blank !== true || item.running === true || typeof item.cwd !== 'string' || item.cwd === '') {
       return { status: 409, body: { error: 'not_blank' } }
     }
+    const erased = await eraseSession(sessionId, item.cwd)
+    if (erased) return erased
+    return { status: 200, body: { sessionId, purged: true } }
+  }
+
+  /**
+   * Hard-delete any listed session, including one that already has messages.
+   * An idle session still open in this process is detached first, then its log
+   * is removed. A running turn is refused so its writer cannot recreate the log.
+   * @param {DeskRequest} req
+   * @param {string} sessionId
+   */
+  async function deleteSession(req: DeskRequest, sessionId: string) {
+    const found = await findListedSession(req, sessionId)
+    if (found.error) return found.error
+    const item = found.item
+    if (item.running === true) return { status: 409, body: { error: 'running' } }
+    if (typeof item.cwd !== 'string' || item.cwd === '') return { status: 409, body: { error: 'no_cwd' } }
+    try {
+      await options.releaseLoaded?.(sessionId)
+      if (options.stillAttached?.(sessionId) === true) await options.releaseAttached?.(sessionId)
+    } catch (error) {
+      return {
+        status: 500,
+        body: { error: 'delete_failed', message: error instanceof Error ? error.message : 'delete failed' },
+      }
+    }
+    if (options.stillAttached?.(sessionId) === true) return { status: 409, body: { error: 'attached' } }
+    const erased = await eraseSession(sessionId, item.cwd)
+    if (erased) return erased
+    return { status: 200, body: { sessionId, deleted: true } }
+  }
+
+  /**
+   * @param {DeskRequest} req
+   * @param {string} sessionId
+   */
+  async function findListedSession(req: DeskRequest, sessionId: string) {
+    const listed = await options.rpc('session/list', { _request: {} }, req)
+    const items = listed.body?.result?.value?.items
+    if (listed.body?.result?.ok !== true || !Array.isArray(items)) {
+      return {
+        error: {
+          status: 502,
+          body: { error: 'session_list_failed', upstream: listed.body?.result?.error ?? null },
+        } as { status: number; body: Record<string, unknown> },
+      }
+    }
+    const item = items.find(entry => entry?.sessionId === sessionId)
+    if (!item) return { error: { status: 404, body: { error: 'session_not_found' } } }
+    return { item, error: undefined }
+  }
+
+  /**
+   * @param {string} sessionId
+   * @param {string} cwd
+   */
+  async function eraseSession(sessionId: string, cwd: string) {
     try {
       purgeSessionFiles({
         sessionsRoot,
-        cacheFile: join(options.profileDir, 'storages', 'session_projcache', 'sessions', `${sessionId}.json`),
-        workspaceFile: join(options.profileDir, 'storages', 'workspace.json'),
+        cacheFile: join(stateRoot, 'storages', 'session_projcache', 'sessions', `${sessionId}.json`),
+        workspaceFile: join(stateRoot, 'storages', 'workspace.json'),
         sessionId,
-        cwd: item.cwd,
+        cwd,
       })
     } catch (error) {
       return {
@@ -264,7 +334,7 @@ export function createDesk(options: {
       }
     }
     sessionPreviews.forget(sessionId)
-    return { status: 200, body: { sessionId, purged: true } }
+    return null
   }
 
   /**

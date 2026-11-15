@@ -312,6 +312,55 @@ export function estimateWorkerBudget(
   }
 }
 
+/** Main-session reasoning effort. `off` skips thinking so the reply starts sooner. */
+export const MAIN_REASONING_EFFORT = 'off'
+
+type ModelSelection = { provider?: string; model?: string; reasoningEffort?: string } | null | undefined
+
+/**
+ * Record `off` on a bot main session before the next step is prepared.
+ * A matching selection is left alone. Ordinary sessions are left alone.
+ * Call this outside an open session append: `model.select` appends `model/selection`.
+ * @param {{ id?: string, model?: { current?: () => ModelSelection, select?: (selection: { provider: string, model: string, reasoningEffort: string }) => void } } | null | undefined} agent
+ * @param {(sessionId: string) => boolean} isBot
+ */
+export function pinMainReasoning(
+  agent:
+    | {
+        id?: string
+        model?: {
+          current?: () => ModelSelection
+          select?: (selection: { provider: string; model: string; reasoningEffort: string }) => void
+        }
+      }
+    | null
+    | undefined,
+  isBot: (sessionId: string) => boolean,
+) {
+  if (!agent || typeof agent.id !== 'string' || agent.id === '' || !isBot(agent.id)) return false
+  const current = agent.model?.current?.()
+  if (!current?.provider || !current.model || current.reasoningEffort === MAIN_REASONING_EFFORT) return false
+  agent.model?.select?.({
+    provider: current.provider,
+    model: current.model,
+    reasoningEffort: MAIN_REASONING_EFFORT,
+  })
+  return true
+}
+
+/**
+ * Worker route copied from the main session. Thinking stays at the adapter
+ * default: the main session's `off` is for reply latency and is not copied.
+ * @param {ModelSelection} model
+ */
+export function workerModelSelection(
+  model: { provider?: string; model?: string; reasoningEffort?: string } | null,
+): { provider?: string; model?: string; reasoningEffort?: string } | null {
+  if (!model || model.reasoningEffort !== MAIN_REASONING_EFFORT) return model
+  const { reasoningEffort: _effort, ...rest } = model
+  return rest
+}
+
 /**
  * Child creation options. parentAgent and meta.parentSession are omitted on purpose:
  * the parent link lives only on the ticket row.

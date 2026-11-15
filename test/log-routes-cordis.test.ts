@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { createEngine } from '../src/engine.ts'
-import { registerHttp } from '../src/http.ts'
+import { attachedSession, registerHttp, unloadAttachedSession } from '../src/http.ts'
+import { inject as httpInject } from '../src/http-plugin.ts'
 import { createLogSnapshotService } from '../src/log/snapshot-service.ts'
 import { createLogSource } from '../src/log/source.ts'
 import { registerLogRoutes } from '../src/log/routes.ts'
@@ -99,4 +100,72 @@ test('a Cordis plugin that does not inject connection still mounts log and manag
     store.close()
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('the http plugin injects sessions and can tell a live session from a cold one', async () => {
+  assert.ok(httpInject.includes('sessions'))
+  const root = new Context()
+  root.provide('sessions', {
+    get(id: string) {
+      return id === 'session-live' ? { id } : undefined
+    },
+  })
+  const fiber = await root.plugin({
+    name: 'session-lookup',
+    inject: ['sessions'],
+    apply(ctx: Context) {
+      assert.equal(attachedSession(ctx as never, 'session-live'), true)
+      assert.equal(attachedSession(ctx as never, 'session-cold'), false)
+    },
+  })
+  await fiber.dispose()
+})
+
+test('unload closes the writer and detaches the live session before its files can be removed', async () => {
+  const order: string[] = []
+  const sessions = new Map<string, { detach(): void }>()
+  const sessionEntry = {
+    detach() {
+      order.push('session')
+      sessions.delete('session-live')
+    },
+  }
+  sessions.set('session-live', sessionEntry)
+  const agentEntry = { id: 'session-live', agent: { id: 'session-live' } }
+  const agents = new Map<string, typeof agentEntry>([['session-live', agentEntry]])
+  const ctx = {
+    sessions: {
+      store: sessions,
+      get(id: string) {
+        return sessions.get(id)
+      },
+    },
+    agents: {
+      store: agents,
+      get(id: string) {
+        return agents.get(id)?.agent
+      },
+      detachEntered(entry: { id: string }) {
+        order.push('agent')
+        agents.delete(entry.id)
+      },
+    },
+    sessionPersistence: {
+      tracker: {
+        writers: new Map([
+          [
+            'session-live',
+            {
+              close: async () => {
+                order.push('writer')
+              },
+            },
+          ],
+        ]),
+      },
+    },
+  }
+  await unloadAttachedSession(ctx as never, 'session-live')
+  assert.deepEqual(order, ['writer', 'agent', 'session'])
+  assert.equal(attachedSession(ctx as never, 'session-live'), false)
 })

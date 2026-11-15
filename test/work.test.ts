@@ -9,7 +9,13 @@ import { createMockWorld } from '../src/work-mock.ts'
 import { createWorkRuntime } from '../src/work-worker.ts'
 import { createTicketBook } from '../src/work-tickets.ts'
 import { nextLiveFrame, openWorkLive } from '../src/work-http.ts'
-import { childCreateOptions, DEFAULT_WORK_BUDGET, estimateWorkerBudget } from '../src/work-admit.ts'
+import {
+  childCreateOptions,
+  DEFAULT_WORK_BUDGET,
+  estimateWorkerBudget,
+  pinMainReasoning,
+  workerModelSelection,
+} from '../src/work-admit.ts'
 import { workToolDefinitions } from '../src/work-tools.ts'
 import { createTriggers } from '../src/triggers.ts'
 import { durableFollowup } from '../src/work-durable.ts'
@@ -74,6 +80,32 @@ test('create options omit parentAgent and fork lineage', () => {
   const modeled = childCreateOptions('worker-3', '', { provider: 'foundations-mock', model: 'mock-1' })
   assert.deepEqual(modeled.agentOptions, { provider: 'foundations-mock', model: 'mock-1' })
   assert.equal(Object.hasOwn(modeled, 'parentAgent'), false)
+  const quiet = childCreateOptions(
+    'worker-4',
+    '',
+    workerModelSelection({ provider: 'ollama', model: 'deepseek-v4.1-flash', reasoningEffort: 'off' }),
+  )
+  assert.deepEqual(quiet.agentOptions, { provider: 'ollama', model: 'deepseek-v4.1-flash' })
+})
+
+test('the main bot records reasoning off and a worker keeps its own effort', () => {
+  const selected: Array<{ provider: string; model: string; reasoningEffort: string }> = []
+  const agent = {
+    id: 'bot-a',
+    model: {
+      current: () => ({ provider: 'ollama', model: 'deepseek-v4.1-flash' }),
+      select: (selection: { provider: string; model: string; reasoningEffort: string }) => {
+        selected.push(selection)
+      },
+    },
+  }
+  assert.equal(pinMainReasoning(agent, id => id === 'bot-a'), true)
+  assert.deepEqual(selected, [{ provider: 'ollama', model: 'deepseek-v4.1-flash', reasoningEffort: 'off' }])
+  agent.model.current = () => ({ provider: 'ollama', model: 'deepseek-v4.1-flash', reasoningEffort: 'off' })
+  assert.equal(pinMainReasoning(agent, id => id === 'bot-a'), false)
+  assert.equal(pinMainReasoning({ id: 'plain', model: agent.model }, () => false), false)
+  const high = workerModelSelection({ provider: 'ollama', model: 'deepseek-v4.1-flash', reasoningEffort: 'high' })
+  assert.equal(high?.reasoningEffort, 'high')
 })
 
 test('schema v4 adds work tables and leaves delivery kinds unchanged', () => {
@@ -94,6 +126,54 @@ test('ordinary session dispatch is forbidden and writes no ticket', async () => 
   const denied = await ctx.work.dispatch('plain-a', { briefing: 'do not dispatch' })
   assert.equal(denied.code, 'FORBIDDEN')
   assert.equal(ctx.store.db.prepare('SELECT COUNT(*) AS n FROM work_tickets').get().n, 0)
+  ctx.close()
+})
+
+test('a ticket carries main-session dialogue and the worker reads it without authorization', async () => {
+  const ctx = boot()
+  const slot = ctx.world.session('bot-a')
+  const push = (type: string, data: Record<string, unknown>) => {
+    slot.seq += 1
+    slot.events.push({ type, seq: slot.seq, data })
+  }
+  push('user/message', {
+    content: [{ type: 'text', text: 'please write the notes' }],
+    source: { kind: 'user' },
+  })
+  push('user/message', {
+    content: [{ type: 'text', text: 'Current runtime context. cwd=/tmp' }],
+    source: { kind: 'runtime-context' },
+  })
+  push('user/message', {
+    content: [{ type: 'text', text: '[foundations:ticket]\naccepted' }],
+    source: { kind: 'user' },
+  })
+  push('assistant/message', {
+    message: {
+      content: [
+        { type: 'reasoning', text: 'think first' },
+        { type: 'text', text: 'I will write the notes.' },
+      ],
+    },
+  })
+  const result = await dispatched(ctx, 'write the notes', 'notes')
+  const pushed = ctx.world.pushes[0].text
+  assert.match(pushed, /\[foundations:main-history\]/)
+  assert.match(pushed, /No authorization prompt was raised/)
+  assert.match(pushed, /user: please write the notes/)
+  assert.match(pushed, /assistant: I will write the notes/)
+  assert.match(pushed, /write the notes/)
+  assert.doesNotMatch(pushed, /cwd=\/tmp/)
+  assert.doesNotMatch(pushed, /think first/)
+  assert.doesNotMatch(pushed, /foundations:ticket/)
+  const tools = Object.fromEntries(workToolDefinitions(ctx.work, ctx.engine).map(item => [item.name, item]))
+  const read = await tools.foundations_main_history.execute({ maxChars: 4000 }, { agent: { id: result.childSessionId } })
+  assert.equal(read.ok, true)
+  assert.equal(read.direct, true)
+  assert.equal(read.ownerSessionId, 'bot-a')
+  assert.match(read.text, /please write the notes/)
+  const denied = await tools.foundations_main_history.execute({}, { agent: { id: 'bot-a' } })
+  assert.equal(denied.code, 'FORBIDDEN')
   ctx.close()
 })
 

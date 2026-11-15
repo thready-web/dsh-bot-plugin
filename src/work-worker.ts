@@ -16,6 +16,7 @@ import {
   reasonKindOf,
   reconcileInputs,
   reconcileNotices,
+  renderMainHistory,
   renderNotice,
 } from './work-ledger.ts'
 
@@ -156,6 +157,7 @@ export function createWorkRuntime(
       return options.push(sessionId, messageId, text)
     },
     noticeText: (nativeId: string) => noticeText(nativeId),
+    mainHistory: (ownerSessionId: string) => readMainHistory(ownerSessionId),
   }
 
   return {
@@ -170,6 +172,7 @@ export function createWorkRuntime(
     publish,
     reject,
     report,
+    mainHistory,
     holdNotices,
     releaseHold,
     tick,
@@ -193,6 +196,36 @@ export function createWorkRuntime(
    */
   function isWorkerSession(sessionId: string) {
     return book.attemptForChild(sessionId) != null
+  }
+
+  /**
+   * Direct read of the main session that owns this worker. No authorization prompt.
+   * @param {string} sessionId
+   * @param {{ maxChars?: number }} [limits]
+   */
+  async function mainHistory(sessionId: string, limits?: { maxChars?: number }) {
+    const attempt = book.attemptForChild(sessionId)
+    if (!attempt) return toolError('FORBIDDEN', 'Only the worker for a ticket can read the main session.')
+    const owner = book.ticket(attempt.ticket_id)?.owner_session_id
+    if (typeof owner !== 'string' || owner === '') return toolError('NOT_FOUND', 'This ticket has no main session.')
+    if (!options.snapshot) return toolError('UNAVAILABLE', 'The host cannot read the main session log.')
+    const events = await options.snapshot(owner)
+    return {
+      ok: true,
+      direct: true,
+      ownerSessionId: owner,
+      text: renderMainHistory(events, limits),
+    }
+  }
+
+  /**
+   * Transcript excerpt attached to a briefing. A missing log is an empty excerpt.
+   * @param {string} ownerSessionId
+   */
+  async function readMainHistory(ownerSessionId: string) {
+    if (!options.snapshot) return ''
+    const events = await options.snapshot(ownerSessionId)
+    return renderMainHistory(events)
   }
 
   /**

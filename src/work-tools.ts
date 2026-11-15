@@ -161,6 +161,25 @@ export function workToolDefinitions(
       'bot',
     ),
     tool(
+      'foundations_main_history',
+      'Read the main session that owns this ticket. The host queries the session log directly and does not raise an authorization prompt. Use it when the attached excerpt is missing a line you need. Do not write the main session.',
+      {
+        type: 'object',
+        properties: {
+          maxChars: {
+            type: 'integer',
+            description: 'Optional cap for the returned excerpt, from 500 to 24000. Omit it for the default excerpt.',
+          },
+        },
+      },
+      async (args, hostId) => {
+        const maxChars = Number(args.maxChars)
+        const limits = Number.isFinite(maxChars) ? { maxChars } : undefined
+        return work.mainHistory(hostId, limits)
+      },
+      'worker',
+    ),
+    tool(
       'foundations_report',
       'The worker reports progress, a question, an artifact, a result, or a failure. This only writes the ledger. ticket, attempt, fence, and owner are discarded.',
       {

@@ -34,6 +34,26 @@ export function liveAgent(ctx: HostContext, sessionId: string) {
 }
 
 /**
+ * Close a session this module resumed, so its writer drains before a hard delete.
+ * A session owned by another fiber is left alone.
+ * @param {string} sessionId
+ */
+export async function releaseLoadedAgent(sessionId: string) {
+  const pending = loading.get(sessionId)
+  if (pending) {
+    try {
+      await pending
+    } catch {
+      return
+    }
+  }
+  const owned = handles.get(sessionId)
+  if (!owned || typeof owned.dispose !== 'function') return
+  await owned.dispose()
+  if (handles.get(sessionId) === owned) handles.delete(sessionId)
+}
+
+/**
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {string} sessionId
  */

@@ -189,6 +189,32 @@ a {
 .session-delete.purge {
   color: #9a3412;
 }
+.session-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 148px;
+  padding: 6px;
+  border-radius: 12px;
+  background: white;
+  box-shadow: var(--shadow);
+}
+.session-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 20px;
+  color: #9a3412;
+}
+.session-menu button:hover,
+.session-menu button:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
 .blank-head {
   flex-wrap: wrap;
 }

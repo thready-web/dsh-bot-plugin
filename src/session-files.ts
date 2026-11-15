@@ -1,4 +1,4 @@
-/** Remove one blank session's on-disk log. DSH has no delete RPC; session/list rescans these directories. */
+/** Remove one session's on-disk log. DSH has no delete RPC; session/list rescans these directories. */
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
