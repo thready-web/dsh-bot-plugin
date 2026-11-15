@@ -788,8 +788,8 @@ export function createWorkRuntime(
     for (const owner of book.ownerIds()) {
       if (engine.isBot(owner)) await admit(owner)
     }
-    for (const child of book.childIds()) await reconcileChild(child)
-    for (const owner of book.ownerIds()) await reconcileOwner(owner)
+    for (const child of book.childIdsForReconcile()) await reconcileChild(child)
+    for (const owner of book.ownerIdsForReconcile()) await reconcileOwner(owner)
     await promoteQueued()
   }
 
@@ -799,7 +799,7 @@ export function createWorkRuntime(
    */
   async function renewLiveLeases() {
     const renewals: string[] = []
-    for (const child of book.childIds()) {
+    for (const child of book.childIdsForReconcile()) {
       const attempt = book.attemptForChild(child)
       if (!attempt || (attempt.status !== 'started' && attempt.status !== 'enqueued')) continue
       if (!(await isChildLive(child))) continue
