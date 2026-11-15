@@ -35,8 +35,7 @@ export function workToolDefinitions(
           idempotencyKey: { type: 'string' },
           budget: {
             type: 'object',
-            description:
-              `Time and token budget for this ticket. When omitted, the host uses one standard slice (${SLICE}). Pass that slice. Do not estimate a smaller budget. Later grants add more slices with no cumulative ceiling.`,
+            description: `Time and token budget for this ticket. When omitted, the host uses one standard slice (${SLICE}). Pass that slice. Do not estimate a smaller budget. Later grants add more slices with no cumulative ceiling.`,
             properties: {
               wallMs: { type: 'integer', description: 'Expected maximum runtime in milliseconds.' },
               maxTokens: { type: 'integer', description: 'Expected maximum tokens.' },

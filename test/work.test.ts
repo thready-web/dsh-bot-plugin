@@ -763,7 +763,9 @@ test('using up a token slice pauses for another grant, and the next grant adds a
   assert.equal(quota.waiting, true)
   assert.equal(quota.reason, 'tokens')
   assert.equal(ctx.world.cancels.length, 0)
-  const asked = ctx.work.detail(job.ticketId)!.events.filter((event: any) => event.text?.includes('[foundations:extension]'))
+  const asked = ctx.work
+    .detail(job.ticketId)!
+    .events.filter((event: any) => event.text?.includes('[foundations:extension]'))
   assert.equal(asked.length, 1)
   assert.match(asked[0].text, /no cumulative ceiling/)
   assert.match(asked[0].text, /no limit on how many times/)
