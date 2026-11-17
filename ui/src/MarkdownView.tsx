@@ -76,7 +76,11 @@ function fileTarget(href: string | undefined): { path: string; line?: number } |
   return line != null && Number.isSafeInteger(line) && line > 0 ? { path, line } : { path }
 }
 
-const MarkdownContext = createContext<{ streaming: boolean; onOpenFile?: (path: string, line?: number) => void }>({
+const MarkdownContext = createContext<{
+  streaming: boolean
+  onOpenFile?: (path: string, line?: number) => void
+  resolveImage?: (src: string) => string | undefined
+}>({
   streaming: false,
 })
 
@@ -85,9 +89,15 @@ const MarkdownContext = createContext<{ streaming: boolean; onOpenFile?: (path: 
 const MARKDOWN_COMPONENTS: Components = {
   pre: Pre,
   img({ src, alt, title }) {
+    const { resolveImage } = useContext(MarkdownContext)
+    const resolved = typeof src === 'string' ? resolveImage?.(src) : undefined
     const local = typeof src === 'string' && src !== '' && !/^(?:[a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(src)
     return (
-      <ImagePreview src={local ? `/dsh-bot/${src.replace(/^\.\//, '')}` : src || undefined} alt={alt} title={title} />
+      <ImagePreview
+        src={resolved ?? (local ? `/dsh-bot/${src.replace(/^\.\//, '')}` : src || undefined)}
+        alt={alt}
+        title={title}
+      />
     )
   },
   code({ className, children }) {
@@ -147,12 +157,14 @@ export function MarkdownView({
   text,
   streaming = false,
   onOpenFile,
+  resolveImage,
 }: {
   text: string
   streaming?: boolean
   onOpenFile?: (path: string, line?: number) => void
+  resolveImage?: (src: string) => string | undefined
 }) {
-  const context = useMemo(() => ({ streaming, onOpenFile }), [streaming, onOpenFile])
+  const context = useMemo(() => ({ streaming, onOpenFile, resolveImage }), [streaming, onOpenFile, resolveImage])
   return (
     <MarkdownContext.Provider value={context}>
       <div className={streaming ? 'markdown streaming' : 'markdown'}>

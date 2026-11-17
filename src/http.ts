@@ -1,4 +1,5 @@
-import { createReadStream, statSync } from 'node:fs'
+import { createReadStream, statSync, type ReadStream } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createDesk, defaultSessionCwd, type DeskRequest } from './desk.ts'
@@ -63,6 +64,7 @@ export function registerHttp(
           stillAttached: sessionId => attachedSession(ctx, sessionId),
           rpc: (endpoint, args, req) => hostRpc(req, endpoint, args),
           usage: req => hostUsage(req),
+          files: { home: homedir(), dshHome: process.env.DSH_HOME ?? '' },
         })
   /**
    * @param {import('node:http').IncomingMessage} req
@@ -116,6 +118,15 @@ export function registerHttp(
       ? '/session-foundations/api' + rawPath.slice('/dsh-bot/api'.length)
       : rawPath
     try {
+      if (desk && req.method === 'GET' && path === '/session-foundations/api/files/raw') {
+        return pipeDownload(res, await desk.openDownload(req, url), url.searchParams.get('inline') === '1')
+      }
+      if (desk && req.method === 'POST' && path === '/session-foundations/api/files') {
+        const outcome = await desk.saveUpload(req, url)
+        send(res, outcome.status, outcome.body)
+        if (outcome.status === 413) res.on('finish', () => req.destroy())
+        return
+      }
       if (desk && desk.owns(req.method ?? 'GET', path)) {
         const outcome = await desk.handle(req.method ?? 'GET', path, url, req)
         return send(res, outcome.status, outcome.body)
@@ -645,11 +656,36 @@ function reject(ctx: HostContext, req: import('node:http').IncomingMessage) {
   return 0
 }
 
-/**
- * @param {import('node:http').ServerResponse} res
- * @param {number} status
- * @param {unknown} body
- */
+function imageMedia(name: string): string | null {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  if (ext === 'png') return 'image/png'
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'webp') return 'image/webp'
+  return null
+}
+
+function pipeDownload(
+  res: import('node:http').ServerResponse,
+  opened: { status: number; body: { error: string } } | { status: 200; name: string; size: number; stream: ReadStream },
+  inline = false,
+) {
+  if (!('stream' in opened)) return send(res, opened.status, opened.body)
+  const encoded = encodeURIComponent(opened.name)
+  const image = inline ? imageMedia(opened.name) : null
+  res.writeHead(opened.status, {
+    'content-type': image ?? 'application/octet-stream',
+    'content-length': opened.size,
+    'content-disposition': image ? `inline; filename*=UTF-8''${encoded}` : `attachment; filename*=UTF-8''${encoded}`,
+    'x-content-type-options': 'nosniff',
+    'cache-control': 'private, no-store',
+    'content-security-policy': "default-src 'none'; sandbox",
+  })
+  opened.stream.on('error', () => res.destroy())
+  res.on('close', () => opened.stream.destroy())
+  opened.stream.pipe(res)
+}
+
 function send(res: import('node:http').ServerResponse, status: number, body: unknown) {
   if (status === 0) return
   const text = JSON.stringify(body)
@@ -832,6 +868,7 @@ const DESK_TYPES = new Map([
   ['.png', 'image/png'],
   ['.webp', 'image/webp'],
   ['.woff2', 'font/woff2'],
+  ['.ttf', 'font/ttf'],
 ])
 
 /** Workbench files built into public/. API routes are handled before this. */

@@ -1,10 +1,21 @@
 /** Workbench routes inside the DSH process. The browser calls /dsh-bot/api. */
 
 import { mkdirSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { Readable } from 'node:stream'
 import { openLedger, validIdempotencyKey } from './desk-ledger.ts'
 import { openSessionPreviews } from './session-previews.ts'
 import { purgeSessionFiles, sessionDirectory, writeBotMarker } from './session-files.ts'
+import {
+  MAX_UPLOAD_BYTES,
+  listDirectory,
+  openDownload,
+  readFileText,
+  resolveFileRoots,
+  saveUploadFile,
+  type FileError,
+} from './workspace-files.ts'
 
 export interface RpcEnvelope {
   result?: { ok?: boolean; value?: any; error?: { message?: string; code?: string } }
@@ -62,6 +73,7 @@ const SECRET_KEY = /token|secret|password|authorization|api[-_]?key|cookie/i
  * @param {(sessionId: string) => boolean} [options.stillAttached]
  * @param {(endpoint: string, args: Record<string, unknown>, req: DeskRequest) => Promise<{ status: number, body: RpcEnvelope }>} options.rpc
  * @param {(req: DeskRequest) => Promise<Record<string, unknown>>} options.usage
+ * @param {{ home: string, dshHome: string }} [options.files] Browser roots. Defaults to the process home and DSH_HOME.
  */
 export function createDesk(options: {
   ledgerFile: string
@@ -82,6 +94,7 @@ export function createDesk(options: {
     req: DeskRequest,
   ) => Promise<{ status: number; body: RpcEnvelope }>
   usage: (req: DeskRequest) => Promise<Record<string, unknown>>
+  files?: { home: string; dshHome: string }
 }) {
   const ledger = openLedger(options.ledgerFile)
   const sessionPreviews = openSessionPreviews(join(dirname(options.ledgerFile), 'session-previews.json'))
@@ -103,7 +116,14 @@ export function createDesk(options: {
       if (sub === null) return false
       if (
         method === 'GET' &&
-        (sub === '/health' || sub === '/sessions' || sub === '/tasks' || sub === '/usage' || sub === '/file')
+        (sub === '/health' ||
+          sub === '/sessions' ||
+          sub === '/tasks' ||
+          sub === '/usage' ||
+          sub === '/file' ||
+          sub === '/files' ||
+          sub === '/files/roots' ||
+          sub === '/files/text')
       )
         return true
       if (method === 'POST' && (sub === '/sessions' || sub === '/sessions/previews' || sub === '/tasks')) return true
@@ -139,7 +159,24 @@ export function createDesk(options: {
       if (method === 'POST' && cancel) return cancelTask(req, cancel[1])
       if (method === 'GET' && sub === '/usage') return { status: 200, body: redactSecrets(await options.usage(req)) }
       if (method === 'GET' && sub === '/file') return filePreview(req, url)
+      if (method === 'GET' && sub === '/files/roots') return fileRoots(req, url.searchParams.get('sessionId') ?? '')
+      if (method === 'GET' && sub === '/files')
+        return fileList(req, url.searchParams.get('sessionId') ?? '', url.searchParams.get('path') ?? '')
+      if (method === 'GET' && sub === '/files/text')
+        return fileText(req, url.searchParams.get('sessionId') ?? '', url.searchParams.get('path') ?? '')
       return { status: 404, body: { error: 'not_found' } }
+    },
+    openDownload(req: DeskRequest, url: URL) {
+      return downloadFile(req, url.searchParams.get('sessionId') ?? '', url.searchParams.get('path') ?? '')
+    },
+    saveUpload(req: DeskRequest, url: URL) {
+      return uploadFile(
+        req,
+        url.searchParams.get('sessionId') ?? '',
+        url.searchParams.get('dir') ?? '',
+        url.searchParams.get('name') ?? '',
+        url.searchParams.get('overwrite') === '1',
+      )
     },
   }
 
@@ -422,6 +459,111 @@ export function createDesk(options: {
 
   /**
    * @param {DeskRequest} req
+   * @param {string} sessionId
+   */
+  async function fileRoots(req: DeskRequest, sessionId: string) {
+    const ready = await browserAccess(req, sessionId)
+    if ('error' in ready) return fileFailure(ready.error)
+    return { status: 200, body: ready.access.roots }
+  }
+
+  /**
+   * @param {DeskRequest} req
+   * @param {string} sessionId
+   * @param {string} filePath
+   */
+  async function fileList(req: DeskRequest, sessionId: string, filePath: string) {
+    const ready = await browserAccess(req, sessionId)
+    if ('error' in ready) return fileFailure(ready.error)
+    const listed = listDirectory(filePath, ready.access)
+    if (!listed.ok) return fileFailure(listed.error)
+    return { status: 200, body: listed.value }
+  }
+
+  /**
+   * @param {DeskRequest} req
+   * @param {string} sessionId
+   * @param {string} filePath
+   */
+  async function fileText(req: DeskRequest, sessionId: string, filePath: string) {
+    const ready = await browserAccess(req, sessionId)
+    if ('error' in ready) return fileFailure(ready.error)
+    const text = readFileText(filePath, ready.access)
+    if (!text.ok) return fileFailure(text.error)
+    return { status: 200, body: text.value }
+  }
+
+  /**
+   * @param {DeskRequest} req
+   * @param {string} sessionId
+   * @param {string} filePath
+   */
+  async function downloadFile(req: DeskRequest, sessionId: string, filePath: string) {
+    const ready = await browserAccess(req, sessionId)
+    if ('error' in ready) return fileFailure(ready.error)
+    const opened = openDownload(filePath, ready.access)
+    if (!opened.ok) return fileFailure(opened.error)
+    return { status: 200 as const, ...opened.value }
+  }
+
+  /**
+   * @param {DeskRequest} req
+   * @param {string} sessionId
+   * @param {string} dir
+   * @param {string} name
+   * @param {boolean} overwrite
+   */
+  async function uploadFile(req: DeskRequest, sessionId: string, dir: string, name: string, overwrite: boolean) {
+    const declared = Number(headerValue(req, 'content-length'))
+    if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) return fileFailure('too_large')
+    if (!(req instanceof Readable)) return fileFailure('bad_path')
+    const ready = await browserAccess(req, sessionId)
+    if ('error' in ready) {
+      req.resume()
+      return fileFailure(ready.error)
+    }
+    const saved = await saveUploadFile(dir, name, req, ready.access, { overwrite, maxBytes: MAX_UPLOAD_BYTES })
+    if (!saved.ok) {
+      if (saved.error !== 'too_large') req.resume()
+      return fileFailure(saved.error)
+    }
+    return { status: 201, body: saved.value }
+  }
+
+  /**
+   * @param {DeskRequest} req
+   * @param {string} sessionId
+   */
+  async function browserAccess(req: DeskRequest, sessionId: string) {
+    const cwd = await workspaceCwd(req, sessionId)
+    if (typeof cwd !== 'string') return cwd
+    const files = options.files ?? { home: homedir(), dshHome: process.env.DSH_HOME ?? '' }
+    return { access: resolveFileRoots({ workspace: cwd, home: files.home, dshHome: files.dshHome }) }
+  }
+
+  /**
+   * @param {DeskRequest} req
+   * @param {string} sessionId
+   * @returns {Promise<string | { error: 'invalid_session' }>}
+   */
+  async function workspaceCwd(req: DeskRequest, sessionId: string): Promise<string | { error: 'invalid_session' }> {
+    if (!PREVIEW_SESSION.test(sessionId)) return { error: 'invalid_session' }
+    let cwd = options.sessionCwd
+    try {
+      const listed = await options.rpc('session/list', { _request: {} }, req)
+      const items = listed.body?.result?.value?.items
+      if (Array.isArray(items)) {
+        const item = items.find(entry => entry?.sessionId === sessionId)
+        if (typeof item?.cwd === 'string' && item.cwd !== '') cwd = item.cwd
+      }
+    } catch {
+      /* the configured workspace remains */
+    }
+    return cwd
+  }
+
+  /**
+   * @param {DeskRequest} req
    * @param {URL} url
    */
   async function filePreview(req: DeskRequest, url: URL) {
@@ -584,6 +726,31 @@ function idempotencyOf(req: DeskRequest, body: Record<string, unknown>) {
   const header = typeof value === 'string' ? value : ''
   if (header !== '') return header
   return typeof body.idempotencyKey === 'string' ? body.idempotencyKey : ''
+}
+
+function fileFailure(error: FileError | 'invalid_session') {
+  const status =
+    error === 'denied'
+      ? 403
+      : error === 'missing'
+        ? 404
+        : error === 'binary'
+          ? 415
+          : error === 'too_large'
+            ? 413
+            : error === 'exists'
+              ? 409
+              : 400
+  return { status, body: { error } }
+}
+
+/**
+ * @param {DeskRequest} req
+ * @param {string} name
+ */
+function headerValue(req: DeskRequest, name: string): string {
+  const value = req.headers[name]
+  return Array.isArray(value) ? (value[0] ?? '') : (value ?? '')
 }
 
 /**

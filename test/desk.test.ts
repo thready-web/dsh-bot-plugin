@@ -535,6 +535,90 @@ test('delete removes the persistence log, not the copy under the profile directo
   }
 })
 
+test('file browser uses the session workspace and keeps the runtime directory closed', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'dsh-bot-browser-'))
+  const home = join(base, 'home')
+  const dshHome = join(home, '.dsh-bot')
+  const workspace = join(dshHome, 'workspace')
+  const other = join(base, 'other')
+  mkdirSync(workspace, { recursive: true })
+  mkdirSync(other, { recursive: true })
+  writeFileSync(join(workspace, 'readme.md'), 'session work')
+  writeFileSync(join(other, 'other.txt'), 'other work')
+  writeFileSync(join(dshHome, 'token'), 'secret')
+  const sessionId = 'session-browser'
+  const desk = createDesk({
+    ledgerFile: join(base, 'desk-ledger.json'),
+    profileDir: base,
+    sessionCwd: other,
+    files: { home, dshHome },
+    isBot: () => false,
+    mark: () => ({ kind: 'bot' }),
+    hold: () => {},
+    release: () => {},
+    usage: async () => ({ connected: false }),
+    rpc: async (endpoint: any) => {
+      if (endpoint === 'session/list') {
+        return {
+          status: 200,
+          body: { result: { ok: true, value: { items: [{ sessionId, cwd: workspace }] } } },
+        }
+      }
+      return { status: 404, body: { result: { ok: false } } }
+    },
+  })
+  const read = (sub: string) =>
+    desk.handle('GET', `${API}${sub.split('?')[0]}`, new URL(`http://127.0.0.1${API}${sub}`), incoming())
+  try {
+    assert.equal(desk.owns('GET', `${API}/files`), true)
+    assert.equal(desk.owns('GET', `${API}/files/raw`), false)
+    assert.equal(desk.owns('POST', `${API}/files`), false)
+    const roots = await read(`/files/roots?sessionId=${sessionId}`)
+    assert.equal(roots.status, 200)
+    assert.equal(roots.body.workspace.endsWith(`${join('.dsh-bot', 'workspace')}`), true)
+    assert.notEqual(roots.body.workspace, other)
+    const listed = await read(`/files?sessionId=${sessionId}&path=${encodeURIComponent(workspace)}`)
+    assert.equal(listed.status, 200)
+    assert.equal(listed.body.items[0].name, 'readme.md')
+    const token = await read(`/files/text?sessionId=${sessionId}&path=${encodeURIComponent(join(dshHome, 'token'))}`)
+    assert.equal(token.status, 403)
+    assert.equal(token.body.error, 'denied')
+    const foreign = await read('/files/roots?sessionId=bot-nope')
+    assert.equal(foreign.status, 400)
+    const uploaded = await desk.saveUpload(
+      Object.assign(Readable.from([Buffer.from('via-desk')]), { headers: {} }),
+      new URL(
+        `http://127.0.0.1${API}/files?sessionId=${sessionId}&dir=${encodeURIComponent(workspace)}&name=added.txt`,
+      ),
+    )
+    assert.equal(uploaded.status, 201)
+    assert.equal(readFileSync(join(workspace, 'added.txt'), 'utf8'), 'via-desk')
+    const text = await read(
+      `/files/text?sessionId=${sessionId}&path=${encodeURIComponent(join(workspace, 'readme.md'))}`,
+    )
+    assert.equal(text.status, 200)
+    assert.equal(text.body.text, 'session work')
+    const raw = await desk.openDownload(
+      incoming(),
+      new URL(
+        `http://127.0.0.1${API}/files/raw?sessionId=${sessionId}&path=${encodeURIComponent(join(workspace, 'readme.md'))}`,
+      ),
+    )
+    assert.equal('stream' in raw, true)
+    if (!('stream' in raw)) return
+    const chunks: Buffer[] = []
+    for await (const chunk of raw.stream) chunks.push(Buffer.from(chunk))
+    assert.equal(Buffer.concat(chunks).toString('utf8'), 'session work')
+    const huge = await desk.saveUpload(
+      Object.assign(Readable.from([Buffer.from('x')]), { headers: { 'content-length': String(50 * 1024 * 1024 + 1) } }),
+      new URL(`http://127.0.0.1${API}/files?sessionId=${sessionId}&dir=${encodeURIComponent(workspace)}&name=huge.bin`),
+    )
+    assert.equal(huge.status, 413)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
 /**
  * @param {string} path
  */

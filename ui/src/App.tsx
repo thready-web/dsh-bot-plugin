@@ -12,7 +12,7 @@ import {
   workPreview,
   type WorkTicket,
 } from './work'
-import { FilePreview } from './FilePreview'
+import { FileBrowser } from './FileBrowser'
 import { NewSessionSheet, useSessionBasis } from './NewSession'
 import { BotChatView } from './BotChatView'
 import { TurnRail } from './TurnRail'
@@ -196,7 +196,8 @@ export function App() {
   )
   const authorizationRevision = useRef<unknown>(undefined)
   const interactionSync = useRef<ReturnType<typeof createInteractionSync> | null>(null)
-  const [filePreview, setFilePreview] = useState<{ path: string; line?: number } | null>(null)
+  const [filePreview, setFilePreview] = useState<{ path: string; line?: number; token: number } | null>(null)
+  const [filesOpen, setFilesOpen] = useState(false)
   const [archived, setArchived] = useState<ReadonlySet<string>>(() => new Set())
   const [blanksOpen, setBlanksOpen] = useState(false)
   const [setupOpen, setSetupOpen] = useState(false)
@@ -333,6 +334,7 @@ export function App() {
     setBotChat(false)
     setSessionId(id)
     setMenuOpen(false)
+    setFilesOpen(false)
     setFilePreview(null)
     setTask(null)
     setReason('')
@@ -347,6 +349,7 @@ export function App() {
     setBotChat(false)
     setSessionId(id)
     setMenuOpen(false)
+    setFilesOpen(false)
     setFilePreview(null)
     setTask(null)
     setReason('')
@@ -358,6 +361,7 @@ export function App() {
   function leaveWorker() {
     setBotChat(false)
     setMenuOpen(false)
+    setFilesOpen(false)
     setFilePreview(null)
     const state = history.state as { kind?: string } | null
     if (state?.kind === 'worker') {
@@ -588,6 +592,7 @@ export function App() {
     const onHash = () => {
       setBotChat(false)
       setMenuOpen(false)
+      setFilesOpen(false)
       setFilePreview(null)
       setTask(null)
       setReason('')
@@ -1272,7 +1277,15 @@ export function App() {
               {t('nav.back')}
             </button>
           ) : (
-            <button type="button" className="back" onClick={() => setSessionId('')}>
+            <button
+              type="button"
+              className="back"
+              onClick={() => {
+                setFilesOpen(false)
+                setFilePreview(null)
+                setSessionId('')
+              }}
+            >
               {t('nav.sessions')}
             </button>
           )}
@@ -1287,6 +1300,23 @@ export function App() {
           <h1>{botChat ? t('nav.botMessages') : title}</h1>
           {!botChat && workPreview(works, workNow, t) ? (
             <span className="work-chip">{workPreview(works, workNow, t)}</span>
+          ) : null}
+          {sessionId && !botChat ? (
+            <button
+              type="button"
+              className="files-open"
+              aria-pressed={filesOpen}
+              onClick={() => {
+                if (filesOpen) {
+                  setFilesOpen(false)
+                  setFilePreview(null)
+                  return
+                }
+                setFilesOpen(true)
+              }}
+            >
+              {t('files.open')}
+            </button>
           ) : null}
           <a href={nativeHref}>{t('nav.official')}</a>
         </header>
@@ -1318,7 +1348,10 @@ export function App() {
                   <BotChatView
                     items={exchange}
                     botLabel={botLabel}
-                    onOpenFile={(path, line) => setFilePreview({ path, line })}
+                    onOpenFile={(path, line) => {
+                      setFilePreview({ path, line, token: Date.now() })
+                      setFilesOpen(true)
+                    }}
                   />
                 ) : (
                   <Transcript
@@ -1341,7 +1374,10 @@ export function App() {
                     }}
                     onSupply={supplyWork}
                     onOpenSession={openWorkerSession}
-                    onOpenFile={(path, line) => setFilePreview({ path, line })}
+                    onOpenFile={(path, line) => {
+                      setFilePreview({ path, line, token: Date.now() })
+                      setFilesOpen(true)
+                    }}
                     onOpenInbox={() => setBotChat(true)}
                     botLabel={botLabel}
                     chat={isBotSession}
@@ -1573,12 +1609,16 @@ export function App() {
         />
       ) : null}
       {settings === 'cua' && cuaAvailable ? <CuaPanel onClose={() => setSettings(null)} /> : null}
-      {sessionId && filePreview ? (
-        <FilePreview
+      {sessionId ? (
+        <FileBrowser
+          key={sessionId}
+          open={filesOpen}
           sessionId={sessionId}
-          path={filePreview.path}
-          line={filePreview.line}
-          onClose={() => setFilePreview(null)}
+          focus={filePreview}
+          onClose={() => {
+            setFilesOpen(false)
+            setFilePreview(null)
+          }}
         />
       ) : null}
       {sessionMenu ? (
