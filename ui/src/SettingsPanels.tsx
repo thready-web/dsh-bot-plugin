@@ -20,11 +20,13 @@ export function SettingsDrawer({
   closeLabel,
   onClose,
   children,
+  className,
 }: {
   title: string
   closeLabel: string
   onClose: () => void
   children: ReactNode
+  className?: string
 }) {
   useEffect(() => {
     if (typeof document === 'undefined') return
@@ -41,7 +43,7 @@ export function SettingsDrawer({
   }, [onClose])
 
   const node = (
-    <div className="settings-drawer">
+    <div className={className ? `settings-drawer ${className}` : 'settings-drawer'}>
       <div className="settings-drawer-mask" onClick={onClose} />
       <div className="settings-drawer-sheet" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
         <div className="settings-drawer-handle" aria-hidden="true" />

@@ -229,7 +229,12 @@ export class Engine {
    * @param {string} sessionId
    * @param {number} turn
    */
-  freeze(sessionId: string, turn: number) {
+  /**
+   * Active facts, persona, state, and skills as freeze would select them.
+   * Does not insert a view revision.
+   * @param {string} sessionId
+   */
+  liveSelection(sessionId: string) {
     const binding = this.ensureSession(sessionId)
     const state = this.stateRow(sessionId)
     const facts = this.store.db
@@ -245,13 +250,20 @@ export class Engine {
       FROM skill_bindings WHERE session_id = ? ORDER BY skill_id
     `)
       .all(sessionId)
-    const selected = {
-      factIds: facts,
-      memoryIds: [],
-      personaVersionId: binding.persona_version_id,
-      workingStateRev: state?.revision ?? 0,
-      skills,
+    return {
+      binding,
+      selected: {
+        factIds: facts,
+        memoryIds: [] as number[],
+        personaVersionId: binding.persona_version_id,
+        workingStateRev: state?.revision ?? 0,
+        skills,
+      },
     }
+  }
+
+  freeze(sessionId: string, turn: number) {
+    const { binding, selected } = this.liveSelection(sessionId)
     const revision = binding.last_view_revision + 1
     const frozenAt = now()
     this.store.db
@@ -267,7 +279,7 @@ export class Engine {
         frozenAt,
         binding.last_event_watermark,
         binding.persona_version_id,
-        state?.revision ?? 0,
+        selected.workingStateRev,
         'pending',
         binding.compaction_epoch,
         JSON.stringify(selected),

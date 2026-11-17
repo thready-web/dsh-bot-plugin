@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from './api'
-import { DRAWER_PREF, clampDrawerWidth, closedPush, filePush } from './file-layout'
+import { useDrawerFrame } from './drawer-frame'
+import { DRAWER_PREF, clampDrawerWidth } from './file-layout'
 import { isMarkdownName } from './highlight'
 import { useI18n } from './locale'
 import { MarkdownView } from './MarkdownView'
@@ -102,7 +103,6 @@ export function FileBrowser({
   const focusRef = useRef(focus)
   const presentRef = useRef(present)
   const motionRef = useRef(motion)
-  const pushed = useRef(false)
   focusRef.current = focus
   presentRef.current = present
   motionRef.current = motion
@@ -144,56 +144,7 @@ export function FileBrowser({
 
   const laidOut = clampDrawerWidth(width)
 
-  useLayoutEffect(() => {
-    const root = document.documentElement
-    const apply = (layout: { inset: number; insetRight: number; reserve: number; sidebar: number }) => {
-      root.style.setProperty('--files-inset', `${layout.inset}px`)
-      root.style.setProperty('--files-inset-right', `${layout.insetRight}px`)
-      root.style.setProperty('--files-reserve', `${layout.reserve}px`)
-      root.style.setProperty('--files-sidebar', `${layout.sidebar}px`)
-    }
-    if (!present || narrow) {
-      pushed.current = false
-      root.classList.remove('files-push', 'files-closing', 'files-resizing')
-      apply(closedPush(0))
-      return
-    }
-    const target = motion === 'out' ? closedPush(viewport) : filePush(viewport, laidOut)
-    root.classList.add('files-push')
-    root.classList.toggle('files-closing', motion === 'out')
-    root.classList.toggle('files-resizing', resizing)
-    if (!pushed.current && motion !== 'out') {
-      pushed.current = true
-      root.classList.add('files-resizing')
-      apply(closedPush(viewport))
-      let fired = false
-      const frame = requestAnimationFrame(() => {
-        fired = true
-        root.classList.remove('files-resizing')
-        if (!presentRef.current) return
-        const next = motionRef.current === 'out' ? closedPush(window.innerWidth) : filePush(window.innerWidth, laidOut)
-        apply(next)
-      })
-      return () => {
-        cancelAnimationFrame(frame)
-        if (!fired) pushed.current = false
-      }
-    }
-    pushed.current = true
-    apply(target)
-  }, [present, narrow, motion, laidOut, resizing, viewport])
-
-  useEffect(
-    () => () => {
-      const root = document.documentElement
-      root.classList.remove('files-push', 'files-closing', 'files-resizing')
-      root.style.setProperty('--files-inset', '0px')
-      root.style.setProperty('--files-inset-right', '0px')
-      root.style.setProperty('--files-reserve', '0px')
-      root.style.setProperty('--files-sidebar', '268px')
-    },
-    [],
-  )
+  useDrawerFrame({ present, narrow, motion, width: laidOut, resizing, viewport })
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

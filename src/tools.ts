@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto'
 import { toolError, asStoreFailure, type ToolPayload } from './errors.ts'
 import { syncFactFts, syncMemoryFts, EMPTY_STATE } from './engine.ts'
+import { queryMemory, readMemoryEntity, type MemoryEntity, type MemoryType } from './memory-catalog.ts'
+
+const SHARED = ' A worker uses the main bot memory, not a private copy.'
+const TYPES = ['persona', 'profile', 'fact', 'episodic', 'procedural', 'state', 'skill'] as const
 
 const OUTPUT = {
   schema: {
@@ -25,7 +29,7 @@ export function toolDefinitions(engine: import('./engine.ts').Engine, viewRevisi
   return [
     tool(
       'foundations_recall',
-      'Search facts and long-term memories that are still active in this session. Forgotten, superseded, and unconfirmed rows are omitted.',
+      `Search facts and long-term memories that are still active in this session. Forgotten, superseded, and unconfirmed rows are omitted.${SHARED}`,
       {
         type: 'object',
         properties: {
@@ -49,7 +53,7 @@ export function toolDefinitions(engine: import('./engine.ts').Engine, viewRevisi
     ),
     tool(
       'foundations_remember',
-      'Store one fact or long-term memory as active. An idempotency key is required.',
+      `Store one fact or long-term memory as active. An idempotency key is required.${SHARED}`,
       {
         type: 'object',
         properties: {
@@ -113,7 +117,7 @@ export function toolDefinitions(engine: import('./engine.ts').Engine, viewRevisi
     ),
     tool(
       'foundations_correct',
-      'Replace one still-active fact or memory with a new row. expectedRevision is required.',
+      `Replace one still-active fact or memory with a new row. expectedRevision is required.${SHARED}`,
       {
         type: 'object',
         properties: {
@@ -139,7 +143,7 @@ export function toolDefinitions(engine: import('./engine.ts').Engine, viewRevisi
     ),
     tool(
       'foundations_forget',
-      'Mark one fact or memory forgotten and drop it from search. The original log is not deleted.',
+      `Mark one fact or memory forgotten and drop it from search. The original log is not deleted.${SHARED}`,
       {
         type: 'object',
         properties: {
@@ -163,7 +167,7 @@ export function toolDefinitions(engine: import('./engine.ts').Engine, viewRevisi
     ),
     tool(
       'foundations_state_update',
-      'Patch the working draft for this session. expectedRevision is required.',
+      `Patch the working draft for this session. expectedRevision is required.${SHARED}`,
       {
         type: 'object',
         properties: {
@@ -186,7 +190,7 @@ export function toolDefinitions(engine: import('./engine.ts').Engine, viewRevisi
     ),
     tool(
       'foundations_skill_load',
-      'Read the text of an enabled, non-revoked skill in this session. This does not grant tools.',
+      `Read the text of an enabled, non-revoked skill in this session. This does not grant tools.${SHARED}`,
       {
         type: 'object',
         properties: {
@@ -208,7 +212,101 @@ export function toolDefinitions(engine: import('./engine.ts').Engine, viewRevisi
         }
       },
     ),
+    tool(
+      'foundations_memory_list',
+      `List persona, profile, facts, episodes, working state, and skills in this session. Forgotten rows are tombstones without their text. This is not a search; use foundations_recall to find active facts and memories by words.${SHARED}`,
+      {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: [...TYPES], description: 'Omit to list every type.' },
+          limit: { type: 'integer', description: 'Default 20, maximum 50' },
+          cursor: { type: 'string', description: 'Offset returned as nextCursor.' },
+          sessionId: { type: 'string', description: 'Ignored. The host binds the session.' },
+        },
+      },
+      async (args, hostId) => {
+        const type = args.type == null || args.type === '' ? null : args.type
+        if (type != null && (typeof type !== 'string' || !TYPES.includes(type as MemoryType))) {
+          return toolError('VALIDATION', 'type is invalid.')
+        }
+        const requested = args.limit
+        const limit = Math.min(
+          50,
+          Math.max(1, typeof requested === 'number' && Number.isInteger(requested) ? requested : 20),
+        )
+        const cursor = args.cursor == null || args.cursor === '' ? 0 : Number(args.cursor)
+        if (!Number.isInteger(cursor) || cursor < 0) return toolError('VALIDATION', 'cursor is invalid.')
+        const page = queryMemory(engine, hostId, { type: type as MemoryType | null, limit, offset: cursor })
+        return ok(revision(hostId), 0, page)
+      },
+    ),
+    tool(
+      'foundations_memory_read',
+      `Read one memory entity by id, such as fact:1, episodic:2, persona:1, state:current, or skill:guide. Forgotten text stays hidden.${SHARED}`,
+      {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          sessionId: { type: 'string', description: 'Ignored. The host binds the session.' },
+        },
+        required: ['id'],
+      },
+      async (args, hostId) => {
+        if (typeof args.id !== 'string' || args.id.trim() === '') return toolError('VALIDATION', 'id is required.')
+        const entity = readMemoryEntity(engine, hostId, args.id.trim())
+        if (!entity) return toolError('NOT_FOUND', 'No memory entity was found in this session.')
+        return ok(revision(hostId), 0, { entity: publicEntity(entity) })
+      },
+    ),
   ]
+}
+
+/**
+ * The bot's own session, or the main bot that owns this worker. Anyone else has no memory.
+ * @param {(sessionId: string) => boolean} isBot
+ * @param {string} sessionId
+ * @param {(sessionId: string) => string | null} ownerOf
+ */
+export function memorySessionFor(
+  isBot: (sessionId: string) => boolean,
+  sessionId: string,
+  ownerOf: (sessionId: string) => string | null,
+): string | null {
+  if (isBot(sessionId)) return sessionId
+  const owner = ownerOf(sessionId)
+  if (!owner || owner === sessionId || !isBot(owner)) return null
+  return owner
+}
+
+/**
+ * Run a memory tool against the resolved session. Workers are forwarded to the main bot.
+ * @param {(args: Record<string, unknown>, exec: { agent?: { id?: string } } | null | undefined) => Promise<ToolPayload>} execute
+ * @param {Record<string, unknown>} args
+ * @param {{ agent?: { id?: string } } | null | undefined} exec
+ * @param {(sessionId: string) => string | null} resolve
+ */
+export async function callMemoryTool(
+  execute: (
+    args: Record<string, unknown>,
+    exec: { agent?: { id?: string } } | null | undefined,
+  ) => Promise<ToolPayload>,
+  args: Record<string, unknown>,
+  exec: { agent?: { id?: string } } | null | undefined,
+  resolve: (sessionId: string) => string | null,
+): Promise<ToolPayload> {
+  const sessionId = exec?.agent?.id
+  if (typeof sessionId !== 'string' || sessionId === '')
+    return toolError('UNAVAILABLE', 'The host did not bind a sessionId.')
+  const memoryId = resolve(sessionId)
+  if (!memoryId)
+    return toolError(
+      'FORBIDDEN',
+      'This session is not a bot and not a worker of one, so persona and memory do not apply here.',
+    )
+  const forwarded = memoryId === sessionId ? exec : { ...exec, agent: { ...(exec?.agent ?? {}), id: memoryId } }
+  const result = await execute(args, forwarded)
+  if (result?.ok === true && memoryId !== sessionId) return { ...result, memorySessionId: memoryId }
+  return result
 }
 
 /**
@@ -448,6 +546,16 @@ function updateState(engine: import('./engine.ts').Engine, hostId: string, args:
  * @param {number} storeRevision
  * @param {unknown} data
  */
+function publicEntity(entity: MemoryEntity) {
+  const visible = entity.bodyState === 'visible' && !entity.tombstone
+  return {
+    ...entity,
+    title: entity.tombstone && entity.type !== 'skill' ? '' : entity.title,
+    summary: entity.tombstone ? '' : entity.summary,
+    body: visible ? (entity.body ?? null) : null,
+  }
+}
+
 function ok(viewRevision: number, storeRevision: number, data: unknown) {
   return { ok: true, viewRevision, storeRevision, data }
 }

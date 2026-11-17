@@ -14,6 +14,7 @@ import { releaseLoadedAgent } from './inbox.ts'
 import { createLogSource } from './log/source.ts'
 import { createLogSnapshotService } from './log/snapshot-service.ts'
 import { dispatchLogRequest, probeConnection, registerLogRoutes } from './log/routes.ts'
+import { handleMemoryRoute } from './memory-catalog.ts'
 
 /**
  * Local management routes. Model tools cannot confirm a persona or change revocation.
@@ -339,6 +340,10 @@ export function registerHttp(
         const sessionId = url.searchParams.get('sessionId') ?? ''
         if (sessionId === '') return send(res, 400, toolError('VALIDATION', 'sessionId is required.'))
         return send(res, 200, { ok: true, ...memoryView(engine, sessionId) })
+      }
+      if (req.method === 'GET' && path.startsWith('/session-foundations/api/memory/')) {
+        const memoryHit = handleMemoryRoute(engine, path, url)
+        if (memoryHit) return send(res, memoryHit.status, memoryHit.body)
       }
       if (req.method === 'POST' && path === '/session-foundations/api/skills/register') {
         const body = await readJson(req)

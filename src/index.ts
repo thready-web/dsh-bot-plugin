@@ -2,8 +2,8 @@ import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from '
 import { join } from 'node:path'
 import { openStore, pidAlive } from './store.ts'
 import { createEngine } from './engine.ts'
-import { renderPeers, renderSession, renderTickets } from './context.ts'
-import { toolDefinitions } from './tools.ts'
+import { renderPeers, renderSession, renderTickets, WORKER_MEMORY } from './context.ts'
+import { callMemoryTool, memorySessionFor, toolDefinitions } from './tools.ts'
 import { createTriggers } from './triggers.ts'
 import { followupDurable, liveAgent, logHasMessage, removePending } from './inbox.ts'
 import { createLogSource } from './log/source.ts'
@@ -92,11 +92,24 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
     rendered.set(sessionId, view)
     return view
   }
+  const memoryOf = (sessionId: string) =>
+    memorySessionFor(
+      id => engine.isBot(id),
+      sessionId,
+      id => work?.ownerOf(id) ?? null,
+    )
   const textFor = (sessionId: string, name: string) => {
-    if (!sessionId || !engine.isBot(sessionId)) return ''
-    const view = rendered.get(sessionId) ?? render(sessionId)
-    const texts: Record<string, string> = view.texts
-    return texts[name] ?? ''
+    if (!sessionId) return ''
+    const source = memoryOf(sessionId)
+    if (!source) return ''
+    if (source !== sessionId && name === 'foundations:chat') return ''
+    const view =
+      source === sessionId
+        ? (rendered.get(sessionId) ?? render(sessionId))
+        : renderSession(engine, source, window, { persist: false })
+    const text = view.texts[name] ?? ''
+    if (source !== sessionId && name === 'foundations:rules' && text !== '') return `${text}\n${WORKER_MEMORY}`
+    return text
   }
   const sessionFrom = (assemble: { agent?: { id?: string } } | null | undefined) => assemble?.agent?.id
 
@@ -116,8 +129,8 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
       interpolate: false,
       text: (assemble: { agent?: { id?: string } } | null | undefined) => {
         const sessionId = sessionFrom(assemble)
-        if (!sessionId || !engine.isBot(sessionId)) return ''
-        if (!rendered.has(sessionId)) render(sessionId)
+        if (!sessionId || !memoryOf(sessionId)) return ''
+        if (engine.isBot(sessionId) && !rendered.has(sessionId)) render(sessionId)
         return pick(sessionId)
       },
     })
@@ -141,14 +154,11 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
   for (const definition of toolDefinitions(engine, () => 0)) {
     const original = definition.execute
     definition.execute = async (args, exec) => {
+      const result = await callMemoryTool(original, args ?? {}, exec, memoryOf)
       const sessionId = exec?.agent?.id
-      if (typeof sessionId !== 'string' || sessionId === '')
-        return toolError('UNAVAILABLE', 'The host did not bind a sessionId.')
-      if (!engine.isBot(sessionId))
-        return toolError('FORBIDDEN', 'This session is not a bot, so persona and memory do not apply here.')
-      const result = await original(args, exec)
-      if (result && result.ok === true && (result.viewRevisionFrozen === 0 || result.viewRevisionFrozen == null)) {
-        result.viewRevisionFrozen = typeof sessionId === 'string' ? revisionOf(sessionId) : 0
+      const memoryId = typeof sessionId === 'string' ? memoryOf(sessionId) : null
+      if (result?.ok === true && memoryId && (result.viewRevisionFrozen === 0 || result.viewRevisionFrozen == null)) {
+        result.viewRevisionFrozen = revisionOf(memoryId)
       }
       return result
     }

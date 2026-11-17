@@ -25,7 +25,8 @@ export const CHAT = [
   "Prefer foundations_dispatch over bash, write, edit, and any official subagent tool for this bot's work. Official subagent is not the ticket worker.",
   'If an unfinished ticket can take the new work, call foundations_redirect and reuse that worker. Independent tasks may run in parallel up to the host slot cap. Dependent steps stay serial on the same ticket. Workers share the workspace: state file boundaries in the briefing, or run those tasks one after another. There is no filesystem isolation between workers.',
   'The host attaches recent main-session dialogue to the ticket, and the worker reads that log directly with no authorization prompt. Write the task in the briefing. Do not paste the transcript.',
-  'Workers usually have file tools (read, write, edit, working_directory) and foundations_report. They often do not have bash or other command tools. Assign work the worker can actually do. If a worker reports it is blocked because it has no command tools, do not dispatch that same command-only task to another worker with the same tools, and do not silently finish the job in the main session; tell the user the blockage.',
+  "Workers usually have file tools (read, write, edit, working_directory), foundations_report, and this bot's memory tools. They often do not have bash or other command tools. Assign work the worker can actually do. If a worker reports it is blocked because it has no command tools, do not dispatch that same command-only task to another worker with the same tools, and do not silently finish the job in the main session; tell the user the blockage.",
+  "A derived worker already receives this bot's persona, facts, working state, and skill index, and its memory tools read and write this same store. Do not paste that memory into the briefing.",
   'foundations_dispatch may return status=accepted (received, and possibly waiting for a slot), status=enqueued (placed on the execution queue, not started), or a BUDGET error when both the slot cap and the queue cap are full. accepted or enqueued is not completion and not started. Say in one sentence that the work is in the background, then end the turn. Do not sleep, poll, or keep calling tools while waiting.',
   "When the user asks how an unfinished ticket is progressing, call foundations_worker_history once and answer from that excerpt. Do not call it in a loop and do not sleep. The excerpt is not a result: do not call foundations_publish from it, and do not read, edit, or build the worker's files or finish the task. If the excerpt is empty, say there is no execution record yet.",
   "A ticket notice is not something the user said. On progress or artifact notices, do not take over the work and do not poll. On a question, answer or call foundations_supply. On a budget-extension notice, call foundations_grant with enough to exceed current usage, then end the turn. You cannot refuse a worker budget. Do not take over the worker's task: do not inspect, edit, or build its files, and do not run its commands. On a successful result, call foundations_publish, then write the user-visible reply. On a failed result, tell the user the reason and stop. Do not take over the task. Do not treat a later failed status after a published result as if the worker never delivered. Do not invent a final answer or accept the work on the user's behalf before a result. Do not call foundations_retry unless the user explicitly asks.",
@@ -34,6 +35,10 @@ export const CHAT = [
 ].join('\n')
 
 export const DEFAULT_WINDOW = 128000
+
+/** Shown only in a worker prompt, after the shared memory rules. */
+export const WORKER_MEMORY =
+  'You are a worker of the main bot. The persona, facts, memories, working state, and skills in this prompt belong to that main bot. foundations_recall, foundations_memory_list, foundations_memory_read, foundations_remember, foundations_correct, foundations_forget, foundations_state_update, and foundations_skill_load read and write that same store. They are not a private copy.'
 
 /**
  * Unmeasured character/4 estimate. Real provider windows are not assumed.
@@ -71,9 +76,19 @@ export function renderSession(
   engine: import('./engine.ts').Engine,
   sessionId: string,
   window: number = DEFAULT_WINDOW,
+  options: { persist?: boolean } = {},
 ) {
-  const binding = engine.ensureSession(sessionId)
-  const view = engine.viewForTurn(sessionId)
+  const persist = options.persist !== false
+  const live = persist ? null : engine.liveSelection(sessionId)
+  const binding = persist ? engine.ensureSession(sessionId) : live!.binding
+  const view = persist
+    ? engine.viewForTurn(sessionId)
+    : {
+        revision: binding.last_view_revision ?? 0,
+        snapshot_hash: null as string | null,
+        presence: 'unknown' as const,
+        selected: live!.selected,
+      }
   const cap = budgets(window)
   const selected = view.selected
   const persona = selected.personaVersionId == null ? null : engine.persona(selected.personaVersionId)
@@ -87,7 +102,7 @@ export function renderSession(
   }
   if (soul && estimateTokens(soul) > cap.soul.hard) soulCode = 'BUDGET_OVERFLOW'
   if (soulCode === 'HASH_MISMATCH' || soulCode === 'BUDGET_OVERFLOW') {
-    if (binding.status !== 'error') engine.markError(sessionId, soulCode)
+    if (persist && binding.status !== 'error') engine.markError(sessionId, soulCode)
     soul = ''
   }
 
@@ -176,7 +191,7 @@ export function renderSession(
   let presence = view.presence
   if (previous === 'pending') presence = view.presence === 'needs_reinject' ? 'needs_reinject' : 'unknown'
   else if (previous !== snapshotHash) presence = 'unknown'
-  engine.recordSnapshot(sessionId, view.revision, snapshotHash, presence)
+  if (persist) engine.recordSnapshot(sessionId, view.revision, snapshotHash, presence)
   return {
     sessionId,
     viewRevision: view.revision,

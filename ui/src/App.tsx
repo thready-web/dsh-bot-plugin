@@ -20,6 +20,7 @@ import { createInteractionSync, createAuthorizationCatalog } from './interaction
 import { ImageFailureScope } from './ImageFailureScope'
 import { CurrentActivity } from './CurrentActivity'
 import { currentActivity } from './current-activity'
+import { MemoryPanel } from './MemoryPanel'
 import { AuthorizationPanel, CuaPanel, PermissionPanel } from './SettingsPanels'
 import { presetLabel } from './permission-label.ts'
 import type { ToolApprovalView } from './ToolApprovalCard'
@@ -179,7 +180,7 @@ export function App() {
   const [reason, setReason] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [sessionMenu, setSessionMenu] = useState<{ id: string; x: number; y: number } | null>(null)
-  const [settings, setSettings] = useState<'permission' | 'authorization' | 'cua' | null>(null)
+  const [settings, setSettings] = useState<'permission' | 'authorization' | 'cua' | 'memory' | null>(null)
   const [approvals, setApprovals] = useState<ToolApprovalView[]>([])
   const [questionWaits, setQuestionWaits] = useState<
     Record<string, { remainingMs?: number; waitState?: UserQuestionWait }>
@@ -1305,6 +1306,24 @@ export function App() {
             <button
               type="button"
               className="files-open"
+              aria-pressed={settings === 'memory'}
+              onClick={() => {
+                if (settings === 'memory') {
+                  setSettings(null)
+                  return
+                }
+                setFilesOpen(false)
+                setFilePreview(null)
+                setSettings('memory')
+              }}
+            >
+              {t('memory.open')}
+            </button>
+          ) : null}
+          {sessionId && !botChat ? (
+            <button
+              type="button"
+              className="files-open"
               aria-pressed={filesOpen}
               onClick={() => {
                 if (filesOpen) {
@@ -1312,6 +1331,7 @@ export function App() {
                   setFilePreview(null)
                   return
                 }
+                setSettings(current => (current === 'memory' ? null : current))
                 setFilesOpen(true)
               }}
             >
@@ -1329,7 +1349,19 @@ export function App() {
             <span>{t('nav.worker')}</span>
           </nav>
         ) : null}
-        {basis && !botChat ? <p className="basis">{basis}</p> : null}
+        {sessionId && !botChat ? (
+          <button
+            type="button"
+            className="basis"
+            onClick={() => {
+              setFilesOpen(false)
+              setFilePreview(null)
+              setSettings('memory')
+            }}
+          >
+            {basis || t('memory.open')}
+          </button>
+        ) : null}
         <div className="chat-body">
           <HistoryLoading active={historyLoading || chunkBusy} progress={chunkProgress} />
           <div className="scroll" ref={scrollRef} aria-busy={historyLoading || chunkBusy || undefined}>
@@ -1349,6 +1381,7 @@ export function App() {
                     items={exchange}
                     botLabel={botLabel}
                     onOpenFile={(path, line) => {
+                      setSettings(current => (current === 'memory' ? null : current))
                       setFilePreview({ path, line, token: Date.now() })
                       setFilesOpen(true)
                     }}
@@ -1375,6 +1408,7 @@ export function App() {
                     onSupply={supplyWork}
                     onOpenSession={openWorkerSession}
                     onOpenFile={(path, line) => {
+                      setSettings(current => (current === 'memory' ? null : current))
                       setFilePreview({ path, line, token: Date.now() })
                       setFilesOpen(true)
                     }}
@@ -1528,6 +1562,18 @@ export function App() {
                         role="menuitem"
                         onClick={() => {
                           setMenuOpen(false)
+                          setFilesOpen(false)
+                          setFilePreview(null)
+                          setSettings('memory')
+                        }}
+                      >
+                        {t('memory.open')}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false)
                           setSettings('permission')
                         }}
                       >
@@ -1620,6 +1666,9 @@ export function App() {
             setFilePreview(null)
           }}
         />
+      ) : null}
+      {sessionId && !botChat ? (
+        <MemoryPanel open={settings === 'memory'} sessionId={sessionId} onClose={() => setSettings(null)} />
       ) : null}
       {sessionMenu ? (
         <div

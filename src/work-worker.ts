@@ -186,6 +186,7 @@ export function createWorkRuntime(
     gateStep,
     waitForBudget,
     isWorkerSession,
+    ownerOf,
     summaries: (owner: string) => book.summaries(owner),
     detail: (id: string) => book.detail(id),
     liveStamp: () => book.liveStamp(),
@@ -199,6 +200,17 @@ export function createWorkRuntime(
    */
   function isWorkerSession(sessionId: string) {
     return book.attemptForChild(sessionId) != null
+  }
+
+  /**
+   * Main bot that owns this worker session. Empty when the id is not a ticket child.
+   * @param {string} sessionId
+   */
+  function ownerOf(sessionId: string): string | null {
+    const attempt = book.attemptForChild(sessionId)
+    if (!attempt) return null
+    const owner = book.ticket(attempt.ticket_id)?.owner_session_id
+    return typeof owner === 'string' && owner !== '' ? owner : null
   }
 
   /**
@@ -1211,7 +1223,9 @@ export function createWorkRuntime(
         }
         return { rejected: true, ticket: saved?.ticket ?? book.ticket(ticket.id) ?? ticket }
       }
-      engine.ensureSession(child)
+      engine.ensureSession(child, {
+        parentSessionId: typeof ticket.owner_session_id === 'string' ? ticket.owner_session_id : null,
+      })
       return { ticket: saved.ticket }
     } catch {
       return {

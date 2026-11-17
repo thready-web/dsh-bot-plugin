@@ -17,6 +17,8 @@ import {
   workerModelSelection,
 } from '../src/work-admit.ts'
 import { workToolDefinitions } from '../src/work-tools.ts'
+import { renderSession, WORKER_MEMORY } from '../src/context.ts'
+import { callMemoryTool, memorySessionFor, toolDefinitions } from '../src/tools.ts'
 import { createTriggers } from '../src/triggers.ts'
 import { durableFollowup } from '../src/work-durable.ts'
 import { field, present } from './narrow.ts'
@@ -71,6 +73,78 @@ async function dispatched(ctx: any, briefing = 'sort the attachments', key = 'jo
   return ctx.work.dispatch('bot-a', { briefing, idempotencyKey: key, ownerSessionId: 'plain-a' })
 }
 
+test('a derived worker uses the main bot memory and receives it in the prompt', async () => {
+  const ctx = boot()
+  const persona = ctx.engine.confirmPersona('Name: Scout\n\nKeep it short.')
+  ctx.engine.bindPersona('bot-a', persona.id)
+  const now = new Date().toISOString()
+  ctx.store.db
+    .prepare(`
+    INSERT INTO facts (
+      session_id, content, status, source_type, revision, priority, created_at, updated_at
+    ) VALUES ('bot-a', 'The user is called Ada', 'active', 'explicit_tool', 1, 100, ?, ?)
+  `)
+    .run(now, now)
+  ctx.store.db
+    .prepare(`
+    INSERT INTO facts (
+      session_id, content, status, source_type, revision, priority, created_at, updated_at
+    ) VALUES ('bot-a', 'SECRET BODY', 'forgotten', 'explicit_tool', 1, 1, ?, ?)
+  `)
+    .run(now, now)
+  const result = await dispatched(ctx, 'use what you know', 'mem-1')
+  const child = result.childSessionId
+  assert.equal(ctx.work.ownerOf(child), 'bot-a')
+  assert.equal(ctx.engine.binding(child).fork_parent_session_id, 'bot-a')
+  const revision = ctx.engine.binding('bot-a').last_view_revision
+  const projected = renderSession(ctx.engine, 'bot-a', 128000, { persist: false })
+  assert.equal(ctx.engine.binding('bot-a').last_view_revision, revision)
+  assert.match(projected.texts['foundations:soul'], /Scout/)
+  assert.match(projected.texts['foundations:user'], /Ada/)
+  assert.match(WORKER_MEMORY, /not a private copy/)
+  const resolve = (id: string) =>
+    memorySessionFor(
+      sessionId => ctx.engine.isBot(sessionId),
+      id,
+      sessionId => ctx.work.ownerOf(sessionId),
+    )
+  const tools = Object.fromEntries(toolDefinitions(ctx.engine).map(item => [item.name, item]))
+  const recall = await callMemoryTool(
+    tools.foundations_recall.execute,
+    { query: 'Ada' },
+    { agent: { id: child } },
+    resolve,
+  )
+  assert.equal(recall.ok, true)
+  assert.equal(recall.memorySessionId, 'bot-a')
+  assert.match(JSON.stringify(recall.data), /Ada/)
+  const listed = await callMemoryTool(tools.foundations_memory_list.execute, {}, { agent: { id: child } }, resolve)
+  assert.equal(JSON.stringify(listed).includes('SECRET BODY'), false)
+  assert.match(JSON.stringify(listed.data), /Ada/)
+  const denied = await callMemoryTool(
+    tools.foundations_memory_read.execute,
+    { id: 'fact:1' },
+    { agent: { id: 'plain-a' } },
+    resolve,
+  )
+  assert.equal(denied.code, 'FORBIDDEN')
+  const remembered = await callMemoryTool(
+    tools.foundations_remember.execute,
+    { target: 'fact', content: 'The user prefers short replies.', idempotencyKey: 'worker-fact-1' },
+    { agent: { id: child } },
+    resolve,
+  )
+  assert.equal(remembered.ok, true)
+  assert.equal(remembered.memorySessionId, 'bot-a')
+  const onBot = ctx.store.db
+    .prepare(`SELECT session_id FROM facts WHERE content = ?`)
+    .get('The user prefers short replies.')
+  assert.equal(onBot.session_id, 'bot-a')
+  const onWorker = ctx.store.db.prepare(`SELECT COUNT(*) AS n FROM facts WHERE session_id = ?`).get(child)
+  assert.equal(onWorker.n, 0)
+  ctx.close()
+})
+
 test('create options omit parentAgent and fork lineage', () => {
   const options = childCreateOptions('worker-1', '/tmp/work')
   assert.equal(Object.hasOwn(options, 'parentAgent'), false)
@@ -99,11 +173,20 @@ test('the main bot records reasoning off and a worker keeps its own effort', () 
       },
     },
   }
-  assert.equal(pinMainReasoning(agent, id => id === 'bot-a'), true)
+  assert.equal(
+    pinMainReasoning(agent, id => id === 'bot-a'),
+    true,
+  )
   assert.deepEqual(selected, [{ provider: 'ollama', model: 'deepseek-v4.1-flash', reasoningEffort: 'off' }])
   agent.model.current = () => ({ provider: 'ollama', model: 'deepseek-v4.1-flash', reasoningEffort: 'off' })
-  assert.equal(pinMainReasoning(agent, id => id === 'bot-a'), false)
-  assert.equal(pinMainReasoning({ id: 'plain', model: agent.model }, () => false), false)
+  assert.equal(
+    pinMainReasoning(agent, id => id === 'bot-a'),
+    false,
+  )
+  assert.equal(
+    pinMainReasoning({ id: 'plain', model: agent.model }, () => false),
+    false,
+  )
   const high = workerModelSelection({ provider: 'ollama', model: 'deepseek-v4.1-flash', reasoningEffort: 'high' })
   assert.equal(high?.reasoningEffort, 'high')
 })
@@ -167,7 +250,10 @@ test('a ticket carries main-session dialogue and the worker reads it without aut
   assert.doesNotMatch(pushed, /think first/)
   assert.doesNotMatch(pushed, /foundations:ticket/)
   const tools = Object.fromEntries(workToolDefinitions(ctx.work, ctx.engine).map(item => [item.name, item]))
-  const read = await tools.foundations_main_history.execute({ maxChars: 4000 }, { agent: { id: result.childSessionId } })
+  const read = await tools.foundations_main_history.execute(
+    { maxChars: 4000 },
+    { agent: { id: result.childSessionId } },
+  )
   assert.equal(read.ok, true)
   assert.equal(read.direct, true)
   assert.equal(read.ownerSessionId, 'bot-a')
@@ -233,10 +319,7 @@ test('the owning bot reads the worker log and the worker is not notified', async
     { agent: { id: 'bot-b' } },
   )
   assert.equal(foreign.code, 'FORBIDDEN')
-  const worker = await tools.foundations_worker_history.execute(
-    { ticketId: result.ticketId },
-    { agent: { id: child } },
-  )
+  const worker = await tools.foundations_worker_history.execute({ ticketId: result.ticketId }, { agent: { id: child } })
   assert.equal(worker.code, 'FORBIDDEN')
   const plain = await tools.foundations_worker_history.execute(
     { ticketId: result.ticketId },

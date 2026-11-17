@@ -85,6 +85,28 @@ test('a declared name is the assistant identity and user facts stay about the us
   store.close()
 })
 
+test('a live projection carries current memory without freezing another revision', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sf-live-'))
+  const store = openStore(dir)
+  const engine = createEngine(store)
+  const persona = engine.confirmPersona('Name: Scout\n\nKeep it short.')
+  engine.bindPersona('session-a', persona.id)
+  const now = new Date().toISOString()
+  store.db
+    .prepare(`
+    INSERT INTO facts (
+      session_id, content, status, source_type, revision, priority, created_at, updated_at
+    ) VALUES ('session-a', 'The user is called Ada', 'active', 'explicit_tool', 1, 100, ?, ?)
+  `)
+    .run(now, now)
+  const before = engine.binding('session-a').last_view_revision
+  const projected = renderSession(engine, 'session-a', 128000, { persist: false })
+  assert.equal(engine.binding('session-a').last_view_revision, before)
+  assert.match(projected.texts['foundations:soul'], /Your name is "Scout"/)
+  assert.match(projected.texts['foundations:user'], /The user is called Ada/)
+  store.close()
+})
+
 test('same hash stays present until a removal bumps the internal epoch', () => {
   const dir = mkdtempSync(join(tmpdir(), 'sf-epoch-'))
   const store = openStore(dir)
@@ -280,6 +302,7 @@ test('other bots are injected for a bot and omitted for an ordinary session', as
   const before = soul.text({ agent: { id: 'session-dog' } })
   assert.match(before, /private-tone/)
   assert.equal(before.includes('Other bots'), false)
+  assert.equal(soul.text({ agent: { id: 'session-plain' } }), '')
   const send = tools.find(entry => entry.name === 'foundations_send')
   const refused = await send.execute({}, { agent: { id: 'session-plain' } })
   assert.equal(refused.ok, false)
@@ -334,4 +357,6 @@ test('plugin does not register a complete section', async () => {
   assert.ok(sections.some(entry => entry.name === 'foundations:soul'))
   assert.ok(contexts.some(entry => entry.name === 'foundations:revocation' && entry.required === true))
   assert.ok(tools.some(entry => entry.name === 'foundations_remember'))
+  assert.ok(tools.some(entry => entry.name === 'foundations_memory_list'))
+  assert.ok(tools.some(entry => entry.name === 'foundations_memory_read'))
 })
