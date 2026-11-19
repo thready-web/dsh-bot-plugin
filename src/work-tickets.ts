@@ -388,7 +388,7 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
    *   ticketId: string,
    *   attemptId: string,
    *   revision: number,
-   *   kind: 'briefing' | 'supply' | 'redirect' | 'cancel_note',
+   *   kind: 'briefing' | 'supply' | 'redirect' | 'steer' | 'cancel_note',
    *   text: string,
    * }} input
    */
@@ -396,7 +396,7 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     ticketId: string
     attemptId: string
     revision: number
-    kind: 'briefing' | 'supply' | 'redirect' | 'cancel_note'
+    kind: 'briefing' | 'supply' | 'redirect' | 'steer' | 'cancel_note'
     text: string
   }) {
     const id = randomUUID()
@@ -462,13 +462,13 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
    * Ticket status stays until flush confirms. Returns null on CAS conflict.
    * @param {string} ticketId
    * @param {number | null} expectedRevision
-   * @param {'supply' | 'redirect'} kind
+   * @param {'supply' | 'redirect' | 'steer'} kind
    * @param {string} text
    */
   function advanceGeneration(
     ticketId: string,
     expectedRevision: number | null,
-    kind: 'supply' | 'redirect',
+    kind: 'supply' | 'redirect' | 'steer',
     text: string,
   ) {
     const ticket = row('SELECT * FROM work_tickets WHERE id = ?', ticketId)
@@ -484,7 +484,7 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     if (!allowed)
       return {
         error: 'VALIDATION',
-        message: `Ticket status ${ticket.status} cannot ${kind === 'supply' ? 'supply' : 'redirect'}.`,
+        message: `Ticket status ${ticket.status} cannot ${kind}.`,
       }
     if (!ticket.child_session_id)
       return {

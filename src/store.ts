@@ -20,7 +20,7 @@ export interface SqlDatabase {
   close(): void
 }
 
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 const MIGRATION = `
 PRAGMA foreign_keys = ON;
@@ -299,7 +299,7 @@ CREATE TABLE IF NOT EXISTS work_inputs (
   ticket_id          TEXT NOT NULL,
   attempt_id         TEXT NOT NULL,
   briefing_revision  INTEGER NOT NULL,
-  kind               TEXT NOT NULL CHECK (kind IN ('briefing','supply','redirect','cancel_note')),
+  kind               TEXT NOT NULL CHECK (kind IN ('briefing','supply','redirect','steer','cancel_note')),
   native_message_id  TEXT NOT NULL,
   payload_hash       TEXT NOT NULL,
   flush_status       TEXT NOT NULL CHECK (flush_status IN ('intent','flushing','accepted','ambiguous','dead')),
@@ -389,19 +389,54 @@ export function openStore(dataDir: string) {
 }
 
 /**
+ * SQLite cannot alter a CHECK. Databases created before steer rebuild the table.
+ * @param {DatabaseSync} db
+ */
+function allowSteerInput(db: SqlDatabase) {
+  const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'work_inputs'`).get() as
+    | { sql?: string }
+    | undefined
+  const sql = row?.sql ?? ''
+  if (sql === '' || sql.includes("'steer'")) return
+  db.exec(`
+    CREATE TABLE work_inputs_v5 (
+      id                 TEXT PRIMARY KEY,
+      ticket_id          TEXT NOT NULL,
+      attempt_id         TEXT NOT NULL,
+      briefing_revision  INTEGER NOT NULL,
+      kind               TEXT NOT NULL CHECK (kind IN ('briefing','supply','redirect','steer','cancel_note')),
+      native_message_id  TEXT NOT NULL,
+      payload_hash       TEXT NOT NULL,
+      flush_status       TEXT NOT NULL CHECK (flush_status IN ('intent','flushing','accepted','ambiguous','dead')),
+      flush_pid          INTEGER,
+      flush_attempts     INTEGER NOT NULL DEFAULT 0,
+      last_error         TEXT NOT NULL DEFAULT '',
+      log_seq            INTEGER,
+      created_at         TEXT NOT NULL,
+      updated_at         TEXT NOT NULL
+    );
+    INSERT INTO work_inputs_v5 SELECT * FROM work_inputs;
+    DROP TABLE work_inputs;
+    ALTER TABLE work_inputs_v5 RENAME TO work_inputs;
+    CREATE INDEX IF NOT EXISTS work_inputs_attempt ON work_inputs(attempt_id, briefing_revision);
+  `)
+}
+
+/**
  * @param {DatabaseSync} db
  */
 function migrate(db: SqlDatabase) {
   db.exec(MIGRATION)
   db.exec(MIGRATION_V2)
   db.exec(MIGRATION_V4)
+  allowSteerInput(db)
   const columns = db.prepare('PRAGMA table_info(session_bindings)').all()
   if (!columns.some(column => column.name === 'kind')) {
     db.exec(
       `ALTER TABLE session_bindings ADD COLUMN kind TEXT NOT NULL DEFAULT 'session' CHECK (kind IN ('session','bot'))`,
     )
   }
-  for (const version of [1, 2, 3, SCHEMA_VERSION]) {
+  for (let version = 1; version <= SCHEMA_VERSION; version++) {
     const row = db.prepare('SELECT version FROM schema_migrations WHERE version = ?').get(version)
     if (!row) db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(version, now())
   }

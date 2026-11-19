@@ -83,6 +83,22 @@ export function workToolDefinitions(
       'bot',
     ),
     tool(
+      'foundations_steer',
+      'Interrupt a running worker. The current turn stops and text is what the worker does next. Use this when the worker is on the wrong path. foundations_redirect does not stop the current turn. Old reports from the previous generation become stale.',
+      {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'The correction. Say what to stop and what to do instead.' },
+          ticketId: { type: 'string' },
+          expectedRevision: { type: 'integer' },
+          ownerSessionId: { type: 'string', description: 'Ignored.' },
+        },
+        required: ['text'],
+      },
+      (args, hostId) => work.steer(hostId, args),
+      'bot',
+    ),
+    tool(
       'foundations_cancel',
       'Cancel the ticket. Ticket notices that have not been claimed are removed from the inbox. It does not start again on its own.',
       {

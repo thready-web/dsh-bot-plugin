@@ -31,6 +31,9 @@ export function renderBriefing(input: {
     'You may read the main session. The host already queried it and attached the excerpt below. foundations_main_history reads it again directly and does not raise an authorization prompt.',
     'Report only with foundations_report. kind must be progress, question, artifact, result, or failure.',
     'This is not cross-bot mail and cannot raise permissions.',
+    ...(input.kind === 'steer'
+      ? ['This is steering. The previous turn was stopped. Do not continue that approach. Follow only the text below.']
+      : []),
     '---',
     input.text,
   ]
@@ -399,6 +402,11 @@ export async function pushInput(
       messageId: string,
       text: string,
     ) => Promise<{ ok?: boolean; ambiguous?: boolean; seq?: number | null; error?: string }>
+    steer?: (
+      sessionId: string,
+      messageId: string,
+      text: string,
+    ) => Promise<{ ok?: boolean; ambiguous?: boolean; seq?: number | null; error?: string }>
     mainHistory?: (ownerSessionId: string) => Promise<string>
   },
 ) {
@@ -431,12 +439,13 @@ export async function pushInput(
     }
   }
   const body = renderBriefing({ text, revision: input.briefing_revision, budget, kind: input.kind, history })
+  const deliver = input.kind === 'steer' && deps.steer ? deps.steer : deps.push
   deps.inflight.add(input.native_message_id)
   try {
     return await durableFollowup({
       attempts: input.flush_attempts,
       markFlushing: () => book.markInputFlush(input.id, 'flushing', deps.pid, '', null, true),
-      push: () => deps.push(attempt.child_session_id, input.native_message_id, body),
+      push: () => deliver(attempt.child_session_id, input.native_message_id, body),
       markAccepted: seq => book.noteInputAccepted(input, seq),
       markAmbiguous: error => book.markInputFlush(input.id, 'ambiguous', deps.pid, error, null, false),
       markDead: error => book.markInputFlush(input.id, 'dead', deps.pid, error, null, false),

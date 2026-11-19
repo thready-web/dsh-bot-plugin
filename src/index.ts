@@ -5,7 +5,7 @@ import { createEngine } from './engine.ts'
 import { renderPeers, renderSession, renderTickets, WORKER_MEMORY } from './context.ts'
 import { callMemoryTool, memorySessionFor, toolDefinitions } from './tools.ts'
 import { createTriggers } from './triggers.ts'
-import { followupDurable, liveAgent, logHasMessage, removePending } from './inbox.ts'
+import { followupDurable, liveAgent, logHasMessage, removePending, steerDurable } from './inbox.ts'
 import { createLogSource } from './log/source.ts'
 import { toolError } from './errors.ts'
 import { createQuestionAnswerer, publishQuestionAnswerer, questionAnswererFor } from './questions.ts'
@@ -22,7 +22,7 @@ import {
   WORK_BUDGET_ENV,
   type WorkBudget,
 } from './work-admit.ts'
-import { ensureWorkerFilePreset, WORKER_FILE_PRESET, workerFileSetup } from './work-child.ts'
+import { CANVAS_WORKER_PRESET, ensureWorkerFilePreset, WORKER_FILE_PRESET, workerFileSetup } from './work-child.ts'
 import { BUDGET_NOTICE_PREFIX, createWorkRuntime, type MainBudgetTrip } from './work-worker.ts'
 import { workToolDefinitions } from './work-tools.ts'
 import { openCanvasStore } from './canvas-store.ts'
@@ -270,7 +270,17 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
   }
   if (work) {
     for (const definition of workToolDefinitions(work, engine)) ctx.tools.register(definition)
-    for (const definition of canvasToolDefinitions(canvas, work, engine)) ctx.tools.register(definition)
+    for (const definition of canvasToolDefinitions(canvas, work, engine, {
+      workspaceCwd(sessionId) {
+        try {
+          const cwd = ctx.sessions?.get(sessionId)?.header?.cwd
+          return typeof cwd === 'string' ? cwd : ''
+        } catch {
+          return ''
+        }
+      },
+    }))
+      ctx.tools.register(definition)
     const gate = work
     // Main-session step budget: refuse the next step instead of cancelling a
     // step that already ended. A refused step ends the turn as `blocked`.
@@ -457,14 +467,16 @@ function startWork(
       const options = childCreateOptions(spec.sessionId, cwd, model, cap)
       const presetId = await filePreset
       if (presetId) {
-        options.meta = { ...(options.meta ?? {}), agentPreset: WORKER_FILE_PRESET }
-        options.setup = workerFileSetup(ctx, WORKER_FILE_PRESET)
+        const preset = spec.canvas ? CANVAS_WORKER_PRESET : WORKER_FILE_PRESET
+        options.meta = { ...(options.meta ?? {}), agentPreset: preset }
+        options.setup = workerFileSetup(ctx, preset)
       }
       const handle = await ctx.agents.create(options)
       workerHandles.set(spec.sessionId, handle)
       return spec.sessionId
     },
     push: (sessionId, messageId, text) => followupDurable(ctx, sessionId, messageId, text),
+    steer: (sessionId, messageId, text) => steerDurable(ctx, sessionId, messageId, text),
     logHas: (sessionId, messageId) => logHasDurable(ctx, sessionId, messageId),
     remove: (sessionId, messageId) => removePending(ctx, sessionId, messageId),
     pendingIds: async sessionId => {

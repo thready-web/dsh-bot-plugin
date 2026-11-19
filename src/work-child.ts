@@ -11,6 +11,9 @@
 
 export const WORKER_FILE_PRESET = 'foundations-files'
 
+/** Canvas workers edit preview files. They do not get bash or job tools. */
+export const CANVAS_WORKER_PRESET = 'foundations-canvas'
+
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
  */
@@ -35,25 +38,34 @@ function presetsOf(ctx: import('./host.ts').HostContext) {
 export function ensureWorkerFilePreset(ctx: import('./host.ts').HostContext) {
   const presets = presetsOf(ctx)
   if (!presets?.register || !presets?.mount) return Promise.resolve(null)
-  return presets
-    .register({
-      id: WORKER_FILE_PRESET,
-      plugins: [
-        {
-          id: 'tool-fs',
-          name: '@deepseek-ai/dsh-tool-fs',
-          config: { applyPatch: false, readImage: false },
-        },
-        { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash' },
-        { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
-      ],
-    })
+  const fileTools = {
+    id: 'tool-fs',
+    name: '@deepseek-ai/dsh-tool-fs',
+    config: { applyPatch: false, readImage: false },
+  }
+  return registerPreset(presets, {
+    id: WORKER_FILE_PRESET,
+    plugins: [
+      fileTools,
+      { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash' },
+      { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
+    ],
+  })
+    .then(() =>
+      registerPreset(presets, {
+        id: CANVAS_WORKER_PRESET,
+        plugins: [fileTools],
+      }),
+    )
     .then(() => WORKER_FILE_PRESET)
-    .catch((error: any) => {
-      const message = error instanceof Error ? error.message : String(error)
-      if (message.includes('Duplicate')) return WORKER_FILE_PRESET
-      throw error
-    })
+}
+
+function registerPreset(presets: { register: (spec: unknown) => Promise<unknown> }, spec: unknown) {
+  return presets.register(spec).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('Duplicate')) return spec
+    throw error
+  })
 }
 
 /**

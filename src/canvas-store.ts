@@ -94,6 +94,12 @@ CREATE TABLE IF NOT EXISTS canvas_drafts (
   updated_at  TEXT NOT NULL,
   PRIMARY KEY (canvas_id, path)
 );
+
+CREATE TABLE IF NOT EXISTS canvas_ticket_publishes (
+  ticket_id  TEXT PRIMARY KEY,
+  canvas_id  TEXT NOT NULL,
+  revision   INTEGER NOT NULL
+);
 `
 
 export interface CanvasFileInput {
@@ -107,6 +113,13 @@ export interface CanvasManifestItem {
   hash: string
   bytes: number
   type: string
+}
+
+interface PreviewRead {
+  path: string
+  type: string
+  bytes: number
+  text?: string
 }
 
 interface CanvasNotice {
@@ -187,6 +200,13 @@ function activeContent(type: string, bytes: Buffer): string | null {
   return null
 }
 
+function shorterThanCurrent(file: { path: string; type: string; bytes: Buffer }, previous: number | null) {
+  if (file.type.toLowerCase() !== 'text/html') return null
+  if (previous == null || previous < 1) return null
+  if (file.bytes.length * 2 >= previous) return null
+  return `${file.path} is much shorter than the current revision (${file.bytes.length} bytes vs ${previous}).`
+}
+
 function stageProblem(file: CanvasFileInput): string | null {
   const path = normalizeCanvasPath(file?.path)
   if (!path) return 'A canvas path is not allowed.'
@@ -196,7 +216,11 @@ function stageProblem(file: CanvasFileInput): string | null {
   if (!Buffer.isBuffer(file.bytes)) return `Missing bytes for ${path}.`
   if (file.bytes.length > CANVAS_MAX_FILE_BYTES) return `${path} exceeds the 1.5 MiB file cap.`
   if (!rasterOk(type, file.bytes)) return `${path} does not match its image type.`
-  return activeContent(type, file.bytes)
+  const active = activeContent(type, file.bytes)
+  if (active) return active
+  if (type === 'text/html' && !/<\/html\s*>/i.test(file.bytes.toString('utf8')))
+    return `${path} is incomplete HTML. It needs a closing </html> tag.`
+  return null
 }
 
 function checkFiles(entry: string, files: CanvasFileInput[]): ToolPayload | CanvasManifestItem[] {
@@ -402,7 +426,8 @@ export class CanvasStore {
   writeDraft(canvasId: string, files: CanvasFileInput[], remove: string[] = []) {
     if (!CANVAS_ID.test(canvasId)) return Promise.resolve(toolError('NOT_FOUND', 'No such canvas.'))
     return this.locked(canvasId, () => {
-      if (!this.rawCanvas(canvasId)) return toolError('NOT_FOUND', 'No such canvas.')
+      const canvas = this.rawCanvas(canvasId)
+      if (!canvas) return toolError('NOT_FOUND', 'No such canvas.')
       const staged: { path: string; type: string; bytes: Buffer }[] = []
       const seen = new Set<string>()
       for (const file of files) {
@@ -411,6 +436,13 @@ export class CanvasStore {
         const path = normalizeCanvasPath(file.path)
         if (!path || seen.has(path)) return toolError('VALIDATION', `Duplicate canvas path ${path ?? ''}.`)
         seen.add(path)
+        const previous = this.fileSizeAt(
+          canvasId,
+          canvas.preview_revision == null ? null : Number(canvas.preview_revision),
+          path,
+        )
+        const short = shorterThanCurrent({ path, type: file.type, bytes: file.bytes }, previous)
+        if (short) return toolError('VALIDATION', short)
         staged.push({ path, type: file.type.toLowerCase(), bytes: file.bytes })
       }
       const dropping: string[] = []
@@ -448,12 +480,23 @@ export class CanvasStore {
     })
   }
 
-  publishDraft(canvasId: string) {
+  publishDraft(canvasId: string, ticketId?: string | null) {
     if (!CANVAS_ID.test(canvasId)) return Promise.resolve(toolError('NOT_FOUND', 'No such canvas.'))
     return this.locked(canvasId, () => {
       try {
         const canvas = this.rawCanvas(canvasId)
         if (!canvas) return toolError('NOT_FOUND', 'No such canvas.')
+        if (typeof ticketId === 'string' && ticketId !== '') {
+          if (ticketId.length > 80) return toolError('VALIDATION', 'ticket id is not allowed.')
+          const prior = this.db
+            .prepare('SELECT ticket_id FROM canvas_ticket_publishes WHERE ticket_id = ?')
+            .get(ticketId)
+          if (prior)
+            return toolError(
+              'VALIDATION',
+              'This ticket already published. Call canvas_publish once, after every file is staged.',
+            )
+        }
         const rows = this.db
           .prepare('SELECT path, media_type, bytes FROM canvas_drafts WHERE canvas_id = ? ORDER BY path ASC')
           .all(canvasId)
@@ -463,7 +506,7 @@ export class CanvasStore {
           bytes: Buffer.from(row.bytes as Uint8Array),
         }))
         const preview = canvas.preview_revision == null ? null : Number(canvas.preview_revision)
-        return this.publishLocked({
+        const published = this.publishLocked({
           canvasId,
           kind: preview == null ? 'snapshot' : 'delta',
           baseRevision: preview,
@@ -471,6 +514,12 @@ export class CanvasStore {
           expectedFence: Number(canvas.fence_generation),
           files,
         })
+        if (published.ok === true && typeof ticketId === 'string' && ticketId !== '') {
+          this.db
+            .prepare('INSERT INTO canvas_ticket_publishes (ticket_id, canvas_id, revision) VALUES (?, ?, ?)')
+            .run(ticketId, canvasId, published.revision)
+        }
+        return published
       } catch (error) {
         return asStoreFailure(error)
       }
@@ -692,6 +741,13 @@ export class CanvasStore {
         return toolError('CAS_CONFLICT', 'baseRevision is not the current preview.')
       parent = Number(canvas.preview_revision)
     }
+    for (const file of input.files) {
+      const path = normalizeCanvasPath(file.path)
+      if (!path) continue
+      const previous = parent == null ? null : this.fileSizeAt(input.canvasId, parent, path)
+      const short = shorterThanCurrent(file, previous)
+      if (short) return toolError('VALIDATION', short)
+    }
     const revision = this.nextRevision(input.canvasId)
     const createdAt = nowIso()
     const hash = manifestHash(checked)
@@ -757,6 +813,72 @@ export class CanvasStore {
         stamp: `${canvasId}:${revision.revision}:${fence}`,
       },
     })
+  }
+
+  fileSizeAt(canvasId: string, revision: number | null, path: string) {
+    if (revision == null) return null
+    const row = this.db
+      .prepare('SELECT size FROM canvas_files WHERE canvas_id = ? AND revision = ? AND path = ?')
+      .get(canvasId, revision, path)
+    return row ? Number(row.size) : null
+  }
+
+  previewPaths(canvasId: string) {
+    const canvas = this.rawCanvas(canvasId)
+    if (!canvas || canvas.preview_revision == null) return []
+    return this.db
+      .prepare('SELECT path FROM canvas_files WHERE canvas_id = ? AND revision = ? ORDER BY path ASC')
+      .all(canvasId, Number(canvas.preview_revision))
+      .map(row => String(row.path))
+  }
+
+  /** Current preview. HTML and CSS include text. Other files are path, type, and size only. */
+  previewListing(canvasId: string) {
+    const canvas = this.rawCanvas(canvasId)
+    if (!canvas) return toolError('NOT_FOUND', 'No such canvas.')
+    const revision = canvas.preview_revision == null ? null : Number(canvas.preview_revision)
+    if (revision == null) return { ok: true as const, revision: null, files: [] as PreviewRead[] }
+    const rows = this.db
+      .prepare(
+        `SELECT f.path, f.media_type, f.size, b.bytes
+         FROM canvas_files f
+         JOIN canvas_blobs b ON b.hash = f.hash
+         WHERE f.canvas_id = ? AND f.revision = ?
+         ORDER BY f.path ASC`,
+      )
+      .all(canvasId, revision)
+    return {
+      ok: true as const,
+      revision,
+      files: rows.map(row => {
+        const type = String(row.media_type)
+        const item: PreviewRead = { path: String(row.path), type, bytes: Number(row.size) }
+        if (type === 'text/html' || type === 'text/css')
+          item.text = Buffer.from(row.bytes as Uint8Array).toString('utf8')
+        return item
+      }),
+    }
+  }
+
+  /** Staged bytes win. Otherwise the current preview file. */
+  currentFile(canvasId: string, path: string) {
+    const draft = this.db
+      .prepare('SELECT media_type, bytes FROM canvas_drafts WHERE canvas_id = ? AND path = ?')
+      .get(canvasId, path)
+    if (draft) return { type: String(draft.media_type), bytes: Buffer.from(draft.bytes as Uint8Array) }
+    const canvas = this.rawCanvas(canvasId)
+    const revision = canvas?.preview_revision == null ? null : Number(canvas.preview_revision)
+    if (revision == null) return null
+    const row = this.db
+      .prepare(
+        `SELECT f.media_type, b.bytes
+         FROM canvas_files f
+         JOIN canvas_blobs b ON b.hash = f.hash
+         WHERE f.canvas_id = ? AND f.revision = ? AND f.path = ?`,
+      )
+      .get(canvasId, revision, path)
+    if (!row) return null
+    return { type: String(row.media_type), bytes: Buffer.from(row.bytes as Uint8Array) }
   }
 
   revisionFiles(canvasId: string, revision: number) {

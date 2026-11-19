@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { sha256 } from './fs-safe.ts'
 import { toolError } from './errors.ts'
+import { isCanvasWorkerBriefing } from './canvas-tools.ts'
 import { createTicketBook } from './work-tickets.ts'
 import {
   decideAdmission,
@@ -60,6 +61,7 @@ type WorkHostOptions = {
     ownerSessionId: string
     ticketId: string
     fencingToken: number
+    canvas?: boolean
   }) => Promise<string>
   push?: (
     sessionId: string,
@@ -74,6 +76,12 @@ type WorkHostOptions = {
    * `{ kind: 'hook', reason }`; it is never reported as a user cancel.
    */
   cancel?: (sessionId: string, options: { keepInbox?: boolean; reason?: string }) => Promise<void> | void
+  /** Deliver a user message with agent.steer. Absent hosts fall back to push. */
+  steer?: (
+    sessionId: string,
+    messageId: string,
+    text: string,
+  ) => Promise<{ ok?: boolean; ambiguous?: boolean; seq?: number | null; error?: string }>
   /** Host log sink. A budget trip is always logged at warn. */
   log?: (level: 'info' | 'warn', message: string, fields?: Record<string, unknown>) => void
   /** Called once per main-session budget trip so the host can tell the user. */
@@ -158,6 +166,9 @@ export function createWorkRuntime(
       if (!options.push) return { ok: false, ambiguous: true, error: 'no-push' }
       return options.push(sessionId, messageId, text)
     },
+    steer: options.steer
+      ? async (sessionId: string, messageId: string, text: string) => options.steer!(sessionId, messageId, text)
+      : undefined,
     noticeText: (nativeId: string) => noticeText(nativeId),
     mainHistory: (ownerSessionId: string) => readMainHistory(ownerSessionId),
   }
@@ -168,6 +179,7 @@ export function createWorkRuntime(
     dispatch,
     supply,
     redirect,
+    steer,
     cancelTicket,
     retry,
     grant,
@@ -571,11 +583,20 @@ export function createWorkRuntime(
   }
 
   /**
+   * Stop the worker's current turn, then hand it the correction.
+   * Cancel runs first so a later steer wakes the next turn instead of sitting
+   * in a turn that is about to abort.
+   */
+  async function steer(owner: string, args: Record<string, unknown>) {
+    return retarget(owner, args, 'steer')
+  }
+
+  /**
    * @param {string} owner
    * @param {Record<string, unknown>} args
-   * @param {'supply' | 'redirect'} kind
+   * @param {'supply' | 'redirect' | 'steer'} kind
    */
-  async function retarget(owner: string, args: Record<string, unknown>, kind: 'supply' | 'redirect') {
+  async function retarget(owner: string, args: Record<string, unknown>, kind: 'supply' | 'redirect' | 'steer') {
     if (!engine.isBot(owner)) return toolError('FORBIDDEN', 'An ordinary session cannot change a ticket.')
     const text = typeof args.text === 'string' ? args.text.trim() : ''
     if (text === '' || text.length > 16000) return toolError('VALIDATION', 'text is empty or too long.')
@@ -603,6 +624,10 @@ export function createWorkRuntime(
     }
     if (!resident)
       return { ...publicDispatch(advanced.ticket), flush: 'pending', message: 'Only a resident host continues' }
+    const child = advanced.ticket.child_session_id
+    if (kind === 'steer' && resident && child && options.cancel) {
+      await options.cancel(child, { keepInbox: true, reason: 'worker-steer' })
+    }
     const flushed = await pushInput(book, advanced.input, deps)
     return publicDispatch(book.ticket(found.ticket.id), {
       flush: flushWord(flushed),
@@ -1213,11 +1238,13 @@ export function createWorkRuntime(
     const attemptId = ticket.active_attempt_id
     const fencingToken = book.attempt(attemptId)?.fencing_token ?? 1
     try {
+      const briefing = typeof ticket.briefing_hash === 'string' ? book.readBriefing(ticket.briefing_hash) : ''
       const created = await options.createChild({
         sessionId,
         ownerSessionId: ticket.owner_session_id,
         ticketId: ticket.id,
         fencingToken,
+        canvas: isCanvasWorkerBriefing(briefing),
       })
       const child = typeof created === 'string' && created !== '' ? created : sessionId
       const saved = await store.write('work', () => book.setChildIfEmpty(ticket.id, child, { attemptId, fencingToken }))

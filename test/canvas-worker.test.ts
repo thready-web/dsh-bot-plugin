@@ -1,16 +1,17 @@
 import { strict as assert } from 'node:assert'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { openCanvasStore } from '../src/canvas-store.ts'
 import { canvasSkillFiles } from '../src/canvas-skills.ts'
-import { canvasToolDefinitions } from '../src/canvas-tools.ts'
+import { canvasToolDefinitions, isCanvasWorkerBriefing } from '../src/canvas-tools.ts'
+import { CANVAS_WORKER_PRESET, ensureWorkerFilePreset } from '../src/work-child.ts'
 import { createEngine } from '../src/engine.ts'
 import { openStore } from '../src/store.ts'
 import type { ToolPayload } from '../src/errors.ts'
 
-const html = '<!doctype html><link rel="stylesheet" href="app.css"><h1>Hi</h1>'
+const html = '<!doctype html><link rel="stylesheet" href="app.css"><h1>Hi</h1></html>'
 const css = 'h1{color:black}'
 
 test('canvas worker publishes a snapshot then a delta; the main bot cannot write', async () => {
@@ -31,11 +32,15 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
   }
   try {
     engine.markBot('bot-canvas')
-    const tools = canvasToolDefinitions(canvas, work, engine)
+    const tools = canvasToolDefinitions(canvas, work, engine, {
+      workspaceCwd: () => dir,
+    })
     const dispatch = tools.find(tool => tool.name === 'foundations_dispatch_canvas')
+    const read = tools.find(tool => tool.name === 'canvas_read')
+    const edit = tools.find(tool => tool.name === 'canvas_edit')
     const write = tools.find(tool => tool.name === 'canvas_write')
     const publish = tools.find(tool => tool.name === 'canvas_publish')
-    assert.ok(dispatch && write && publish)
+    assert.ok(dispatch && read && edit && write && publish)
     const opened = await dispatch.execute(
       { briefing: 'A quiet reading card', idempotencyKey: 'canvas-key-1' },
       { agent: { id: 'bot-canvas' } },
@@ -44,9 +49,14 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
     const canvasId = opened.canvasId as string
     assert.match(canvasId, /^cnv_/)
     assert.match(briefing, new RegExp(canvasId))
+    assert.match(briefing, /canvas_read/)
     assert.match(briefing, /canvas_write/)
-    assert.match(briefing, /canvas_publish/)
+    assert.match(briefing, /canvas_edit/)
+    assert.match(briefing, /canvas_publish once/)
+    assert.match(briefing, /Do not search the disk for cnv_/)
+    assert.match(briefing, /no published files yet/)
     assert.match(briefing, /index\.html/)
+    assert.equal(isCanvasWorkerBriefing(briefing), true)
     assert.match(briefing, /ui-design/)
     assert.match(briefing, /budget pause is not a failed preview/)
     const again = await dispatch.execute(
@@ -98,16 +108,61 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
     assert.equal(JSON.stringify(notice).includes('<h1>'), false)
     reader.close()
 
-    const edited = await write.execute(
-      { files: [{ path: 'app.css', type: 'text/css', text: 'h1{color:white}' }] },
+    const repeat = await publish.execute({}, { agent: { id: 'worker-canvas' } })
+    assert.equal(repeat.code, 'VALIDATION')
+    assert.match(String(repeat.message), /already published/)
+    assert.equal(canvas.get(canvasId).canvas?.previewRevision, 1)
+
+    const listed = await read.execute({}, { agent: { id: 'worker-canvas' } })
+    assert.equal(listed.ok, true)
+    assert.equal(listed.files.find((file: { path: string }) => file.path === 'index.html').text.includes('<h1>'), true)
+    const typed = await write.execute(
+      { files: [{ path: 'index.html', type: 'text', text: html }] },
       { agent: { id: 'worker-canvas' } },
     )
+    assert.equal(typed.code, 'VALIDATION')
+    assert.match(String(typed.message), /text\/html or text\/css/)
+    const encoded = await write.execute(
+      { files: [{ path: 'index.html', type: 'text/html', body: Buffer.from(html).toString('base64') }] },
+      { agent: { id: 'worker-canvas' } },
+    )
+    assert.equal(encoded.code, 'VALIDATION')
+    assert.match(String(encoded.message), /base64 只给图片和字体/)
+    const clipped = html.replace('</html>', '')
+    const incomplete = await write.execute(
+      { files: [{ path: 'index.html', type: 'text/html', text: clipped }] },
+      { agent: { id: 'worker-canvas' } },
+    )
+    assert.equal(incomplete.code, 'VALIDATION')
+    assert.match(String(incomplete.message), /closing <\/html> tag/)
+
+    tickets.set('worker-delta', 'ticket-delta')
+    canvas.attachWriter(canvasId, 'ticket-delta')
+    const edited = await edit.execute(
+      { path: 'app.css', old: 'black', replacement: 'white' },
+      { agent: { id: 'worker-delta' } },
+    )
     assert.equal(edited.ok, true)
-    const second = await publish.execute({}, { agent: { id: 'worker-canvas' } })
+    const shortened = await write.execute(
+      { files: [{ path: 'index.html', type: 'text/html', text: '<p>x</p></html>' }] },
+      { agent: { id: 'worker-delta' } },
+    )
+    assert.equal(shortened.code, 'VALIDATION')
+    assert.match(String(shortened.message), /much shorter/)
+    const page = join(dir, 'page.html')
+    writeFileSync(page, html.replace('Hi', 'Hello'))
+    const sourced = await write.execute(
+      { files: [{ path: 'index.html', type: 'text/html', source: 'page.html' }] },
+      { agent: { id: 'worker-delta' } },
+    )
+    assert.equal(sourced.ok, true)
+    const second = await publish.execute({}, { agent: { id: 'worker-delta' } })
     assert.equal(second.ok, true)
     assert.equal(second.kind, 'delta')
     assert.equal(second.baseRevision, 1)
     assert.equal(second.revision, 2)
+    const againDelta = await publish.execute({}, { agent: { id: 'worker-delta' } })
+    assert.equal(againDelta.code, 'VALIDATION')
 
     const cardTicket = canvas.get(canvasId).canvas?.ticketId
     tickets.set('worker-follow', 'ticket-follow')
@@ -128,6 +183,7 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
     assert.equal(follow.canvasId, canvasId)
     assert.match(briefing, /\[canvas-target/)
     assert.match(briefing, /change only those nodes/)
+    assert.match(briefing, /Current files: app\.css, index\.html/)
     assert.equal(canvas.get(canvasId).canvas?.ticketId, cardTicket)
     const stranger = await write.execute(
       { files: [{ path: 'app.css', type: 'text/css', text: 'h1{color:red}' }] },
@@ -170,4 +226,31 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
     persona.close()
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('canvas workers are registered without bash', async () => {
+  const registered: Array<{ id: string; plugins: Array<{ name: string }> }> = []
+  const preset = await ensureWorkerFilePreset({
+    get() {
+      return {
+        async register(spec: { id: string; plugins: Array<{ name: string }> }) {
+          registered.push(spec)
+        },
+        mount() {},
+      }
+    },
+  } as never)
+  assert.equal(preset, 'foundations-files')
+  const canvas = registered.find(item => item.id === CANVAS_WORKER_PRESET)
+  assert.ok(canvas)
+  assert.equal(
+    canvas.plugins.some(plugin => plugin.name.includes('bash') || plugin.name.includes('jobs')),
+    false,
+  )
+  assert.equal(
+    registered.some(
+      item => item.id === 'foundations-files' && item.plugins.some(plugin => plugin.name.includes('bash')),
+    ),
+    true,
+  )
 })

@@ -96,10 +96,29 @@ export async function followupDurable(ctx: HostContext, sessionId: string, messa
     loaded.agent.followup(userMessage(messageId, text))
     process.exit(97)
   }
+  return deliverUser(ctx, sessionId, messageId, text, 'followup')
+}
+
+/**
+ * Steering for the nearest step. On a running worker the host aborts first,
+ * so this call lands after the abort and wakes the next turn. An idle worker
+ * starts a turn immediately.
+ */
+export async function steerDurable(ctx: HostContext, sessionId: string, messageId: string, text: string) {
+  return deliverUser(ctx, sessionId, messageId, text, 'steer')
+}
+
+async function deliverUser(
+  ctx: HostContext,
+  sessionId: string,
+  messageId: string,
+  text: string,
+  method: 'followup' | 'steer',
+) {
   const loaded = await loadAgent(ctx, sessionId)
   const agent = loaded.agent
   try {
-    agent.followup(userMessage(messageId, text))
+    agent[method](userMessage(messageId, text))
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (!message.includes('already pending')) throw error
@@ -122,7 +141,7 @@ export async function followupDurable(ctx: HostContext, sessionId: string, messa
     ambiguous: !flushed,
     seq,
     error: flushError,
-    target: 'next-turn',
+    target: method === 'steer' ? 'next-step' : 'next-turn',
     wakeup: true,
   }
 }

@@ -13,7 +13,7 @@ import { createEngine } from '../src/engine.ts'
 import { openStore } from '../src/store.ts'
 import { toolDefinitions } from '../src/tools.ts'
 
-const html = '<!doctype html><link rel="stylesheet" href="styles.css"><img src="hero.png" alt="">'
+const html = '<!doctype html><link rel="stylesheet" href="styles.css"><img src="hero.png" alt=""></html>'
 const css = 'body{color:#111}'
 const png = Buffer.from('89504e470d0a1a0a00000000', 'hex')
 
@@ -192,12 +192,12 @@ test('canvas packages reject oversized files and active image types', async () =
       entry: 'index.html',
       expectedFence: 0,
       files: [
-        { path: 'index.html', type: 'text/html', bytes: Buffer.from('<p>ok</p>') },
+        { path: 'index.html', type: 'text/html', bytes: Buffer.from('<p>ok</p></html>') },
         { path: 'big.css', type: 'text/css', bytes: Buffer.alloc(CANVAS_MAX_FILE_BYTES + 1, 0x61) },
       ],
     })
     assert.equal(oversized.ok, false)
-    const heavy: CanvasFileInput[] = [{ path: 'index.html', type: 'text/html', bytes: Buffer.from('<p>ok</p>') }]
+    const heavy: CanvasFileInput[] = [{ path: 'index.html', type: 'text/html', bytes: Buffer.from('<p>ok</p></html>') }]
     const each = Math.floor(CANVAS_MAX_PACKAGE_BYTES / 6)
     for (let index = 0; index < 6; index += 1) {
       heavy.push({ path: `part-${index}.css`, type: 'text/css', bytes: Buffer.alloc(each, 0x62) })
@@ -216,7 +216,7 @@ test('canvas packages reject oversized files and active image types', async () =
       entry: 'index.html',
       expectedFence: 0,
       files: [
-        { path: 'index.html', type: 'text/html', bytes: Buffer.from('<p>ok</p>') },
+        { path: 'index.html', type: 'text/html', bytes: Buffer.from('<p>ok</p></html>') },
         {
           path: 'mark.svg',
           type: 'image/svg+xml',

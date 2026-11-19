@@ -11,7 +11,7 @@ import { openStore } from '../src/store.ts'
 import { openPageLive } from '../src/work-http.ts'
 import { openCanvasStore } from '../src/canvas-store.ts'
 
-const html = '<!doctype html><link rel="stylesheet" href="styles.css"><img src="hero.png" alt="">'
+const html = '<!doctype html><link rel="stylesheet" href="styles.css"><img src="hero.png" alt=""></html>'
 const css = 'body{color:#111}'
 const png = Buffer.from('89504e470d0a1a0a00000000', 'hex')
 
@@ -115,9 +115,7 @@ test('canvas media trusts the capability token and ignores the login gate', asyn
     assert.match(policy, /sandbox/)
     assert.doesNotMatch(policy, /allow-scripts/)
     assert.doesNotMatch(policy, /allow-same-origin/)
-    const inspect = await fetch(
-      `${origin}/dsh-bot/canvas-inspect/${token.token}/1?nonce=abc123abc123abc123`,
-    )
+    const inspect = await fetch(`${origin}/dsh-bot/canvas-inspect/${token.token}/1?nonce=abc123abc123abc123`)
     assert.equal(inspect.status, 200)
     const inspectPolicy = inspect.headers.get('content-security-policy') ?? ''
     assert.match(inspectPolicy, /sandbox allow-scripts/)
@@ -126,13 +124,9 @@ test('canvas media trusts the capability token and ignores the login gate', asyn
     const inspectHtml = await inspect.text()
     assert.match(inspectHtml, /<script src="\/dsh-bot\/canvas-inspector\.js"><\/script>/)
     assert.match(inspectHtml, /name="dsh-inspect-page" content="index\.html"/)
-    const named = await fetch(
-      `${origin}/dsh-bot/canvas-inspect/${token.token}/1/index.html?nonce=abc123abc123abc123`,
-    )
+    const named = await fetch(`${origin}/dsh-bot/canvas-inspect/${token.token}/1/index.html?nonce=abc123abc123abc123`)
     assert.equal(named.status, 200)
-    const notHtml = await fetch(
-      `${origin}/dsh-bot/canvas-inspect/${token.token}/1/styles.css?nonce=abc123abc123abc123`,
-    )
+    const notHtml = await fetch(`${origin}/dsh-bot/canvas-inspect/${token.token}/1/styles.css?nonce=abc123abc123abc123`)
     assert.equal(notHtml.status, 400)
     assert.equal(inspectHtml.includes('<script'), true)
     assert.equal((inspectHtml.match(/<script/g) ?? []).length, 1)
@@ -201,7 +195,7 @@ test('an idle canvas stream does not repeat the same revision notice', async t =
     kind: 'snapshot',
     entry: 'index.html',
     expectedFence: 0,
-    files: [{ path: 'index.html', type: 'text/html', bytes: Buffer.from('<p>quiet</p>') }],
+    files: [{ path: 'index.html', type: 'text/html', bytes: Buffer.from('<p>quiet</p></html>') }],
   })
   const chunks: string[] = []
   const callbacks = new Map<string, Array<(...args: any[]) => void>>()

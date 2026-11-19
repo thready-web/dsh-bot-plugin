@@ -13,6 +13,8 @@ export function createMockWorld() {
   const calls: Array<Record<string, unknown>> = []
   const cancels: Array<{ sessionId: string; keepInbox: boolean; reason?: string }> = []
   const pushes: Array<{ sessionId: string; messageId: string; text: string }> = []
+  const steers: Array<{ sessionId: string; messageId: string; text: string }> = []
+  const order: string[] = []
   const state = {
     failCreate: false,
     flushMode: 'accepted',
@@ -22,6 +24,8 @@ export function createMockWorld() {
     calls,
     cancels,
     pushes,
+    steers,
+    order,
     state,
     session,
     pendingIds(sessionId: string) {
@@ -107,11 +111,17 @@ export function createMockWorld() {
       return true
     },
     async cancel(sessionId: string, options: { keepInbox?: boolean; reason?: string } | null) {
+      order.push('cancel')
       cancels.push({
         sessionId,
         keepInbox: options?.keepInbox === true,
         ...(typeof options?.reason === 'string' ? { reason: options.reason } : {}),
       })
+    },
+    async steer(sessionId: string, messageId: string, text: string) {
+      order.push('steer')
+      steers.push({ sessionId, messageId, text })
+      return this.push(sessionId, messageId, text)
     },
     async snapshot(sessionId: string) {
       return session(sessionId).events.map(event => ({ ...event, data: event.data }))

@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { openStore } from '../src/store.ts'
 import { createEngine } from '../src/engine.ts'
@@ -35,6 +36,7 @@ function boot(budget?: Partial<typeof DEFAULT_WORK_BUDGET>) {
   const work = createWorkRuntime(store, engine, {
     createChild: spec => world.createChild(spec),
     push: (sessionId, messageId, text) => world.push(sessionId, messageId, text),
+    steer: (sessionId, messageId, text) => world.steer(sessionId, messageId, text),
     logHas: (sessionId, messageId) => world.logHas(sessionId, messageId),
     remove: (sessionId, messageId) => world.remove(sessionId, messageId),
     pendingIds: sessionId => world.pendingIds(sessionId),
@@ -72,6 +74,41 @@ function boot(budget?: Partial<typeof DEFAULT_WORK_BUDGET>) {
 async function dispatched(ctx: any, briefing = 'sort the attachments', key = 'job-1') {
   return ctx.work.dispatch('bot-a', { briefing, idempotencyKey: key, ownerSessionId: 'plain-a' })
 }
+
+test('steering aborts the worker turn before delivering the correction', async () => {
+  const ctx = boot()
+  try {
+    const result = await dispatched(ctx)
+    const steered = await ctx.work.steer('bot-a', {
+      ticketId: result.ticketId,
+      text: 'Stop the base64 writes and publish the text file.',
+    })
+    assert.equal(steered.ok, true)
+    assert.equal(steered.briefingRevision, 2)
+    assert.deepEqual(ctx.world.order.slice(-2), ['cancel', 'steer'])
+    const cancel = ctx.world.cancels.at(-1)
+    assert.equal(cancel?.sessionId, result.childSessionId)
+    assert.equal(cancel?.keepInbox, true)
+    assert.equal(cancel?.reason, 'worker-steer')
+    assert.equal(ctx.world.steers.length, 1)
+    assert.match(ctx.world.steers[0]!.text, /previous turn was stopped/)
+    assert.match(ctx.world.steers[0]!.text, /Stop the base64 writes/)
+    assert.equal(ctx.world.pushes.length, 2)
+  } finally {
+    ctx.close()
+  }
+})
+
+test('a canvas briefing marks the child as a canvas worker', async () => {
+  const ctx = boot()
+  try {
+    const opened = await dispatched(ctx, 'Canvas preview cnv_abcdefghijklmnop.\nFix the type.', 'canvas-job-1')
+    assert.equal(opened.ok, true)
+    assert.equal(ctx.world.calls[0]?.canvas, true)
+  } finally {
+    ctx.close()
+  }
+})
 
 test('a derived worker uses the main bot memory and receives it in the prompt', async () => {
   const ctx = boot()
@@ -197,11 +234,53 @@ test('schema v4 adds work tables and leaves delivery kinds unchanged', () => {
     .prepare('SELECT version FROM schema_migrations ORDER BY version')
     .all()
     .map((row: any) => row.version)
-  assert.deepEqual(versions, [1, 2, 3, 4])
+  assert.deepEqual(versions, [1, 2, 3, 4, 5])
   const kinds = ctx.store.db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'deliveries'`).get().sql
   assert.match(kinds, /message','timer','webhook'/)
   assert.doesNotMatch(kinds, /briefing/)
+  const inputs = ctx.store.db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'work_inputs'`).get().sql
+  assert.match(inputs, /'steer'/)
   ctx.close()
+})
+
+test('an older work_inputs table gains the steer kind and keeps its rows', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sf-steer-migrate-'))
+  const planted = new DatabaseSync(join(dir, 'persona.sqlite'))
+  planted.exec(`
+    CREATE TABLE work_inputs (
+      id TEXT PRIMARY KEY,
+      ticket_id TEXT NOT NULL,
+      attempt_id TEXT NOT NULL,
+      briefing_revision INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('briefing','supply','redirect','cancel_note')),
+      native_message_id TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      flush_status TEXT NOT NULL CHECK (flush_status IN ('intent','flushing','accepted','ambiguous','dead')),
+      flush_pid INTEGER,
+      flush_attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '',
+      log_seq INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO work_inputs (
+      id, ticket_id, attempt_id, briefing_revision, kind, native_message_id, payload_hash,
+      flush_status, flush_attempts, last_error, created_at, updated_at
+    ) VALUES (
+      'in-1', 'ticket-1', 'attempt-1', 1, 'redirect', 'msg-1', 'hash',
+      'accepted', 1, '', '2026-11-19T00:00:00.000Z', '2026-11-19T00:00:00.000Z'
+    );
+  `)
+  planted.close()
+  const store = openStore(dir)
+  try {
+    const sql = store.db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'work_inputs'`).get().sql
+    assert.match(sql, /'steer'/)
+    const row = store.db.prepare('SELECT kind FROM work_inputs WHERE id = ?').get('in-1')
+    assert.equal(row.kind, 'redirect')
+  } finally {
+    store.close()
+  }
 })
 
 test('ordinary session dispatch is forbidden and writes no ticket', async () => {
