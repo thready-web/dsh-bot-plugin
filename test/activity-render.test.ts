@@ -144,8 +144,7 @@ test('SSR: description and command coexist; full multiline args, cwd, result and
   })
   for (const text of ['Scaffold tea project', 'printf a\nprintf b', '/tmp/tea', 'Full arguments', 'Tool result'])
     assert.ok(html.includes(text), text)
-  assert.ok(!html.includes('hiddenSecret'))
-  assert.ok(html.includes('REDACTED'))
+  assert.ok(html.includes('hiddenSecret'))
 })
 
 test('SSR: todo rows show real items, not todo_write duplicated as its own summary', () => {
@@ -447,9 +446,9 @@ test('SSR: composer has one sanitized compact status, with no animation for sett
   }
   const html = renderCurrent!(props)
   assert.equal((html.match(/role="status"/g) ?? []).length, 1)
-  assert.ok(html.includes('Waiting for tool result: Fix UI'))
+  assert.ok(html.includes('Waiting for tool result: Fix UI token=secretValue'))
   assert.ok(html.includes('data-moving="true"'))
-  assert.ok(!html.includes('secretValue') && !html.includes('Activity') && !html.includes('Thinking'))
+  assert.ok(!html.includes('Activity') && !html.includes('Thinking'))
   const stale = renderCurrent!({ ...props, connectionPhase: 'error' })
   assert.ok(stale.includes('last known') && stale.includes('data-moving="false"'))
   for (const status of ['succeeded', 'failed', 'cancelled', 'unknown']) {
@@ -559,7 +558,7 @@ test('SSR: successful activity omits Completed; exceptions remain visible and fa
   assert.ok(summary.includes('Run command') && !summary.includes('VERY_LONG_COMMAND') && !summary.includes('doNotShow'))
 })
 
-test('SSR/CSS: expanded-only command/args/output stay complete, redacted and wrapping without nested scrollbars', () => {
+test('SSR/CSS: expanded-only command/args/output stay complete and wrap without nested scrollbars', () => {
   const command = `printf one\nprintf ${'very-long-argument'.repeat(60)}\nTOKEN=hiddenValue`
   const output = `first line\n${'long-output'.repeat(100)}\nlast line`
   const html = renderExpandedTool!({
@@ -575,10 +574,10 @@ test('SSR/CSS: expanded-only command/args/output stay complete, redacted and wra
   assert.ok(summaryEnd < detailStart && detailStart < html.indexOf('printf one'))
   assert.ok(html.includes('printf one\nprintf very-long-argument'))
   assert.ok(html.includes(output) && html.includes('last line'))
-  assert.ok(!html.includes('hiddenValue') && html.includes('REDACTED'))
+  assert.ok(html.includes('hiddenValue'))
   assert.ok(
     (html.match(/aria-label="Copy"/g) ?? []).length >= 3,
-    'command, arguments and result keep safe copy controls inside details',
+    'command, arguments and result keep copy controls inside details',
   )
   const css = readFileSync(new URL('../ui/src/styles.css', import.meta.url), 'utf8')
   const pre = /\.activity-detail pre\s*\{([^}]+)\}/.exec(css)?.[1] ?? ''

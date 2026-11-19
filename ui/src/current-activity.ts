@@ -1,5 +1,5 @@
-import { OPEN_TOOL_STATES, redactText, toolPresentation, type ToolStatus } from './activity.ts'
-import { isAnswerableQuestion, userQuestionView } from './user-question.ts'
+import { OPEN_TOOL_STATES, toolPresentation, toolStatus, type ToolStatus } from './activity.ts'
+import { isAnswerableQuestion, isUserQuestionTool, userQuestionView } from './user-question.ts'
 import type { ToolApprovalView } from './tool-approval.ts'
 import { english, type Copy, type MessageKey } from './i18n/index.ts'
 import type { Segment } from './types.ts'
@@ -53,12 +53,16 @@ export function currentActivity(input: CurrentActivityInput): ActivitySummary | 
   const toolLabel = (state: ToolStatus) => t(TOOL_LABEL[state])
   for (const segment of segments) {
     if (segment.kind !== 'tool') continue
-    const view = toolPresentation(segment, undefined, tickets)
-    const question = userQuestionView(segment)
-    if (question && isAnswerableQuestion(question.state) && drafting && inCurrentTurn(segment.turn)) {
-      unresolved.push({ text: t('question.waiting'), moving: true })
-      continue
+    if (isUserQuestionTool(segment.name)) {
+      const question = userQuestionView(segment)
+      if (question && isAnswerableQuestion(question.state) && drafting && inCurrentTurn(segment.turn)) {
+        unresolved.push({ text: t('question.waiting'), moving: true })
+        continue
+      }
     }
+    const status = toolStatus(segment, tickets)
+    if (status !== 'background' && !OPEN_TOOL_STATES.has(status)) continue
+    const view = toolPresentation(segment, undefined, tickets)
     if (view.status === 'worker' && view.ticket) continue // Count the linked worker once below, not once per dispatch call.
     if (view.status === 'worker' && view.ticketId) {
       if (representedTickets.has(view.ticketId)) continue
@@ -116,5 +120,5 @@ export function currentActivity(input: CurrentActivityInput): ActivitySummary | 
       moving: false,
     }
   }
-  return { ...summary, text: redactText(summary.text).replace(/\s+/g, ' ').trim() }
+  return { ...summary, text: summary.text.replace(/\s+/g, ' ').trim() }
 }

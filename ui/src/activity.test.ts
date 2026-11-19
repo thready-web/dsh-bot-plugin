@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import test from 'node:test'
-import { argsOf, redactText, safeArgs, resultStatus, toolPresentation, toolState } from './activity.ts'
+import { argsOf, resultStatus, toolPresentation, toolState } from './activity.ts'
 import { applyLogEvent, applyEphemeralFrame } from './follow.ts'
 import { emptyThread, type ToolSegment, type ThreadState } from './types.ts'
 import type { WorkTicket } from './work.ts'
@@ -281,24 +281,6 @@ test('todo_write renders actual content and statuses, not guessed completion', (
     { content: 'Test', status: 'in_progress' },
   ])
   assert.deepEqual(argsOf('broken'), {})
-})
-
-test('mask credentials in args, nested structures, command, output and copy projections', () => {
-  const secrets = ['alphaSecret', 'betaSecret', 'gammaSecret', 'deltaSecret', 'epsilonSecret']
-  const raw = JSON.stringify({
-    apiKey: secrets[0],
-    nested: { password: secrets[1] },
-    command: `API_TOKEN=${secrets[2]} curl -H 'Authorization: Bearer ${secrets[3]}' https://user:${secrets[4]}@example.com`,
-  })
-  const view = toolPresentation(tool({ args: raw, result: 'token=alphaSecret\n{"password":"betaSecret"}' }))
-  for (const secret of secrets) {
-    assert.ok(!view.args.includes(secret), secret)
-    assert.ok(!view.command.includes(secret), secret)
-    assert.ok(!view.output.includes(secret), secret)
-  }
-  assert.ok(!safeArgs('{"token":"partialSecret').includes('partialSecret'))
-  assert.ok(!redactText('--password "multi\nlineSecret"').includes('lineSecret'))
-  assert.equal(redactText('printf hello'), 'printf hello')
 })
 
 test('a quiet task stays waiting without a fixed timeout; model narration is not execution evidence', () => {

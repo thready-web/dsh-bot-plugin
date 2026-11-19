@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { redactText } from './activity.ts'
 import { api } from './api.ts'
 import { useI18n } from './locale'
 import type { ToolApprovalView } from './tool-approval'
@@ -63,8 +62,8 @@ export function ToolApprovalCard({ approval, sessionId }: { approval: ToolApprov
       data-session={sessionId || undefined}
     >
       <h3 className="user-question-header">{t('approval.title')}</h3>
-      <p className="user-question-text">{redactText(approval.toolName)}</p>
-      {reason ? <p className="user-question-hint">{redactText(reason)}</p> : null}
+      <p className="user-question-text">{approval.toolName}</p>
+      {reason ? <p className="user-question-hint">{reason}</p> : null}
       {interactive ? (
         <div className="user-question-row">
           <button type="button" className="user-question-skip" disabled={busy} onClick={() => void decide('rejected')}>

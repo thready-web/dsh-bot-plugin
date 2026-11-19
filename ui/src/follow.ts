@@ -1,4 +1,4 @@
-import { resultStatus, toolState, ACTIVE_TOOL_STATES, statusLabel, redactText } from './activity.ts'
+import { resultStatus, toolState, ACTIVE_TOOL_STATES, statusLabel } from './activity.ts'
 import { parseBotMail } from './bot-message.ts'
 import { isTicketNotice, parseBriefing } from './work.ts'
 import { isUserQuestionTool } from './user-question.ts'
@@ -485,7 +485,7 @@ function liveActivity(state: ThreadState): string {
     .reverse()
     .find((item): item is ToolSegment => item.kind === 'tool' && ACTIVE_TOOL_STATES.has(toolState(item)))
   if (tool) {
-    const detail = redactText(toolDetail(tool.name, tool.args))
+    const detail = toolDetail(tool.name, tool.args)
     const label = statusLabel(toolState(tool))
     return detail ? `${label} · ${detail}` : label
   }

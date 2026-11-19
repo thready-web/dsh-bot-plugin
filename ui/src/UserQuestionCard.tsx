@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { redactText } from './activity.ts'
 import { api } from './api.ts'
 import { useI18n } from './locale'
 import { MarkdownView } from './MarkdownView'
@@ -62,14 +61,12 @@ function OptionList({
         const body = (
           <>
             <span className="user-question-option-label">
-              {redactText(option.label)}
+              {option.label}
               {presentation.recommended ? (
                 <span className="user-question-badge">{t('question.recommended')}</span>
               ) : null}
             </span>
-            {option.description ? (
-              <span className="user-question-option-desc">{redactText(option.description)}</span>
-            ) : null}
+            {option.description ? <span className="user-question-option-desc">{option.description}</span> : null}
           </>
         )
         return (
@@ -346,9 +343,9 @@ function GenericQuestionCard({
         const draft = draftOf[item.id] ?? emptyDraft(item)
         return (
           <article key={item.id} className="user-question" data-question={item.id}>
-            {item.header ? <h3 className="user-question-header">{redactText(item.header)}</h3> : null}
-            <p className="user-question-text">{redactText(item.question)}</p>
-            {item.detail ? <p className="user-question-hint">{redactText(item.detail)}</p> : null}
+            {item.header ? <h3 className="user-question-header">{item.header}</h3> : null}
+            <p className="user-question-text">{item.question}</p>
+            {item.detail ? <p className="user-question-hint">{item.detail}</p> : null}
             {item.multiSelect && wait.answerable ? (
               <p className="user-question-hint">{t('question.multiSelect')}</p>
             ) : null}
@@ -388,7 +385,7 @@ function GenericQuestionCard({
               </div>
             ) : null}
             {!interactive && item.custom ? (
-              <p className="user-question-hint">{t('question.custom', { text: redactText(item.custom) })}</p>
+              <p className="user-question-hint">{t('question.custom', { text: item.custom })}</p>
             ) : null}
             {(item.skipped || draft.skipped) && (view.state !== 'open' || interactive) ? (
               <p className="user-question-hint">{t('question.skipped')}</p>
@@ -501,7 +498,7 @@ function PlanReviewCard({
       data-kind="plan-review"
     >
       <h3 className="user-question-header">{t('question.planTitle')}</h3>
-      <p className="user-question-text">{redactText(review.item.question)}</p>
+      <p className="user-question-text">{review.item.question}</p>
       <WaitLine
         interactive={interactive}
         waitLabel={wait.waitLabel}
@@ -514,9 +511,7 @@ function PlanReviewCard({
             <MarkdownView text={review.plan} />
           </div>
         ) : (
-          <p className="user-question-hint">
-            {redactText(review.plan).split('\n').filter(Boolean).slice(0, 2).join(' ')}
-          </p>
+          <p className="user-question-hint">{review.plan.split('\n').filter(Boolean).slice(0, 2).join(' ')}</p>
         )
       ) : null}
       {review.plan ? (
@@ -549,7 +544,7 @@ function PlanReviewCard({
           </div>
         </div>
       ) : selected ? (
-        <p className="user-question-status">{approved ? t('question.approvePlan') : redactText(selected)}</p>
+        <p className="user-question-status">{approved ? t('question.approvePlan') : selected}</p>
       ) : view.state === 'aborted' ? (
         <p className="user-question-status exception">{t('question.aborted')}</p>
       ) : view.state === 'failed' ? (
@@ -616,11 +611,9 @@ function ApprovalIntentCard({
       data-session={sessionId || undefined}
       data-kind="approval"
     >
-      {approval.intent.subject?.name ? (
-        <h3 className="user-question-header">{redactText(approval.intent.subject.name)}</h3>
-      ) : null}
-      <p className="user-question-text">{redactText(question)}</p>
-      {detail ? <p className="user-question-hint">{redactText(detail)}</p> : null}
+      {approval.intent.subject?.name ? <h3 className="user-question-header">{approval.intent.subject.name}</h3> : null}
+      <p className="user-question-text">{question}</p>
+      {detail ? <p className="user-question-hint">{detail}</p> : null}
       <WaitLine
         interactive={interactive}
         waitLabel={wait.waitLabel}
@@ -643,7 +636,7 @@ function ApprovalIntentCard({
             disabled={busy}
             onClick={() => void choose(approval.approve.label)}
           >
-            {busy ? t('question.submitting') : redactText(approveLabel) || t('question.allow')}
+            {busy ? t('question.submitting') : approveLabel || t('question.allow')}
           </button>
           {approval.always ? (
             <button

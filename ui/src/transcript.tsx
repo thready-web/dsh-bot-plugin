@@ -1,4 +1,3 @@
-import { redactText } from './activity'
 import { Fragment, useRef, useState } from 'react'
 import { useI18n } from './locale'
 import { CanvasCard, useCanvasPlace } from './CanvasPreview'
@@ -113,12 +112,7 @@ export function Transcript({
     const turn = Number(key)
     if (!seen.has(turn)) blocks.push({ type: 'turn', turn, seconds: completed[turn], segments: [] })
   }
-  const safeTickets = tickets.map(ticket => ({
-    ...ticket,
-    summary: redactText(ticket.summary),
-    events: ticket.events.map(event => ({ ...event, text: redactText(event.text) })),
-  }))
-  const byId = new Map(safeTickets.map(ticket => [ticket.id, ticket]))
+  const byId = new Map(tickets.map(ticket => [ticket.id, ticket]))
   const anchorAt = new Map<string, string>()
   for (const block of blocks) {
     if (block.type !== 'turn') continue
@@ -143,7 +137,7 @@ export function Transcript({
   }
   const here = blocks.length > 0 ? blockKey(blocks[blocks.length - 1]!) : 'start'
   const anchored = new Set(anchorAt.keys())
-  const floating = resolveFloatingWorks(cardsToShow(safeTickets), anchored, pinState.current.work, here)
+  const floating = resolveFloatingWorks(cardsToShow(tickets), anchored, pinState.current.work, here)
   for (const [id, key] of pinState.current.work) {
     if (byId.has(id)) floating.set(id, key)
   }
@@ -484,7 +478,7 @@ function TurnBlock({
               {tools
                 .filter(segment => isBudgetRefusal(segment))
                 .map(segment => (
-                  <WorkRefusal key={segment.id} text={redactText(budgetRefusalText(segment.result, t))} />
+                  <WorkRefusal key={segment.id} text={budgetRefusalText(segment.result, t)} />
                 ))}
               {tools.flatMap(segment => {
                 const id = dispatchTicketId(segment)

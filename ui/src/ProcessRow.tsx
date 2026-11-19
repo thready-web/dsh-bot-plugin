@@ -1,7 +1,7 @@
 import { useId, useState, type ReactNode } from 'react'
 import { Collapse } from './Collapse'
 import { fileChange, type ActivitySegment, type FileChange } from './follow'
-import { OPEN_TOOL_STATES, isShell, redactText, statusLabel, toolPresentation } from './activity'
+import { OPEN_TOOL_STATES, isShell, statusLabel, toolPresentation, toolStatus } from './activity'
 import { useI18n } from './locale'
 import type { WorkTicket } from './work'
 import { type ThinkSegment, type ToolSegment } from './types'
@@ -19,7 +19,7 @@ export function ThinkRow({ segment }: { segment: ThinkSegment }) {
         <span className="official-label">{segment.running ? t('activity.thinking') : t('activity.reasoning')}</span>
       </button>
       <Collapse open={open}>
-        <div className="think-body">{redactText(segment.text)}</div>
+        <div className="think-body">{segment.text}</div>
       </Collapse>
     </div>
   )
@@ -40,14 +40,11 @@ export function ActivityGroup({
   connectionPhase?: string
 }) {
   const { t } = useI18n()
-  const active =
-    pending ||
-    segments.some(s =>
-      s.kind === 'think' ? s.running : OPEN_TOOL_STATES.has(toolPresentation(s, cwd, tickets).status),
-    )
-  const states = segments
-    .filter((s): s is ToolSegment => s.kind === 'tool')
-    .map(s => toolPresentation(s, cwd, tickets).status)
+  const states = segments.flatMap(segment => (segment.kind === 'tool' ? [toolStatus(segment, tickets)] : []))
+  const running =
+    segments.some(segment => segment.kind === 'think' && segment.running) ||
+    states.some(state => OPEN_TOOL_STATES.has(state))
+  const active = pending || running
   const counts = [
     [t('activity.count.active'), states.filter(state => OPEN_TOOL_STATES.has(state)).length],
     [t('activity.count.failed'), states.filter(state => state === 'failed').length],
@@ -88,12 +85,7 @@ export function ActivityGroup({
       </button>
       <Collapse open={open}>
         <div className="activity-body">
-          {pending &&
-          !segments.some(s =>
-            s.kind === 'think' ? s.running : OPEN_TOOL_STATES.has(toolPresentation(s, cwd, tickets).status),
-          ) ? (
-            <p className="activity-note">{t('activity.generating')}</p>
-          ) : null}
+          {pending && !running ? <p className="activity-note">{t('activity.generating')}</p> : null}
           {segments.map(segment =>
             segment.kind === 'think' ? (
               <ThinkRow key={segment.id} segment={segment} />
@@ -142,13 +134,12 @@ export function ToolCallRowView({
   const id = useId()
   const { t, locale } = useI18n()
   const view = toolPresentation(segment, cwd, tickets)
-  // The diff presenter receives only sanitized inputs too.
   const change = fileChange({ ...segment, args: view.args, result: view.output })
   const fallback = isShell(segment.name) ? t('activity.runCommand') : view.title
   const title =
     view.description ||
     (view.todos.length ? t('activity.updatePlan') : '') ||
-    (view.ticket ? redactText(view.ticket.summary) : '') ||
+    (view.ticket ? view.ticket.summary : '') ||
     change?.name ||
     fallback
   const exceptional = ['failed', 'cancelled', 'unknown'].includes(view.status)
@@ -190,7 +181,7 @@ export function ToolCallRowView({
           </p>
         ) : null}
         <div className="activity-facts">
-          {view.title} · {redactText(segment.callId)}
+          {view.title} · {segment.callId}
         </div>
         {view.command ? (
           <div className="activity-command">
@@ -211,18 +202,17 @@ export function ToolCallRowView({
         {view.status === 'waiting' ? <p className="activity-note">{t('activity.callRequested')}</p> : null}
         {view.jobId ? (
           <p className="activity-facts">
-            Job: {redactText(view.jobId)} · {t('activity.jobRegistered')}
+            Job: {view.jobId} · {t('activity.jobRegistered')}
           </p>
         ) : null}
         {view.ticketId ? (
           <p className="activity-facts">
-            Ticket: {redactText(view.ticketId)}{' '}
-            {view.ticket?.childSessionId ? `· Worker: ${redactText(view.ticket.childSessionId)}` : ''}
+            Ticket: {view.ticketId} {view.ticket?.childSessionId ? `· Worker: ${view.ticket.childSessionId}` : ''}
           </p>
         ) : null}
         {view.latestReport ? (
           <p className="activity-note">
-            {t('activity.latestReport')} (v{view.ticket?.revision}): {redactText(view.latestReport)}
+            {t('activity.latestReport')} (v{view.ticket?.revision}): {view.latestReport}
           </p>
         ) : null}
         {view.todos.length ? (
@@ -360,7 +350,7 @@ function CopyButton({ text }: { text: string }) {
       aria-label={copied ? 'Copied' : 'Copy'}
       onClick={event => {
         event.stopPropagation()
-        void navigator.clipboard.writeText(redactText(text)).then(() => {
+        void navigator.clipboard.writeText(text).then(() => {
           setCopied(true)
           window.setTimeout(() => setCopied(false), 1000)
         })

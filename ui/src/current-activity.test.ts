@@ -116,18 +116,19 @@ test('background acknowledgements and disconnected states stay explicit last-kno
   }
 })
 
-test('composer masks command and worker secrets before display/title projection', () => {
+test('composer shows the recorded command and worker summary', () => {
   const summary = currentActivity({
     segments: [tool({ args: '{"command":"TOKEN=commandSecret npm test"}' })],
     drafting: true,
+    currentTurn: 1,
   })
-  assert.ok(!summary?.text.includes('commandSecret') && summary?.text.includes('REDACTED'))
+  assert.ok(summary?.text.includes('TOKEN=commandSecret npm test'))
   const worker = currentActivity({
     segments: [],
     drafting: false,
     tickets: [{ ...ticket('one'), summary: 'Fix UI Authorization: Bearer workerSecret' }],
   })
-  assert.ok(!worker?.text.includes('workerSecret') && worker?.text.includes('REDACTED'))
+  assert.ok(worker?.text.includes('Bearer workerSecret'))
 })
 
 test('historical background jobs are not counted as pending after the turn has settled', () => {

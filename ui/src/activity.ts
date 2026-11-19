@@ -17,61 +17,12 @@ export type ToolStatus =
 export const OPEN_TOOL_STATES: ReadonlySet<ToolStatus> = new Set(['preparing', 'waiting', 'running', 'worker'])
 export const ACTIVE_TOOL_STATES: ReadonlySet<ToolStatus> = new Set([...OPEN_TOOL_STATES, 'background'])
 
-const sensitiveKey =
-  /(?:password|passwd|passphrase|secret|token|api[-_]?key|authorization|cookie|credential|private[-_]?key)/i
-
-/** Best-effort credential masking, including incomplete streaming JSON. No unredacted copy path. */
-export function redactText(value: string): string {
-  if (/^\s*[\[{]/.test(value)) {
-    try {
-      const parsed: unknown = JSON.parse(value)
-      if (parsed && typeof parsed === 'object') return JSON.stringify(maskObject(parsed), null, 2)
-    } catch {
-      /* an incomplete stream or plain console output */
-    }
-  }
-  return (
-    value
-      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-      .replace(
-        /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g,
-        '[REDACTED PRIVATE KEY]',
-      )
-      .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@')
-      .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9+/_.=~-]+/gi, '$1 [REDACTED]')
-      .replace(/\b(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]+/g, '[REDACTED]')
-      // Quoted JSON keys, including fragments whose closing quote has not arrived yet.
-      .replace(
-        /("[^"\n]*(?:password|passwd|passphrase|secret|token|api[-_]?key|authorization|cookie|credential|private[-_]?key)[^"\n]*"\s*:\s*)("(?:\\.|[^"\\])*"?|[^,}\n]+)/gi,
-        '$1"[REDACTED]"',
-      )
-      // Shell env assignments, CLI flags, and diagnostic key:value lines.
-      .replace(
-        /((?:--)?[A-Za-z_][A-Za-z0-9_-]*(?:password|passwd|secret|token|api[-_]?key|authorization|cookie|credential)[A-Za-z0-9_-]*\s*(?:=|:\s*|\s+))('[^']*'?|"(?:\\.|[^"\\])*"?|[^\s,;]+)/gi,
-        '$1[REDACTED]',
-      )
-      .replace(
-        /((?:--)?(?:password|passwd|secret|token|api[-_]?key|authorization|cookie|credential)\s*(?:=|:\s*|\s+))('[^']*'?|"(?:\\.|[^"\\])*"?|[^\s,;]+)/gi,
-        '$1[REDACTED]',
-      )
-  )
-}
-
-function maskObject(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(maskObject)
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, sensitiveKey.test(key) ? '[REDACTED]' : maskObject(item)]),
-    )
-  }
-  return typeof value === 'string' ? redactText(value) : value
-}
-
-export function safeArgs(raw: string): string {
+// TODO: mask credentials before tool arguments, results, and copied text are shown.
+function formatArgs(raw: string): string {
   try {
-    return JSON.stringify(maskObject(JSON.parse(raw)), null, 2)
+    return JSON.stringify(JSON.parse(raw), null, 2)
   } catch {
-    return redactText(raw)
+    return raw
   }
 }
 
@@ -130,40 +81,47 @@ export function statusLabel(state: ToolStatus, t: Copy = english): string {
   return t(STATUS_KEY[state])
 }
 
+/** Status only. Folded rows and the composer must not pretty-print every historical payload. */
+export function toolStatus(tool: ToolSegment, tickets: readonly WorkTicket[] = []): ToolStatus {
+  const status = toolState(tool)
+  if (!isWorkDispatch(tool.name)) return status
+  const parsedId = argsOf(tool.result).ticketId
+  const ticketId = typeof parsedId === 'string' ? parsedId : ''
+  const ticket = ticketId ? tickets.find(item => item.id === ticketId) : undefined
+  if (ticket) {
+    if (ticket.status === 'failed') return 'failed'
+    if (ticket.status === 'cancelled') return 'cancelled'
+    if (ticket.status === 'delivered') return 'succeeded'
+    return 'worker'
+  }
+  if (status === 'succeeded' && ticketId) return 'worker'
+  return status
+}
+
 export function toolPresentation(tool: ToolSegment, sessionCwd?: string, tickets: readonly WorkTicket[] = []) {
   const args = argsOf(tool.args)
   const result = argsOf(tool.result)
   const shell = isShell(tool.name)
-  const command = shell && typeof args.command === 'string' ? redactText(args.command) : ''
-  const description = typeof args.description === 'string' ? redactText(args.description) : ''
+  const command = shell && typeof args.command === 'string' ? args.command : ''
+  const description = typeof args.description === 'string' ? args.description : ''
   const meta = tool.meta && typeof tool.meta === 'object' ? (tool.meta as Record<string, unknown>) : {}
   const cwdRaw = typeof meta.cwd === 'string' ? meta.cwd : typeof args.workdir === 'string' ? args.workdir : sessionCwd
   const resolvedCwd =
     typeof meta.cwd === 'string' || !cwdRaw || cwdRaw.startsWith('/') || !sessionCwd
       ? cwdRaw
       : sessionCwd.replace(/\/$/, '') + '/' + cwdRaw
-  const cwd = resolvedCwd ? redactText(resolvedCwd) : ''
+  const cwd = resolvedCwd ?? ''
   const ticketId = typeof result.ticketId === 'string' ? result.ticketId : ''
   const ticket = tickets.find(item => item.id === ticketId)
-  let status = toolState(tool)
   // A dispatch result acknowledges a worker, not delivery of its task.
-  if (ticket && isWorkDispatch(tool.name)) {
-    status =
-      ticket.status === 'failed'
-        ? 'failed'
-        : ticket.status === 'cancelled'
-          ? 'cancelled'
-          : ticket.status === 'delivered'
-            ? 'succeeded'
-            : 'worker'
-  } else if (isWorkDispatch(tool.name) && status === 'succeeded' && ticketId) status = 'worker'
+  const status = toolStatus(tool, tickets)
   const todos =
     tool.name === 'todo_write' && Array.isArray(args.todos)
       ? args.todos.flatMap(item => {
           if (!item || typeof item !== 'object') return []
           const row = item as Record<string, unknown>
           return typeof row.content === 'string' && typeof row.status === 'string'
-            ? [{ content: redactText(row.content), status: row.status }]
+            ? [{ content: row.content, status: row.status }]
             : []
         })
       : []
@@ -175,9 +133,9 @@ export function toolPresentation(tool: ToolSegment, sessionCwd?: string, tickets
     cwd,
     cwdSource: typeof meta.cwd === 'string' ? 'recorded' : typeof args.workdir === 'string' ? 'requested' : 'session',
     todos,
-    title: tool.name === 'todo_write' ? 'todo_write' : redactText(tool.name),
-    args: safeArgs(tool.args),
-    output: redactText(tool.result),
+    title: tool.name === 'todo_write' ? 'todo_write' : tool.name,
+    args: formatArgs(tool.args),
+    output: tool.result,
     exitCode: exit ? Number(exit[1]) : null,
     ticket,
     ticketId,
