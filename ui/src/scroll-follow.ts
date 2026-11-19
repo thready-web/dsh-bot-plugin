@@ -1,0 +1,55 @@
+/** How close to the end still counts as the bottom, including sub-pixel clipping. */
+export const BOTTOM_SLOP = 8
+
+export type ScrollBox = {
+  scrollHeight: number
+  scrollTop: number
+  clientHeight: number
+}
+
+export type FollowScroll = {
+  /** Content growth pins the viewport only while this stays true. */
+  following: boolean
+  /** Next scroll event at this offset was written by us, not the user. */
+  programmaticTop: number | null
+  /** Ignore a downward arrival while a cancelled smooth scroll is still settling. */
+  suppressRejoin: boolean
+  lastTop: number | null
+  lastHeight: number | null
+}
+
+export function createFollowScroll(): FollowScroll {
+  return { following: true, programmaticTop: null, suppressRejoin: false, lastTop: null, lastHeight: null }
+}
+
+export function gapFromBottom(box: ScrollBox): number {
+  return box.scrollHeight - box.scrollTop - box.clientHeight
+}
+
+/** Upward input. A thread that cannot move does not leave follow. */
+export function leaveBottom(state: FollowScroll, box: ScrollBox): boolean {
+  if (box.scrollTop <= 1 && gapFromBottom(box) <= BOTTOM_SLOP) return false
+  state.following = false
+  return true
+}
+
+/** Selection or an in-flow disclosure. Holds even when the viewport is already at the end. */
+export function pauseFollow(state: FollowScroll): void {
+  state.following = false
+}
+
+export function noteScroll(state: FollowScroll, box: ScrollBox): { following: boolean; detached: boolean } {
+  const gap = gapFromBottom(box)
+  const programmed = state.programmaticTop != null && Math.abs(box.scrollTop - state.programmaticTop) <= 1
+  state.programmaticTop = null
+  const heightChanged = state.lastHeight != null && box.scrollHeight !== state.lastHeight
+  const movedUp = state.lastTop != null && box.scrollTop < state.lastTop - 1
+  const movedDown = state.lastTop != null && box.scrollTop > state.lastTop + 1
+  // Height changes (stream tokens, images, the composer pad) are not the user leaving.
+  if (!programmed && !heightChanged && movedUp) state.following = false
+  if (!state.following && !state.suppressRejoin && !programmed && !heightChanged && movedDown && gap <= BOTTOM_SLOP)
+    state.following = true
+  state.lastTop = box.scrollTop
+  state.lastHeight = box.scrollHeight
+  return { following: state.following, detached: !state.following && gap > BOTTOM_SLOP }
+}

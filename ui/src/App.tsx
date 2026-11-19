@@ -21,6 +21,7 @@ import { ImageFailureScope } from './ImageFailureScope'
 import { CurrentActivity } from './CurrentActivity'
 import { currentActivity } from './current-activity'
 import { MemoryPanel } from './MemoryPanel'
+import { CanvasScope } from './CanvasPreview'
 import { AuthorizationPanel, CuaPanel, PermissionPanel } from './SettingsPanels'
 import { presetLabel } from './permission-label.ts'
 import type { ToolApprovalView } from './ToolApprovalCard'
@@ -61,6 +62,15 @@ import {
   statsLine,
 } from './chrome'
 import { Transcript } from './transcript'
+import { useScrollFollow } from './use-scroll-follow'
+
+function LatestButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" className="jump-latest" aria-label={label} onClick={onClick}>
+      <ArrowIcon />
+    </button>
+  )
+}
 
 function hashSession(): string {
   const parts = location.hash.replace(/^#\/?/, '').split('/')
@@ -198,6 +208,7 @@ export function App() {
   const authorizationRevision = useRef<unknown>(undefined)
   const interactionSync = useRef<ReturnType<typeof createInteractionSync> | null>(null)
   const [filePreview, setFilePreview] = useState<{ path: string; line?: number; token: number } | null>(null)
+  const [canvasPulse, setCanvasPulse] = useState(0)
   const [filesOpen, setFilesOpen] = useState(false)
   const [archived, setArchived] = useState<ReadonlySet<string>>(() => new Set())
   const [blanksOpen, setBlanksOpen] = useState(false)
@@ -285,7 +296,10 @@ export function App() {
   useEffect(() => {
     void api('/cua').then(response => setCuaAvailable(response.body.available === true))
   }, [])
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const { scrollRef, contentRef, detached, pin, stickIfFollowing } = useScrollFollow(
+    `${botChat ? 'bot' : 'main'}:${sessionId}`,
+  )
+  const composerRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef<HTMLTextAreaElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const sessionMenuRef = useRef<HTMLDivElement>(null)
@@ -535,6 +549,13 @@ export function App() {
           reconnectDelay = 2000
           interactionSync.current?.ingest(row)
         }
+      })
+      next.addEventListener('canvas', event => {
+        if (stop || source !== next) return
+        const row = take(event)
+        if (!row || !Array.isArray(row.events) || row.events.length === 0) return
+        reconnectDelay = 2000
+        setCanvasPulse(value => value + 1)
       })
       next.addEventListener('snapshot', event => {
         if (stop || source !== next) return
@@ -822,12 +843,26 @@ export function App() {
     setBotChat(false)
   }, [sessionId])
 
-  const workKey = works.map(ticket => `${ticket.id}:${ticket.status}:${ticket.revision}`).join('\n')
-  useEffect(() => {
-    const node = scrollRef.current
-    if (!node) return
-    node.scrollTop = node.scrollHeight
-  }, [thread.segments, thread.drafting, thread.activity, sessionId, botChat, workKey])
+  useLayoutEffect(() => {
+    const composer = composerRef.current
+    const scroll = scrollRef.current
+    if (!composer || !scroll) return
+    const apply = () => {
+      const fade = Number.parseFloat(getComputedStyle(composer).getPropertyValue('--composer-fade')) || 0
+      const next = composer.hidden ? 0 : Math.max(0, composer.offsetHeight - fade)
+      const previous = Number.parseFloat(scroll.style.paddingBottom) || 0
+      if (previous === next) return
+      scroll.style.paddingBottom = `${next}px`
+      stickIfFollowing()
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(composer)
+    return () => {
+      observer.disconnect()
+      scroll.style.paddingBottom = ''
+    }
+  }, [botChat, scrollRef, stickIfFollowing])
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -1048,6 +1083,7 @@ export function App() {
     const turnLive = task?.status === 'accepted' && thread.drafting
     const tickets = loadedWorkSession === sessionId ? works : []
     if (!sessionId || !text || !execution.ready || composerLocked(turnLive, tickets, bots.has(sessionId))) return
+    pin()
     const wasLive = thread.drafting
     setDraft('')
     setReason('')
@@ -1364,8 +1400,9 @@ export function App() {
         ) : null}
         <div className="chat-body">
           <HistoryLoading active={historyLoading || chunkBusy} progress={chunkProgress} />
+          {detached && botChat ? <LatestButton label={t('scroll.latest')} onClick={() => pin('smooth')} /> : null}
           <div className="scroll" ref={scrollRef} aria-busy={historyLoading || chunkBusy || undefined}>
-            <div className="column">
+            <div className="column" ref={contentRef}>
               {!sessionId ? <p className="empty-thread">{t('nav.pick')}</p> : null}
               {sessionId &&
               !historyLoading &&
@@ -1376,47 +1413,53 @@ export function App() {
                 <p className="empty-thread">{t('nav.empty')}</p>
               ) : null}
               <ImageFailureScope key={sessionId}>
-                {historyLoading ? null : botChat ? (
-                  <BotChatView
-                    items={exchange}
-                    botLabel={botLabel}
-                    onOpenFile={(path, line) => {
-                      setSettings(current => (current === 'memory' ? null : current))
-                      setFilePreview({ path, line, token: Date.now() })
-                      setFilesOpen(true)
-                    }}
-                  />
-                ) : (
-                  <Transcript
-                    sessionId={sessionId}
-                    cwd={items.find(s => s.sessionId === sessionId)?.cwd}
-                    connectionPhase={syncStatus?.phase}
-                    segments={conversation}
-                    approvals={approvals}
-                    questionWaits={questionWaits}
-                    onCompose={text => placeDraft(text, text.length)}
-                    completed={thread.completed}
-                    failures={thread.failures}
-                    retries={thread.retries}
-                    turnEnds={thread.turnEnds}
-                    tickets={works}
-                    now={workNow}
-                    canRetry={Boolean(sessionId) && execution.ready && !turnLive}
-                    onRetry={text => {
-                      void submit(text)
-                    }}
-                    onSupply={supplyWork}
-                    onOpenSession={openWorkerSession}
-                    onOpenFile={(path, line) => {
-                      setSettings(current => (current === 'memory' ? null : current))
-                      setFilePreview({ path, line, token: Date.now() })
-                      setFilesOpen(true)
-                    }}
-                    onOpenInbox={() => setBotChat(true)}
-                    botLabel={botLabel}
-                    chat={isBotSession}
-                  />
-                )}
+                <CanvasScope
+                  sessionId={!botChat && !historyLoading && sessionId ? sessionId : ''}
+                  pulse={canvasPulse}
+                  tickets={works}
+                >
+                  {historyLoading ? null : botChat ? (
+                    <BotChatView
+                      items={exchange}
+                      botLabel={botLabel}
+                      onOpenFile={(path, line) => {
+                        setSettings(current => (current === 'memory' ? null : current))
+                        setFilePreview({ path, line, token: Date.now() })
+                        setFilesOpen(true)
+                      }}
+                    />
+                  ) : (
+                    <Transcript
+                      sessionId={sessionId}
+                      cwd={items.find(s => s.sessionId === sessionId)?.cwd}
+                      connectionPhase={syncStatus?.phase}
+                      segments={conversation}
+                      approvals={approvals}
+                      questionWaits={questionWaits}
+                      onCompose={text => placeDraft(text, text.length)}
+                      completed={thread.completed}
+                      failures={thread.failures}
+                      retries={thread.retries}
+                      turnEnds={thread.turnEnds}
+                      tickets={works}
+                      now={workNow}
+                      canRetry={Boolean(sessionId) && execution.ready && !turnLive}
+                      onRetry={text => {
+                        void submit(text)
+                      }}
+                      onSupply={supplyWork}
+                      onOpenSession={openWorkerSession}
+                      onOpenFile={(path, line) => {
+                        setSettings(current => (current === 'memory' ? null : current))
+                        setFilePreview({ path, line, token: Date.now() })
+                        setFilesOpen(true)
+                      }}
+                      onOpenInbox={() => setBotChat(true)}
+                      botLabel={botLabel}
+                      chat={isBotSession}
+                    />
+                  )}
+                </CanvasScope>
               </ImageFailureScope>
             </div>
           </div>
@@ -1428,7 +1471,8 @@ export function App() {
             />
           )}
         </div>
-        <div className="composer-wrap" hidden={botChat}>
+        <div className="composer-wrap" ref={composerRef} hidden={botChat}>
+          {detached ? <LatestButton label={t('scroll.latest')} onClick={() => pin('smooth')} /> : null}
           <form
             className="column"
             onSubmit={event => {

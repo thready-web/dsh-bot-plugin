@@ -1,0 +1,66 @@
+{
+  "registry": "https://www.ui-skills.com/skills/registry.json",
+  "fetched": "2026-11-18",
+  "skills": [
+    {
+      "id": "ui-skills-root",
+      "path": "ibelick/ui-skills-root",
+      "url": "https://www.ui-skills.com/skills/ibelick/ui-skills-root/llms.txt",
+      "bytes": 1448
+    },
+    {
+      "id": "frontend-design",
+      "path": "anthropics/frontend-design",
+      "url": "https://www.ui-skills.com/skills/anthropics/frontend-design/llms.txt",
+      "bytes": 9390
+    },
+    {
+      "id": "better-ui",
+      "path": "jakubkrehel/better-ui",
+      "url": "https://www.ui-skills.com/skills/jakubkrehel/better-ui/llms.txt",
+      "bytes": 11122
+    },
+    {
+      "id": "impeccable",
+      "path": "pbakaus/impeccable",
+      "url": "https://www.ui-skills.com/skills/pbakaus/impeccable/llms.txt",
+      "bytes": 13699
+    },
+    {
+      "id": "visual-design-foundations",
+      "path": "wshobson/visual-design-foundations",
+      "url": "https://www.ui-skills.com/skills/wshobson/visual-design-foundations/llms.txt",
+      "bytes": 7218
+    },
+    {
+      "id": "interface-design",
+      "path": "dammyjay93/interface-design",
+      "url": "https://www.ui-skills.com/skills/dammyjay93/interface-design/llms.txt",
+      "bytes": 29614
+    },
+    {
+      "id": "web-design-guidelines",
+      "path": "vercel-labs/web-design-guidelines",
+      "url": "https://www.ui-skills.com/skills/vercel-labs/web-design-guidelines/llms.txt",
+      "bytes": 1231
+    },
+    {
+      "id": "bencium-innovative-ux-designer",
+      "path": "bencium/bencium-innovative-ux-designer",
+      "url": "https://www.ui-skills.com/skills/bencium/bencium-innovative-ux-designer/llms.txt",
+      "bytes": 25752
+    },
+    {
+      "id": "baseline-ui",
+      "path": "ibelick/baseline-ui",
+      "url": "https://www.ui-skills.com/skills/ibelick/baseline-ui/llms.txt",
+      "bytes": 3419
+    },
+    {
+      "id": "design-lab",
+      "path": "0xdesign/design-lab",
+      "url": "https://www.ui-skills.com/skills/0xdesign/design-lab/llms.txt",
+      "bytes": 30182
+    }
+  ]
+}

@@ -11,6 +11,7 @@ import { cua } from './cua.ts'
 import { work } from './work.ts'
 import { image } from './image.ts'
 import { memory } from './memory.ts'
+import { canvas } from './canvas.ts'
 
 export type Locale = 'en' | 'zh'
 
@@ -28,6 +29,7 @@ const en = {
   ...cua.en,
   ...image.en,
   ...memory.en,
+  ...canvas.en,
 } as const
 
 const zh: Record<keyof typeof en, string> = {
@@ -44,6 +46,7 @@ const zh: Record<keyof typeof en, string> = {
   ...cua.zh,
   ...image.zh,
   ...memory.zh,
+  ...canvas.zh,
 }
 
 export type MessageKey = keyof typeof en

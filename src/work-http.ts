@@ -149,6 +149,7 @@ export function openPageLive(
     workBoard: () => unknown
     loadDesk: () => Promise<unknown>
     interactions?: () => unknown
+    canvas?: () => unknown
     deskIntervalMs?: number
     intervalMs?: number
   },
@@ -178,6 +179,19 @@ export function openPageLive(
   let interactionTimer: ReturnType<typeof setInterval> | null = null
   let lastInteractions = ''
   let interactionFailed = false
+  let lastCanvas = ''
+  const pumpCanvas = () => {
+    if (stopped || !source.canvas) return
+    try {
+      const text = JSON.stringify(source.canvas())
+      if (text === lastCanvas) return
+      lastCanvas = text
+      if (text === '{"ok":true,"events":[]}') return
+      res.write(`event: canvas\ndata: ${text}\n\n`)
+    } catch {
+      // A canvas notice failure leaves the desk and ticket streams open.
+    }
+  }
   const pumpInteractions = () => {
     if (stopped || !source.interactions) return
     try {
@@ -245,6 +259,7 @@ export function openPageLive(
       busy = false
     }
   }
+  pumpCanvas()
   pumpInteractions()
   if (source.interactions) {
     interactionTimer = setInterval(pumpInteractions, intervalMs)
@@ -252,6 +267,7 @@ export function openPageLive(
   }
   void pump()
   timer = setInterval(() => {
+    pumpCanvas()
     void pump()
   }, intervalMs)
   timer.unref?.()

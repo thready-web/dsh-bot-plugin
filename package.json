@@ -22,6 +22,7 @@
     "public",
     "client.js",
     "fixtures",
+    "skills",
     "README.md"
   ],
   "publishConfig": {

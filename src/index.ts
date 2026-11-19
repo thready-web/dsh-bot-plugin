@@ -25,6 +25,8 @@ import {
 import { ensureWorkerFilePreset, WORKER_FILE_PRESET, workerFileSetup } from './work-child.ts'
 import { BUDGET_NOTICE_PREFIX, createWorkRuntime, type MainBudgetTrip } from './work-worker.ts'
 import { workToolDefinitions } from './work-tools.ts'
+import { openCanvasStore } from './canvas-store.ts'
+import { canvasToolDefinitions } from './canvas-tools.ts'
 
 export const name = 'session-foundations'
 
@@ -58,6 +60,7 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
   const dataDir = config.dataDir ?? (ctx.profileContext?.dir ? join(ctx.profileContext.dir, 'session-foundations') : '')
   if (dataDir === '') throw new Error('session-foundations: pass dataDir or launch with dsh profileContext')
   const store = openStore(dataDir)
+  const canvas = openCanvasStore(join(dataDir, 'canvas.sqlite'))
   const engine = createEngine(store)
   const recovery = engine.recover()
   const ownerFile = join(dataDir, 'owner.json')
@@ -71,6 +74,11 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
     }
     try {
       store.close()
+    } catch {
+      /* closed */
+    }
+    try {
+      canvas.close()
     } catch {
       /* closed */
     }
@@ -262,6 +270,7 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
   }
   if (work) {
     for (const definition of workToolDefinitions(work, engine)) ctx.tools.register(definition)
+    for (const definition of canvasToolDefinitions(canvas, work, engine)) ctx.tools.register(definition)
     const gate = work
     // Main-session step budget: refuse the next step instead of cancelling a
     // step that already ended. A refused step ends the turn as `blocked`.

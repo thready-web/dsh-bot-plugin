@@ -187,6 +187,7 @@ export function createWorkRuntime(
     waitForBudget,
     isWorkerSession,
     ownerOf,
+    ticketIdOf,
     summaries: (owner: string) => book.summaries(owner),
     detail: (id: string) => book.detail(id),
     liveStamp: () => book.liveStamp(),
@@ -211,6 +212,11 @@ export function createWorkRuntime(
     if (!attempt) return null
     const owner = book.ticket(attempt.ticket_id)?.owner_session_id
     return typeof owner === 'string' && owner !== '' ? owner : null
+  }
+
+  function ticketIdOf(sessionId: string): string | null {
+    const ticketId = book.attemptForChild(sessionId)?.ticket_id
+    return typeof ticketId === 'string' && ticketId !== '' ? ticketId : null
   }
 
   /**

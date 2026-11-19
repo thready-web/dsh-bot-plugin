@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { createFollowScroll, leaveBottom, noteScroll, pauseFollow } from './scroll-follow.ts'
+
+const view = { clientHeight: 100 }
+
+test('stream growth keeps follow and does not count as scrolling away', () => {
+  const state = createFollowScroll()
+  noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 500 })
+  const grown = noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 700 })
+  assert.equal(grown.following, true)
+  assert.equal(grown.detached, false)
+})
+
+test('an upward scroll releases follow, and returning to the end resumes it', () => {
+  const state = createFollowScroll()
+  noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 500 })
+  const away = noteScroll(state, { ...view, scrollTop: 200, scrollHeight: 500 })
+  assert.equal(away.following, false)
+  assert.equal(away.detached, true)
+  const back = noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 500 })
+  assert.equal(back.following, true)
+  assert.equal(back.detached, false)
+})
+
+test('a small upward nudge releases follow before the next token can pin again', () => {
+  const state = createFollowScroll()
+  noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 500 })
+  const nudged = noteScroll(state, { ...view, scrollTop: 396, scrollHeight: 500 })
+  assert.equal(nudged.following, false)
+  assert.equal(nudged.detached, false)
+})
+
+test('our own stick to the end is not an escape', () => {
+  const state = createFollowScroll()
+  noteScroll(state, { ...view, scrollTop: 100, scrollHeight: 200 })
+  state.programmaticTop = 300
+  const landed = noteScroll(state, { ...view, scrollTop: 300, scrollHeight: 400 })
+  assert.equal(landed.following, true)
+  assert.equal(state.programmaticTop, null)
+})
+
+test('shrinking content is not the user scrolling up', () => {
+  const state = createFollowScroll()
+  noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 500 })
+  const shrunk = noteScroll(state, { ...view, scrollTop: 300, scrollHeight: 400 })
+  assert.equal(shrunk.following, true)
+  assert.equal(shrunk.detached, false)
+})
+
+test('a paused reader stays put while later content arrives', () => {
+  const state = createFollowScroll()
+  noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 500 })
+  pauseFollow(state)
+  const grown = noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 700 })
+  assert.equal(grown.following, false)
+  assert.equal(grown.detached, true)
+})
+
+test('leaveBottom releases a tall thread and ignores one that cannot scroll', () => {
+  const tall = createFollowScroll()
+  assert.equal(leaveBottom(tall, { ...view, scrollTop: 400, scrollHeight: 500 }), true)
+  assert.equal(tall.following, false)
+  const short = createFollowScroll()
+  assert.equal(leaveBottom(short, { ...view, scrollTop: 0, scrollHeight: 80 }), false)
+  assert.equal(short.following, true)
+})
+
+test('a cancelled smooth scroll arriving at the end does not resume follow', () => {
+  const state = createFollowScroll()
+  noteScroll(state, { ...view, scrollTop: 100, scrollHeight: 500 })
+  state.following = false
+  state.suppressRejoin = true
+  const landed = noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 500 })
+  assert.equal(landed.following, false)
+  assert.equal(landed.detached, false)
+})

@@ -1,7 +1,7 @@
 /** Evidence-based UI projection. Never interprets model prose as a process heartbeat. */
 import { english, type Copy, type MessageKey } from './i18n/index.ts'
 import type { ToolSegment } from './types.ts'
-import type { WorkTicket } from './work.ts'
+import { isWorkDispatch, type WorkTicket } from './work.ts'
 
 export type ToolStatus =
   | 'preparing'
@@ -147,7 +147,7 @@ export function toolPresentation(tool: ToolSegment, sessionCwd?: string, tickets
   const ticket = tickets.find(item => item.id === ticketId)
   let status = toolState(tool)
   // A dispatch result acknowledges a worker, not delivery of its task.
-  if (ticket && tool.name === 'foundations_dispatch') {
+  if (ticket && isWorkDispatch(tool.name)) {
     status =
       ticket.status === 'failed'
         ? 'failed'
@@ -156,7 +156,7 @@ export function toolPresentation(tool: ToolSegment, sessionCwd?: string, tickets
           : ticket.status === 'delivered'
             ? 'succeeded'
             : 'worker'
-  } else if (tool.name === 'foundations_dispatch' && status === 'succeeded' && ticketId) status = 'worker'
+  } else if (isWorkDispatch(tool.name) && status === 'succeeded' && ticketId) status = 'worker'
   const todos =
     tool.name === 'todo_write' && Array.isArray(args.todos)
       ? args.todos.flatMap(item => {

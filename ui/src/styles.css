@@ -431,6 +431,7 @@ html.files-resizing {
 }
 
 .chat {
+  position: relative;
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -2002,9 +2003,79 @@ button.chip {
   border: 0;
 }
 
+/* Floats over the transcript. The slab is clipped away with a mask so scroll text
+   shows through; only a short veil remains where lines meet the card. */
 .composer-wrap {
+  --composer-fade: 56px;
+  position: absolute;
+  z-index: 6;
+  left: 0;
+  right: 0;
+  bottom: 0;
   min-width: 0;
-  padding: 0 28px 10px;
+  padding: var(--composer-fade) 28px 10px;
+  pointer-events: none;
+  background: none;
+}
+.composer-wrap::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: var(--composer-fade);
+  pointer-events: none;
+  background: var(--bg);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, transparent 40%, rgb(0 0 0 / 0.4) 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, transparent 40%, rgb(0 0 0 / 0.4) 100%);
+}
+.composer-wrap .column {
+  position: relative;
+  z-index: 3;
+  pointer-events: auto;
+}
+.jump-latest {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: white;
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.jump-latest:hover {
+  background: var(--hover);
+}
+.jump-latest:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+.jump-latest svg {
+  width: 16px;
+  height: 16px;
+  transform: rotate(180deg);
+}
+.chat-body > .jump-latest {
+  top: auto;
+  bottom: 16px;
+  z-index: 5;
+}
+.composer-wrap .card {
+  box-shadow:
+    0 0 0 0.5px rgba(15, 17, 21, 0.08),
+    0 2px 6px rgba(15, 17, 21, 0.05),
+    0 14px 32px -6px rgba(15, 17, 21, 0.16);
 }
 .card {
   position: relative;
@@ -2341,7 +2412,8 @@ button.chip {
   }
 }
 
-/* A single quiet line immediately above the composer, independent of transcript layout. */
+/* A single quiet line immediately above the composer, independent of transcript layout.
+   The fade lives on .composer-wrap, so it remains after this line hides. */
 .composer-activity {
   display: flex;
   align-items: center;
@@ -3283,5 +3355,242 @@ button.chip {
   }
   .files-row.memory-row {
     grid-template-columns: minmax(0, 1fr) 72px;
+  }
+}
+
+.canvas-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: min(100%, 32rem);
+  margin: 12px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--dsw-radius-lg);
+  background: white;
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  text-align: start;
+  cursor: pointer;
+}
+.canvas-card small,
+.canvas-list-error {
+  color: var(--secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.canvas-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 17, 21, 0.45);
+}
+.canvas-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1120px, 100%);
+  height: min(860px, 100%);
+  min-width: min(760px, 100%);
+  min-height: min(640px, 100%);
+  overflow: hidden;
+  border-radius: var(--dsw-radius-panel);
+  background: var(--bg);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+.canvas-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.canvas-toolbar-title,
+.canvas-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.canvas-toolbar-controls {
+  flex-wrap: wrap;
+}
+.canvas-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.canvas-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  margin-right: -6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--secondary);
+}
+.canvas-close svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  fill: none;
+  stroke-linecap: round;
+}
+.canvas-close:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.canvas-segment {
+  display: flex;
+  flex: none;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--sidebar);
+}
+.canvas-versions {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.canvas-versions::-webkit-scrollbar {
+  display: none;
+}
+.canvas-segment button {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--secondary);
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+.canvas-segment button[aria-pressed="true"] {
+  background: white;
+  color: var(--ink);
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.05);
+}
+.canvas-segment button:disabled {
+  color: var(--caption);
+  cursor: default;
+}
+.canvas-version-status {
+  margin-left: 6px;
+  color: var(--tertiary);
+  font-size: 12px;
+}
+.canvas-segment button[aria-pressed="true"] .canvas-version-status {
+  color: var(--secondary);
+}
+.canvas-reset {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: white;
+  color: var(--ink);
+  padding: 5px 12px;
+  font-size: 13px;
+}
+.canvas-reset:hover {
+  background: var(--hover);
+}
+.canvas-reset:disabled {
+  color: var(--tertiary);
+  background: transparent;
+}
+.canvas-adopt {
+  margin-left: auto;
+  flex: none;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  color: white;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.canvas-adopt:disabled {
+  background: transparent;
+  color: var(--tertiary);
+}
+.canvas-stage {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  /* padding: 16px; */
+  overflow: auto;
+  background: var(--sidebar);
+}
+.canvas-frame {
+  height: 100%;
+  min-height: 24rem;
+  background: white;
+  box-shadow: var(--shadow);
+}
+.canvas-frame iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: white;
+}
+.canvas-status {
+  position: absolute;
+  z-index: 1;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--bg);
+  color: var(--secondary);
+}
+.canvas-toolbar button:focus-visible,
+.canvas-card:focus-visible,
+.canvas-status button:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+@media (max-width: 800px) {
+  .canvas-modal {
+    padding: 0;
+  }
+  .canvas-dialog {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    border-radius: 0;
+  }
+  .canvas-toolbar {
+    padding: 12px;
+  }
+  .canvas-adopt {
+    margin-left: 0;
   }
 }

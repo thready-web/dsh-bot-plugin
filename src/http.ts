@@ -15,6 +15,8 @@ import { createLogSource } from './log/source.ts'
 import { createLogSnapshotService } from './log/snapshot-service.ts'
 import { dispatchLogRequest, probeConnection, registerLogRoutes } from './log/routes.ts'
 import { handleMemoryRoute } from './memory-catalog.ts'
+import { handleCanvasApi, serveCanvasMedia } from './canvas-http.ts'
+import { openCanvasStore, type CanvasStore } from './canvas-store.ts'
 
 /**
  * Local management routes. Model tools cannot confirm a persona or change revocation.
@@ -40,6 +42,7 @@ export function registerHttp(
   const webServer = ctx.webServer
   const storeDir = dataDir || (ctx.profileContext?.dir ? join(ctx.profileContext.dir, 'session-foundations') : '')
   const profileDir = ctx.profileContext?.dir || (storeDir !== '' ? dirname(storeDir) : '')
+  const canvas: CanvasStore | null = storeDir === '' ? null : openCanvasStore(join(storeDir, 'canvas.sqlite'))
   const logService = createLogSnapshotService(createLogSource(ctx))
   const logOnConnection = registerLogRoutes(ctx, logService)
   const persistence = ctx.sessionPersistence as { root?: unknown } | undefined
@@ -102,6 +105,10 @@ export function registerHttp(
     }
   }
   const handler = async (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+    const requestTarget = req.url ?? '/'
+    if ((requestTarget.split('?')[0] ?? '').startsWith('/dsh-bot/canvas-media/')) {
+      return serveCanvasMedia(req, res, requestTarget, canvas)
+    }
     const rejection = reject(ctx, req)
     if (rejection) return send(res, rejection, { ok: false, code: 'FORBIDDEN' })
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -456,12 +463,20 @@ export function registerHttp(
           workBoard: () => work.liveBoardAll(),
           loadDesk: () => loadPageDesk(req),
           interactions: () => interactionSnapshot(url.searchParams.get('sessionId') ?? '', true),
+          ...(canvas ? { canvas: () => canvas.live(url.searchParams.get('sessionId') ?? '') } : {}),
         })
       }
       if (req.method === 'GET' && path === '/session-foundations/api/work/live') {
         const work = getWork()
         if (!work) return send(res, 503, toolError('UNAVAILABLE', 'The work host is not attached yet.'))
         return openWorkLive(req, res, url.searchParams.get('sessionId') ?? '', work)
+      }
+      if (
+        canvas &&
+        (path === '/session-foundations/api/canvas' || path.startsWith('/session-foundations/api/canvas/'))
+      ) {
+        const outcome = await handleCanvasApi(req, path, url, canvas)
+        return send(res, outcome.status, outcome.body)
       }
       if (path.startsWith('/session-foundations/api/work')) {
         const workBody = req.method === 'GET' ? {} : await readJson(req)
@@ -510,6 +525,11 @@ export function registerHttp(
       if (typeof disposeFoundations === 'function') disposeFoundations()
       if (typeof disposeDesk === 'function') disposeDesk()
       if (typeof disposeLog === 'function') disposeLog()
+      try {
+        canvas?.close()
+      } catch {
+        /* closed */
+      }
     }
   })
 }

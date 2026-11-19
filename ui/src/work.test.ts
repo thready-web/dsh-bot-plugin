@@ -157,6 +157,13 @@ test('two running tickets share one preview, and a second dispatch can be refuse
     dispatchTicketId({ name: 'foundations_dispatch', result: JSON.stringify({ ok: true, ticketId: 't1' }) }),
     't1',
   )
+  assert.equal(
+    dispatchTicketId({
+      name: 'foundations_dispatch_canvas',
+      result: JSON.stringify({ ok: true, ticketId: 't-canvas', canvasId: 'cnv_a' }),
+    }),
+    't-canvas',
+  )
   assert.equal(dispatchTicketId(refused), null)
 })
 

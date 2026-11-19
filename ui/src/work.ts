@@ -288,8 +288,12 @@ export function questionView(ticket: WorkTicket): { text: string; stale: boolean
   return null
 }
 
+export function isWorkDispatch(name: string) {
+  return name === 'foundations_dispatch' || name === 'foundations_dispatch_canvas'
+}
+
 export function dispatchTicketId(tool: { name: string; result: string }): string | null {
-  if (tool.name !== 'foundations_dispatch' || tool.result.trim() === '') return null
+  if (!isWorkDispatch(tool.name) || tool.result.trim() === '') return null
   const parsed = parseResult(tool.result)
   if (parsed) {
     if (parsed.ok === false) return null
@@ -300,7 +304,7 @@ export function dispatchTicketId(tool: { name: string; result: string }): string
 }
 
 export function isBudgetRefusal(tool: { name: string; result: string }): boolean {
-  if (tool.name !== 'foundations_dispatch' || tool.result.trim() === '') return false
+  if (!isWorkDispatch(tool.name) || tool.result.trim() === '') return false
   const parsed = parseResult(tool.result)
   if (parsed) return parsed.ok === false && parsed.code === 'BUDGET'
   return tool.result.includes('"BUDGET"') || /concurrency limit/i.test(tool.result)

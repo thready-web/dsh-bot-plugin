@@ -1,6 +1,7 @@
 import { redactText } from './activity'
-import { Fragment, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import { useI18n } from './locale'
+import { CanvasCard, useCanvasPlace } from './CanvasPreview'
 import { BriefingCard, WorkCard, WorkRefusal } from './WorkCard'
 import {
   backgroundOpen,
@@ -22,6 +23,13 @@ import { UserQuestionCard } from './UserQuestionCard'
 import { ToolApprovalCard, type ToolApprovalView } from './ToolApprovalCard'
 import type { UserQuestionWait } from './user-question'
 import type { RetryAttempt, Segment, TurnFailure } from './types'
+import {
+  blockKey,
+  resolveApprovals,
+  resolveFloatingWorks,
+  resolveLooseCanvases,
+  type ApprovalSpot,
+} from './transcript-place'
 
 function clock(time: number | undefined, locale: string): string {
   if (!time) return ''
@@ -109,7 +117,6 @@ export function Transcript({
     summary: redactText(ticket.summary),
     events: ticket.events.map(event => ({ ...event, text: redactText(event.text) })),
   }))
-  const shown = cardsToShow(safeTickets)
   const byId = new Map(safeTickets.map(ticket => [ticket.id, ticket]))
   const anchorAt = new Map<string, string>()
   for (const block of blocks) {
@@ -125,52 +132,116 @@ export function Transcript({
   }
   const latestTurn = blocks.reduce((max, block) => (block.type === 'turn' ? Math.max(max, block.turn) : max), -1)
   const open = backgroundOpen(tickets)
+  const canvasPlace = useCanvasPlace()
+  const pinState = useRef<{
+    sessionId: string | undefined
+    work: Map<string, string>
+    canvas: Map<string, string>
+    approval: Map<string, ApprovalSpot>
+  }>({ sessionId, work: new Map(), canvas: new Map(), approval: new Map() })
+  if (pinState.current.sessionId !== sessionId) {
+    pinState.current = { sessionId, work: new Map(), canvas: new Map(), approval: new Map() }
+  }
+  const here = blocks.length > 0 ? blockKey(blocks[blocks.length - 1]!) : 'start'
+  const anchored = new Set(anchorAt.keys())
+  const floating = resolveFloatingWorks(cardsToShow(safeTickets), anchored, pinState.current.work, here)
+  for (const [id, key] of pinState.current.work) {
+    if (byId.has(id)) floating.set(id, key)
+  }
+  const covered = new Set<string>()
+  for (const id of anchored) {
+    if (byId.has(id) && !floating.has(id)) covered.add(id)
+  }
+  for (const id of floating.keys()) {
+    if (byId.has(id)) covered.add(id)
+  }
+  const loosePins = resolveLooseCanvases(
+    [...canvasPlace.loose, ...canvasPlace.byTicket.values()],
+    covered,
+    pinState.current.canvas,
+    here,
+  )
+  const callTurn = new Map<string, number>()
+  for (const block of blocks) {
+    if (block.type !== 'turn') continue
+    for (const segment of block.segments) {
+      if (segment.kind === 'tool' && segment.callId && !callTurn.has(segment.callId)) {
+        callTurn.set(segment.callId, block.turn)
+      }
+    }
+  }
+  const approvalSpots = resolveApprovals(approvals, callTurn, pinState.current.approval, latestTurn)
+  const canvasById = new Map([...canvasPlace.loose, ...canvasPlace.byTicket.values()].map(item => [item.id, item]))
+  const canvasForTicket = (ticketId: string) => {
+    const canvas = canvasPlace.byTicket.get(ticketId)
+    if (!canvas || loosePins.has(canvas.id)) return null
+    return canvas
+  }
+  const pinnedAfter = (key: string) => {
+    const workIds = [...floating.entries()].filter(([, pin]) => pin === key).map(([id]) => id)
+    const canvasIds = [...loosePins.entries()].filter(([, pin]) => pin === key).map(([id]) => id)
+    if (workIds.length === 0 && canvasIds.length === 0) return null
+    return (
+      <Fragment key={`pin:${key}`}>
+        {workIds.map(id => {
+          const ticket = byId.get(id)
+          if (!ticket) return null
+          const canvas = canvasForTicket(id)
+          return (
+            <Fragment key={ticket.id}>
+              <WorkCard ticket={ticket} now={now} onSupply={onSupply} onOpen={onOpenSession} />
+              {canvas ? <CanvasCard item={canvas} onOpen={() => canvasPlace.open(canvas.id)} /> : null}
+            </Fragment>
+          )
+        })}
+        {canvasIds.map(id => {
+          const canvas = canvasById.get(id)
+          if (!canvas) return null
+          return <CanvasCard key={canvas.id} item={canvas} onOpen={() => canvasPlace.open(canvas.id)} />
+        })}
+      </Fragment>
+    )
+  }
   return (
     <>
-      {blocks.map((block, index) =>
-        block.type === 'user' ? (
-          <UserBlock
-            key={block.segment.id}
-            segment={block.segment}
-            botLabel={botLabel}
-            onOpenInbox={onOpenInbox}
-            onOpenFile={onOpenFile}
-          />
-        ) : (
-          <TurnBlock
-            sessionId={sessionId}
-            cwd={cwd}
-            connectionPhase={connectionPhase}
-            key={`${sessionId}:turn-${block.turn}`}
-            block={block}
-            index={index}
-            blocks={blocks}
-            failures={failures}
-            retries={retries}
-            turnEnds={turnEnds}
-            latestTurn={latestTurn}
-            background={open}
-            byId={byId}
-            anchorAt={anchorAt}
-            now={now}
-            canRetry={canRetry}
-            onRetry={onRetry}
-            onSupply={onSupply}
-            onOpenSession={onOpenSession}
-            onOpenFile={onOpenFile}
-            chat={chat}
-            approvals={approvals}
-            questionWaits={questionWaits}
-            onCompose={onCompose}
-            trailingApprovals={index === blocks.length - 1}
-          />
-        ),
-      )}
-      {shown
-        .filter(ticket => !anchorAt.has(ticket.id))
-        .map(ticket => (
-          <WorkCard key={ticket.id} ticket={ticket} now={now} onSupply={onSupply} onOpen={onOpenSession} />
-        ))}
+      {pinnedAfter('start')}
+      {blocks.map((block, index) => (
+        <Fragment key={block.type === 'user' ? block.segment.id : `${sessionId}:turn-${block.turn}`}>
+          {block.type === 'user' ? (
+            <UserBlock segment={block.segment} botLabel={botLabel} onOpenInbox={onOpenInbox} onOpenFile={onOpenFile} />
+          ) : (
+            <TurnBlock
+              sessionId={sessionId}
+              cwd={cwd}
+              connectionPhase={connectionPhase}
+              block={block}
+              index={index}
+              blocks={blocks}
+              failures={failures}
+              retries={retries}
+              turnEnds={turnEnds}
+              latestTurn={latestTurn}
+              background={open}
+              byId={byId}
+              anchorAt={anchorAt}
+              now={now}
+              canRetry={canRetry}
+              onRetry={onRetry}
+              onSupply={onSupply}
+              onOpenSession={onOpenSession}
+              onOpenFile={onOpenFile}
+              chat={chat}
+              approvals={approvals}
+              approvalSpots={approvalSpots}
+              questionWaits={questionWaits}
+              onCompose={onCompose}
+              skipTickets={floating}
+              looseCanvasIds={loosePins}
+            />
+          )}
+          {pinnedAfter(blockKey(block))}
+        </Fragment>
+      ))}
     </>
   )
 }
@@ -323,9 +394,11 @@ function TurnBlock({
   cwd,
   connectionPhase,
   approvals = [],
+  approvalSpots,
   questionWaits,
   onCompose,
-  trailingApprovals = false,
+  skipTickets,
+  looseCanvasIds,
 }: {
   sessionId?: string
   block: { type: 'turn'; turn: number; seconds?: number; segments: Segment[] }
@@ -348,31 +421,32 @@ function TurnBlock({
   cwd?: string
   connectionPhase?: string
   approvals?: ToolApprovalView[]
+  approvalSpots: Map<string, ApprovalSpot>
   questionWaits?: Record<string, { remainingMs?: number; waitState?: UserQuestionWait }>
   onCompose?: (text: string) => void
-  trailingApprovals?: boolean
+  skipTickets: Map<string, string>
+  looseCanvasIds: Map<string, string>
 }) {
   const { t } = useI18n()
+  const canvasPlace = useCanvasPlace()
   const pieces = turnPieces(block.segments)
-  const seenApprovals = new Set<string>()
+  const takenApprovals = new Set<string>()
   const waitOf = (callId: string) => questionWaits?.[callId] ?? questionWaits?.[`${sessionId}:${callId}`]
   const approvalsFor = (callIds: string[]) =>
     approvals.filter(item => {
-      if (seenApprovals.has(item.requestId)) return false
-      if (item.callId && callIds.includes(item.callId)) {
-        seenApprovals.add(item.requestId)
-        return true
-      }
-      return false
+      const spot = approvalSpots.get(item.requestId)
+      if (!spot || spot.turn !== block.turn || !spot.callId || !callIds.includes(spot.callId)) return false
+      if (takenApprovals.has(item.requestId)) return false
+      takenApprovals.add(item.requestId)
+      return true
     })
   const leftoverApprovals = () =>
-    trailingApprovals
-      ? approvals.filter(item => {
-          if (seenApprovals.has(item.requestId)) return false
-          seenApprovals.add(item.requestId)
-          return true
-        })
-      : []
+    approvals.filter(item => {
+      const spot = approvalSpots.get(item.requestId)
+      if (!spot || spot.turn !== block.turn || takenApprovals.has(item.requestId)) return false
+      takenApprovals.add(item.requestId)
+      return true
+    })
   const hasActivity = pieces.some(piece => piece.type === 'activity')
   const stopped =
     chat && turnEnds[block.turn] === 'aborted' && !failures[block.turn] && !(block.turn === latestTurn && background)
@@ -430,9 +504,18 @@ function TurnBlock({
               {tools.flatMap(segment => {
                 const id = dispatchTicketId(segment)
                 const ticket = id ? byId.get(id) : undefined
-                if (!id || !ticket || anchorAt.get(id) !== segment.id) return []
+                if (!id || !ticket || anchorAt.get(id) !== segment.id || skipTickets.has(id)) return []
+                const canvas = canvasPlace.byTicket.get(ticket.id)
+                const pinnedCanvas = canvas && looseCanvasIds.has(canvas.id) ? null : canvas
                 return [
                   <WorkCard key={ticket.id} ticket={ticket} now={now} onSupply={onSupply} onOpen={onOpenSession} />,
+                  pinnedCanvas ? (
+                    <CanvasCard
+                      key={pinnedCanvas.id}
+                      item={pinnedCanvas}
+                      onOpen={() => canvasPlace.open(pinnedCanvas.id)}
+                    />
+                  ) : null,
                 ]
               })}
             </Fragment>

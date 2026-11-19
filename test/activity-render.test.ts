@@ -479,6 +479,8 @@ test('SSR/CSS: hidden documents pause the compact sweep and reduced motion disab
   const css = readFileSync(new URL('../ui/src/styles.css', import.meta.url), 'utf8')
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.composer-activity[\s\S]*?animation: none/)
   assert.match(css, /\.composer-activity-text\s*\{[^}]*text-overflow: ellipsis/)
+  assert.match(css, /\.composer-wrap\s*\{[^}]*position:\s*absolute/)
+  assert.match(css, /\.composer-wrap::before\s*\{[^}]*mask-image:\s*linear-gradient\(to bottom, transparent/)
 })
 
 test('SSR: a result-first recovery takes the late call position, not the result arrival position', () => {
