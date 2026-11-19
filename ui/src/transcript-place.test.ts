@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import test from 'node:test'
-import { resolveApprovals, resolveFloatingWorks, resolveLooseCanvases } from './transcript-place.ts'
+import { canvasMessageId, resolveApprovals, resolveFloatingWorks } from './transcript-place.ts'
 
 test('a floating work card stays on the block where it first appeared', () => {
   const pins = new Map<string, string>()
@@ -24,19 +24,10 @@ test('a floating work card does not move onto its dispatch after a later message
   assert.equal(later.get('t1'), 'turn:1')
 })
 
-test('a canvas with a visible ticket stays on that ticket', () => {
-  const pins = new Map<string, string>()
-  const placed = resolveLooseCanvases([{ id: 'c1', ticketId: 't1' }], new Set(['t1']), pins, 'user:new')
-  assert.equal(placed.has('c1'), false)
-  assert.equal(pins.size, 0)
-})
-
-test('a canvas without a home stays on the block where it appeared', () => {
-  const pins = new Map<string, string>()
-  const first = resolveLooseCanvases([{ id: 'c1', ticketId: null }], new Set(), pins, 'turn:2')
-  assert.equal(first.get('c1'), 'turn:2')
-  const coveredLater = resolveLooseCanvases([{ id: 'c1', ticketId: 't1' }], new Set(['t1']), pins, 'user:new')
-  assert.equal(coveredLater.get('c1'), 'turn:2')
+test('a canvas stays hidden until its dispatch message is loaded', () => {
+  assert.equal(canvasMessageId('t1', new Map()), null)
+  assert.equal(canvasMessageId(null, new Map([['t1', 'tool:1']])), null)
+  assert.equal(canvasMessageId('t1', new Map([['t1', 'tool:1']])), 'tool:1')
 })
 
 test('an approval stays on the turn where it first appeared', () => {

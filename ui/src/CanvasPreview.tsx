@@ -1,5 +1,9 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { mentionFrom } from '../../../../packages/dsh-canvas/src/mention.ts'
+import { isCanvasAnchor, isCanvasPage, splitCanvasRoute } from './canvas-link'
+import { mentionLabel } from './canvas-target'
+import { adoptElement, type RawNode } from '../../../../packages/dsh-canvas/src/path.ts'
 import { api } from './api'
 import { placeCanvases } from './canvas-place'
 import {
@@ -26,16 +30,22 @@ export interface CanvasSummary {
   stableRevision: number | null
 }
 
+export interface CanvasLocation {
+  revision: number | null
+  page: string | null
+  anchor: string | null
+}
+
 const emptyCanvasPlace = {
   byTicket: new Map<string, CanvasSummary>(),
   loose: [] as CanvasSummary[],
-  open: (_id: string) => {},
+  open: (_id: string, _location?: CanvasLocation) => {},
 }
 
 const CanvasPlaceContext = createContext<{
   byTicket: Map<string, CanvasSummary>
   loose: readonly CanvasSummary[]
-  open: (id: string) => void
+  open: (id: string, location?: CanvasLocation) => void
 }>(emptyCanvasPlace)
 
 export function useCanvasPlace() {
@@ -50,6 +60,22 @@ export interface RevisionSummary {
   error: string | null
 }
 
+const CHANNEL = 'canvas-inspect'
+
+export interface CanvasOpenOrigin {
+  x: number
+  y: number
+}
+
+/** A click in the last moment is the point the modal grows from. */
+const CLICK_ORIGIN_MS = 150
+
+function motionEnabled(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false
+  return typeof HTMLElement !== 'undefined' && typeof HTMLElement.prototype.animate === 'function'
+}
+
 export function CanvasPreview({
   title,
   revisions,
@@ -57,10 +83,17 @@ export function CanvasPreview({
   phase,
   error,
   src,
+  canvasId,
   onSelect,
   onRetry,
   onAdopt,
   onClose,
+  origin = null,
+  onOpened,
+  onMention,
+  routeStamp = 0,
+  routePage = null,
+  routeAnchor = null,
 }: {
   title: string
   revisions: RevisionSummary[]
@@ -68,21 +101,160 @@ export function CanvasPreview({
   phase: 'idle' | 'loading' | 'ready' | 'error'
   error: string
   src: string
+  canvasId?: string
   onSelect: (revision: number) => void
   onRetry: () => void
   onAdopt: () => void
   onClose: () => void
+  origin?: CanvasOpenOrigin | null
+  /** The zoom-in has finished. The canvas document can render now. */
+  onOpened?: () => void
+  onMention?: (chip: { canvasId: string; revision: number; path: string; tag: string; label: string }) => void
+  routeStamp?: number
+  routePage?: string | null
+  routeAnchor?: string | null
 }) {
   const { t } = useI18n()
   const dialog = useRef<HTMLDivElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
   const frameRef = useRef<HTMLIFrameElement>(null)
-  const closeRef = useRef(onClose)
-  closeRef.current = onClose
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const onOpenedRef = useRef(onOpened)
+  onOpenedRef.current = onOpened
+  const closeRef = useRef<() => void>(() => {})
+  const [motion, setMotion] = useState<'prepare' | 'enter' | 'settled' | 'leave'>(
+    motionEnabled() ? 'prepare' : 'settled',
+  )
+  const [transformOrigin, setTransformOrigin] = useState('center center')
+  const motionRef = useRef(motion)
+  motionRef.current = motion
+  const selectingRef = useRef(false)
+  const pinnedRef = useRef<string | null>(null)
   const [device, setDevice] = useState<(typeof DEVICES)[number]['id']>('desktop')
+  const [selecting, setSelecting] = useState(false)
+  const [nonce, setNonce] = useState('')
+  const [nonceSrc, setNonceSrc] = useState('')
+  const [page, setPage] = useState<string | null>(null)
+  const [anchor, setAnchor] = useState<string | null>(null)
+  const appliedRoute = useRef(0)
+  const [source, setSource] = useState<RawNode | null>(null)
+  const [pinnedPath, setPinnedPath] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
+  const sourceRef = useRef<RawNode | null>(null)
+  const mentionRef = useRef(onMention)
+  const canvasRef = useRef(canvasId)
+  const revisionRef = useRef(activeRevision)
+  const nonceRef = useRef('')
+  selectingRef.current = selecting
+  nonceRef.current = nonce
+  pinnedRef.current = pinnedPath
+  sourceRef.current = source
+  mentionRef.current = onMention
+  canvasRef.current = canvasId
+  revisionRef.current = activeRevision
+  const linkedPage = routePage && isCanvasPage(routePage) ? routePage : null
+  const linkedAnchor = routeAnchor && isCanvasAnchor(routeAnchor) ? routeAnchor : null
+  const routeFresh = routeStamp > 0 && routeStamp !== appliedRoute.current
+  if (src !== nonceSrc) {
+    setNonceSrc(src)
+    setNonce(src ? freshNonce() : '')
+    if (src !== '') {
+      if (routeStamp > 0) appliedRoute.current = routeStamp
+      setPage(routeStamp > 0 ? linkedPage : null)
+      setAnchor(routeStamp > 0 ? linkedAnchor : null)
+      setSelecting(false)
+      setPinnedPath(null)
+      setReload(0)
+    }
+  } else if (routeFresh && src) {
+    appliedRoute.current = routeStamp
+    setPage(linkedPage)
+    setAnchor(linkedAnchor)
+    setSelecting(false)
+    setPinnedPath(null)
+  }
+  const pageName = page ?? entryName(src)
+  const frameSrc = frameAddress(src, nonce, pageName, reload, anchor)
+  const sourceUrl = mediaPage(src, pageName)
   const name = title || t('canvas.card')
   const active = revisions.find(revision => revision.revision === activeRevision) ?? null
   const width = DEVICES.find(item => item.id === device)?.width ?? 1280
+
+  const requestClose = () => {
+    if (motionRef.current === 'leave') return
+    if (!motionEnabled()) {
+      onCloseRef.current()
+      return
+    }
+    motionRef.current = 'leave'
+    setMotion('leave')
+  }
+  closeRef.current = requestClose
+
+  useLayoutEffect(() => {
+    if (motion !== 'prepare') return
+    const node = dialog.current
+    if (node && origin) {
+      const rect = node.getBoundingClientRect()
+      setTransformOrigin(`${origin.x - rect.left}px ${origin.y - rect.top}px`)
+    } else {
+      setTransformOrigin('center center')
+    }
+    setMotion('enter')
+  }, [motion, origin])
+
+  useEffect(() => {
+    if (motion !== 'enter') return
+    const node = dialog.current
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      setMotion(current => (current === 'enter' ? 'settled' : current))
+    }
+    if (!node) {
+      finish()
+      return
+    }
+    const onEnd = (event: AnimationEvent) => {
+      if (event.target === node && event.animationName === 'canvas-zoom-in') finish()
+    }
+    node.addEventListener('animationend', onEnd)
+    const timer = window.setTimeout(finish, 260)
+    return () => {
+      node.removeEventListener('animationend', onEnd)
+      window.clearTimeout(timer)
+    }
+  }, [motion])
+
+  useEffect(() => {
+    if (motion === 'settled') onOpenedRef.current?.()
+  }, [motion])
+
+  useEffect(() => {
+    if (motion !== 'leave') return
+    const node = dialog.current
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      onCloseRef.current()
+    }
+    if (!node) {
+      finish()
+      return
+    }
+    const onEnd = (event: AnimationEvent) => {
+      if (event.target === node && event.animationName === 'canvas-zoom-out') finish()
+    }
+    node.addEventListener('animationend', onEnd)
+    const timer = window.setTimeout(finish, 280)
+    return () => {
+      node.removeEventListener('animationend', onEnd)
+      window.clearTimeout(timer)
+    }
+  }, [motion])
 
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -91,6 +263,16 @@ export function CanvasPreview({
     closeButton.current?.focus()
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (selectingRef.current) {
+          event.preventDefault()
+          event.stopPropagation()
+          setSelecting(false)
+          const frame = frameRef.current?.contentWindow
+          const currentNonce = nonceRef.current
+          if (frame && typeof frame.postMessage === 'function' && currentNonce)
+            frame.postMessage({ dsh: CHANNEL, nonce: currentNonce, type: 'disarm' }, '*')
+          return
+        }
         event.preventDefault()
         event.stopPropagation()
         closeRef.current()
@@ -122,28 +304,95 @@ export function CanvasPreview({
   }, [])
 
   useEffect(() => {
-    if (frameRef.current && src) frameRef.current.src = src
-  }, [src])
+    if (motion !== 'settled' || !sourceUrl) return
+    let cancel = false
+    fetch(sourceUrl, { credentials: 'omit', cache: 'no-store' })
+      .then(response => (response.ok ? response.text() : Promise.reject(new Error('load'))))
+      .then(html => {
+        if (!cancel) setSource(adoptElement(new DOMParser().parseFromString(html, 'text/html').body))
+      })
+      .catch(() => {
+        if (!cancel) setSource(null)
+      })
+    return () => {
+      cancel = true
+    }
+  }, [motion, sourceUrl])
+
+  useEffect(() => {
+    if (!nonce) return
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== frameRef.current?.contentWindow) return
+      const data = event.data as { dsh?: unknown; nonce?: unknown; type?: unknown; path?: unknown; rect?: unknown }
+      if (!data || data.dsh !== CHANNEL || data.nonce !== nonce) return
+      if (data.type === 'open' && typeof data.path === 'string') {
+        const route = splitCanvasRoute(data.path)
+        if (!route) return
+        setPage(current =>
+          current === route.page || (current == null && route.page === entryName(src)) ? current : route.page,
+        )
+        setAnchor(route.anchor)
+        setPinnedPath(null)
+        setSource(null)
+        return
+      }
+      if (!selectingRef.current) return
+      if (data.type === 'ready') {
+        const path = pinnedRef.current
+        if (path != null)
+          frameRef.current?.contentWindow?.postMessage({ dsh: CHANNEL, nonce, type: 'pin', path }, '*')
+        return
+      }
+      if (data.type !== 'select' || typeof data.path !== 'string') return
+      const tree = sourceRef.current
+      const mention = tree ? mentionFrom(tree, data.path) : null
+      const id = canvasRef.current
+      const revision = revisionRef.current
+      if (!mention || !id || revision == null) return
+      setPinnedPath(data.path)
+      const from = viewportRect(frameRef.current, data.rect)
+      const label = mentionLabel(
+        name,
+        t('canvas.revision', { revision: String(revision) }),
+        mention.tag,
+        mention.text,
+      )
+      const chip = { canvasId: id, revision, path: mention.path, tag: mention.tag, label }
+      void flyToComposer(from, label).then(() => mentionRef.current?.(chip))
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [nonce, src, t, name])
 
   const resetPage = () => {
-    const frame = frameRef.current
-    if (!frame || !src) return
-    const next = `${src}${src.includes('?') ? '&' : '?'}r=${Date.now()}`
-    try {
-      frame.contentWindow?.location.replace(new URL(next, window.location.href).href)
-    } catch {
-      frame.src = next
-    }
+    setSelecting(false)
+    setPinnedPath(null)
+    setPage(null)
+    setAnchor(null)
+    setReload(Date.now())
+  }
+
+  const tellFrame = (type: 'arm' | 'disarm') => {
+    const frame = frameRef.current?.contentWindow
+    if (!frame || typeof frame.postMessage !== 'function' || !nonce) return
+    frame.postMessage({ dsh: CHANNEL, nonce, type }, '*')
   }
 
   return createPortal(
     <div
-      className="canvas-modal"
+      className={motion === 'leave' ? 'canvas-modal leaving' : 'canvas-modal'}
       onClick={event => {
-        if (event.target === event.currentTarget) onClose()
+        if (event.target === event.currentTarget) requestClose()
       }}
     >
-      <div ref={dialog} className="canvas-dialog" role="dialog" aria-modal="true" aria-label={name}>
+      <div
+        ref={dialog}
+        className={`canvas-dialog ${motion}`}
+        style={{ transformOrigin }}
+        role="dialog"
+        aria-modal="true"
+        aria-label={name}
+      >
         <header className="canvas-toolbar">
           <div className="canvas-toolbar-title">
             <strong className="canvas-name" title={name}>
@@ -154,7 +403,7 @@ export function CanvasPreview({
               type="button"
               className="canvas-close"
               aria-label={t('canvas.close')}
-              onClick={onClose}
+              onClick={requestClose}
             >
               <svg viewBox="0 0 16 16" aria-hidden="true">
                 <path d="M4 4l8 8M12 4l-8 8" />
@@ -170,6 +419,32 @@ export function CanvasPreview({
               disabled={!src}
             >
               {t('canvas.reset')}
+            </button>
+            <button
+              type="button"
+              className={selecting ? 'canvas-select on' : 'canvas-select'}
+              aria-pressed={selecting}
+              aria-label={t('canvas.select')}
+              title={t('canvas.select')}
+              disabled={!src}
+              onClick={() => {
+                if (selecting) {
+                  setSelecting(false)
+                  tellFrame('disarm')
+                  return
+                }
+                setSelecting(true)
+                tellFrame('arm')
+              }}
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <rect x="6.4" y="6.4" width="11" height="11" rx="1.4" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                <path
+                  className="cursor"
+                  d="M1.8 1.4 2.15 9.2 4.6 6.8 6.7 11.4 8 10.8 5.9 6.2 9.2 6.4Z"
+                  fill="currentColor"
+                />
+              </svg>
             </button>
             <div className="canvas-segment" role="group" aria-label={t('canvas.devices')}>
               {DEVICES.map(item => (
@@ -218,9 +493,24 @@ export function CanvasPreview({
               </button>
             </p>
           ) : null}
-          {src ? (
+          {motion === 'settled' && src ? (
             <div className="canvas-frame" style={{ width: `min(100%, ${width}px)` }}>
-              <iframe ref={frameRef} title={name} sandbox="" referrerPolicy="no-referrer" />
+              <iframe
+                ref={frameRef}
+                title={name}
+                sandbox="allow-scripts"
+                referrerPolicy="no-referrer"
+                src={frameSrc || undefined}
+                onLoad={() => {
+                  if (!nonce) return
+                  const frame = frameRef.current?.contentWindow
+                  if (!frame || typeof frame.postMessage !== 'function') return
+                  frame.postMessage({ dsh: CHANNEL, nonce, type: 'hello' }, '*')
+                  if (anchor && isCanvasAnchor(anchor))
+                    frame.postMessage({ dsh: CHANNEL, nonce, type: 'focus', anchor }, '*')
+                  if (selectingRef.current) frame.postMessage({ dsh: CHANNEL, nonce, type: 'arm' }, '*')
+                }}
+              />
             </div>
           ) : null}
         </div>
@@ -234,6 +524,69 @@ function statusKey(status: RevisionSummary['status']): MessageKey {
   if (status === 'stable') return 'canvas.stable'
   if (status === 'failed') return 'canvas.failed'
   return 'canvas.preview'
+}
+
+function entryName(src: string): string {
+  const match = /^\/dsh-bot\/canvas-media\/[A-Za-z0-9_-]{20,128}\/[1-9]\d{0,8}\/(.+)$/.exec(src.split('?')[0] ?? '')
+  const page = match?.[1] ?? ''
+  return isCanvasPage(page) ? page : 'index.html'
+}
+
+function mediaPage(src: string, page: string): string {
+  const match = /^(\/dsh-bot\/canvas-media\/[A-Za-z0-9_-]{20,128}\/[1-9]\d{0,8}\/)/.exec(src.split('?')[0] ?? '')
+  if (!match || !isCanvasPage(page)) return src
+  return `${match[1]}${page}`
+}
+
+function frameAddress(src: string, nonce: string, page: string, reload: number, anchor: string | null): string {
+  const match = /^\/dsh-bot\/canvas-media\/([A-Za-z0-9_-]{20,128})\/([1-9]\d{0,8})\//.exec(src.split('?')[0] ?? '')
+  if (!match || !nonce || !isCanvasPage(page)) return ''
+  const address = `/dsh-bot/canvas-inspect/${match[1]}/${match[2]}/${page}?nonce=${encodeURIComponent(nonce)}`
+  const located = reload ? `${address}&r=${reload}` : address
+  return anchor && isCanvasAnchor(anchor) ? `${located}#${anchor}` : located
+}
+
+function freshNonce(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function viewportRect(frame: HTMLIFrameElement | null, value: unknown): DOMRect | null {
+  if (!frame || !value || typeof value !== 'object') return null
+  const row = value as { x?: unknown; y?: unknown; width?: unknown; height?: unknown }
+  if (typeof row.x !== 'number' || typeof row.y !== 'number') return null
+  if (typeof row.width !== 'number' || typeof row.height !== 'number') return null
+  const box = frame.getBoundingClientRect()
+  return new DOMRect(box.left + row.x, box.top + row.y, row.width, row.height)
+}
+
+function flyToComposer(from: DOMRect | null, label: string): Promise<void> {
+  const card = document.querySelector('.composer-wrap .card')
+  if (!from || !card || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return Promise.resolve()
+  const to = card.getBoundingClientRect()
+  const width = Math.min(Math.max(from.width, 120), 240)
+  const height = 28
+  const left = from.left + Math.min(from.width, 240) / 2 - width / 2
+  const top = from.top + Math.min(from.height, 36) / 2 - height / 2
+  const ghost = document.createElement('div')
+  ghost.className = 'canvas-fly'
+  ghost.textContent = label
+  ghost.style.left = `${left}px`
+  ghost.style.top = `${top}px`
+  ghost.style.width = `${width}px`
+  document.body.append(ghost)
+  const animation = ghost.animate(
+    [
+      { transform: 'translate(0px, 0px) scale(1)', opacity: 0.96 },
+      { transform: `translate(${to.left + 16 - left}px, ${to.top + 8 - top}px) scale(0.86)`, opacity: 1 },
+    ],
+    { duration: 560, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
+  )
+  return animation.finished.then(
+    () => ghost.remove(),
+    () => ghost.remove(),
+  )
 }
 
 function mediaUrl(token: string, revision: number, path: string) {
@@ -319,17 +672,30 @@ export function CanvasScope({
   sessionId,
   pulse,
   tickets,
+  onMention,
+  onActive,
+  dismiss = 0,
   children,
 }: {
   sessionId: string
   pulse: number
   tickets: readonly { id: string; status: string }[]
+  onMention?: (chip: { canvasId: string; revision: number; path: string; tag: string; label: string }) => void
+  onActive?: (open: boolean) => void
+  dismiss?: number
   children: ReactNode
 }) {
   const { t } = useI18n()
   const [items, setItems] = useState<CanvasSummary[]>([])
   const [listError, setListError] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
+  const openIdRef = useRef<string | null>(null)
+  openIdRef.current = openId
+  const [paint, setPaint] = useState(false)
+  const [openTarget, setOpenTarget] = useState<{ id: string; stamp: number } & CanvasLocation | null>(null)
+  const openStamp = useRef(0)
+  const clickRef = useRef<{ x: number; y: number; at: number } | null>(null)
+  const [openOrigin, setOpenOrigin] = useState<CanvasOpenOrigin | null>(null)
   const [revisions, setRevisions] = useState<RevisionSummary[]>([])
   const [shown, setShown] = useState<number | null>(null)
   const [phase, setPhase] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -338,15 +704,37 @@ export function CanvasScope({
   const cacheRef = useRef<CanvasCache>(emptyCanvasCache())
   const loadedCanvas = useRef<string | null>(null)
   const requestRef = useRef(0)
+  const [seenDismiss, setSeenDismiss] = useState(dismiss)
+  if (dismiss !== seenDismiss) {
+    setSeenDismiss(dismiss)
+    if (dismiss > 0) setOpenId(null)
+  }
   const open = items.find(item => item.id === openId) ?? null
-  const followRevision = open?.previewRevision ?? open?.stableRevision ?? null
+  const requested =
+    openTarget && openTarget.id === openId && openTarget.revision != null ? openTarget.revision : null
+  const followRevision = requested ?? open?.previewRevision ?? open?.stableRevision ?? null
   const showRef = useRef<(canvasId: string, revision: number) => Promise<void>>(async () => {})
+
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      if (event.detail === 0) return
+      clickRef.current = { x: event.clientX, y: event.clientY, at: performance.now() }
+    }
+    document.addEventListener('click', onClick, true)
+    return () => document.removeEventListener('click', onClick, true)
+  }, [])
 
   useEffect(() => {
     setOpenId(null)
     setItems([])
     setListError(false)
   }, [sessionId])
+
+  useEffect(() => {
+    onActive?.(openId != null)
+  }, [openId, onActive])
+
+  useEffect(() => () => onActive?.(false), [onActive])
 
   useEffect(() => {
     if (!sessionId) return
@@ -382,12 +770,12 @@ export function CanvasScope({
   }, [openId, pulse, followRevision])
 
   useEffect(() => {
-    if (!openId || followRevision == null) return
+    if (!openId || !paint || followRevision == null) return
     void showRef.current(openId, followRevision)
     return () => {
       requestRef.current += 1
     }
-  }, [openId, followRevision])
+  }, [openId, followRevision, paint])
 
   async function show(canvasId: string, revision: number) {
     const ticket = ++requestRef.current
@@ -439,7 +827,29 @@ export function CanvasScope({
 
   const placed = useMemo(() => placeCanvases(items, tickets), [items, tickets])
   const place = useMemo(
-    () => ({ byTicket: placed.byTicket, loose: placed.loose, open: (id: string) => setOpenId(id) }),
+    () => ({
+      byTicket: placed.byTicket,
+      loose: placed.loose,
+      open: (id: string, location?: CanvasLocation) => {
+        const point = clickRef.current
+        const fresh = point != null && performance.now() - point.at < CLICK_ORIGIN_MS
+        setOpenOrigin(fresh ? { x: point.x, y: point.y } : null)
+        if (openIdRef.current == null) {
+          setPaint(false)
+          setSrc('')
+          setPhase('idle')
+        }
+        openStamp.current += 1
+        setOpenTarget({
+          id,
+          stamp: openStamp.current,
+          revision: location?.revision ?? null,
+          page: location?.page ?? null,
+          anchor: location?.anchor ?? null,
+        })
+        setOpenId(id)
+      },
+    }),
     [placed.byTicket, placed.loose],
   )
   return (
@@ -476,6 +886,13 @@ export function CanvasScope({
             })
           }}
           onClose={() => setOpenId(null)}
+          origin={openOrigin}
+          onOpened={() => setPaint(true)}
+          canvasId={open.id}
+          onMention={onMention}
+          routeStamp={openTarget?.id === open.id ? openTarget.stamp : 0}
+          routePage={openTarget?.id === open.id ? openTarget.page : null}
+          routeAnchor={openTarget?.id === open.id ? openTarget.anchor : null}
         />
       ) : null}
     </CanvasPlaceContext.Provider>

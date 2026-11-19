@@ -8,7 +8,7 @@ export interface CanvasPlaceItem {
 
 /**
  * Every delivered canvas stays on the ticket that produced it, including the newest.
- * Nothing is parked after the transcript, so a later message cannot pull a card down.
+ * A card is rendered only when that ticket's dispatch message is in the loaded transcript.
  * A preview that is still being written stays hidden.
  */
 export function placeCanvases<T extends CanvasPlaceItem>(

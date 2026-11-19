@@ -35,27 +35,12 @@ export function resolveFloatingWorks(
 }
 
 /**
- * A canvas whose ticket is already on screen stays with that ticket.
- * Anything else is pinned to the block where it first appeared, and stays there.
+ * The dispatch message already loaded for this canvas.
+ * A canvas with no such message stays hidden. It is not parked on the latest block.
  */
-export function resolveLooseCanvases(
-  canvases: readonly { id: string; ticketId: string | null }[],
-  coveredTickets: ReadonlySet<string>,
-  pins: Map<string, string>,
-  here: string,
-): Map<string, string> {
-  const visible = new Map<string, string>()
-  for (const canvas of canvases) {
-    const pinned = pins.get(canvas.id)
-    if (pinned) {
-      visible.set(canvas.id, pinned)
-      continue
-    }
-    if (canvas.ticketId && coveredTickets.has(canvas.ticketId)) continue
-    pins.set(canvas.id, here)
-    visible.set(canvas.id, here)
-  }
-  return visible
+export function canvasMessageId(ticketId: string | null, anchors: ReadonlyMap<string, string>): string | null {
+  if (!ticketId) return null
+  return anchors.get(ticketId) ?? null
 }
 
 /** An approval sticks to its tool call, or to the turn where it first appeared. */

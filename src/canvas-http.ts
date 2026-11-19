@@ -1,9 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { buildSync } from 'esbuild'
+import { fileURLToPath } from 'node:url'
 import { asStoreFailure, toolError, type ToolPayload } from './errors.ts'
 import { CANVAS_MAX_JSON_BYTES, normalizeCanvasPath, type CanvasFileInput, type CanvasStore } from './canvas-store.ts'
 
 const API = '/session-foundations/api/canvas'
 const MEDIA = '/dsh-bot/canvas-media/'
+const INSPECT = '/dsh-bot/canvas-inspect/'
+const INSPECTOR = '/dsh-bot/canvas-inspector.js'
 const CANVAS_ID = /^cnv_[A-Za-z0-9_-]{16}$/
 
 /**
@@ -253,4 +257,146 @@ function json(res: ServerResponse, status: number, body: ToolPayload) {
     'x-content-type-options': 'nosniff',
   })
   res.end(text)
+}
+
+const NONCE = /^[A-Za-z0-9_-]{16,80}$/
+let inspectorCode: string | null = null
+
+type ComposeInspect = (
+  html: string,
+  options: { baseHref: string; nonce: string; parentOrigin: string; inspectorSrc: string; page?: string },
+) => string
+
+/** Token-only inspect document. The design stays scriptless; only the host inspector runs. */
+export async function serveCanvasInspect(
+  req: IncomingMessage,
+  res: ServerResponse,
+  requestUrl: string,
+  canvas: CanvasStore | null,
+) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    json(res, 405, toolError('VALIDATION', 'canvas inspect is read-only.'))
+    return
+  }
+  const path = (requestUrl.split('?')[0] ?? '').replace(/\/+$/, '')
+  if (path === INSPECTOR) {
+    try {
+      const code = inspectorSource()
+      writeBody(res, req.method, 200, 'text/javascript; charset=utf-8', code, "default-src 'none'")
+    } catch (error) {
+      json(res, 500, toolError('STORE_FAILURE', error instanceof Error ? error.message : 'inspector failed'))
+    }
+    return
+  }
+  const parsed = parseCanvasInspect(requestUrl)
+  if (!parsed) {
+    json(res, 400, toolError('VALIDATION', 'canvas inspect path is not allowed.'))
+    return
+  }
+  const nonce = new URL(requestUrl, 'http://127.0.0.1').searchParams.get('nonce')
+  if (!nonce || !NONCE.test(nonce)) {
+    json(res, 400, toolError('VALIDATION', 'canvas inspect nonce is required.'))
+    return
+  }
+  if (!canvas) {
+    json(res, 404, toolError('NOT_FOUND', 'No such canvas file.'))
+    return
+  }
+  const found = canvas.readMedia({ token: parsed.token, revision: parsed.revision, path: parsed.path })
+  if (found.ok === false) {
+    json(res, found.code === 'NOT_FOUND' ? 404 : found.code === 'VALIDATION' ? 400 : 401, found)
+    return
+  }
+  if (found.type !== 'text/html') {
+    json(res, 404, toolError('NOT_FOUND', 'No such canvas file.'))
+    return
+  }
+  const origin = requestOrigin(req)
+  if (origin === '') {
+    json(res, 400, toolError('VALIDATION', 'canvas inspect needs a host.'))
+    return
+  }
+  const prefix = `${origin}${MEDIA}${parsed.token}/${parsed.revision}/`
+  const compose = await loadCompose()
+  const html = compose(found.bytes.toString('utf8'), {
+    baseHref: prefix,
+    nonce,
+    parentOrigin: origin,
+    inspectorSrc: INSPECTOR,
+    page: parsed.path,
+  })
+  writeBody(res, req.method, 200, 'text/html; charset=utf-8', html, inspectPolicy(origin, prefix))
+}
+
+export function parseCanvasInspect(requestUrl: string): { token: string; revision: number; path: string } | null {
+  const pathname = (requestUrl.split('?')[0] ?? '').replace(/\/+$/, '')
+  if (!pathname.startsWith(INSPECT)) return null
+  if (pathname.includes('\\') || pathname.includes('%') || pathname.includes('\0')) return null
+  if (pathname.split('/').includes('..') || pathname.split('/').includes('.')) return null
+  const parts = pathname.slice(INSPECT.length).split('/')
+  if (parts.length < 2) return null
+  const [token, revision, ...rest] = parts
+  if (!token || !/^[A-Za-z0-9_-]{20,128}$/.test(token)) return null
+  if (!revision || !/^[1-9]\d{0,8}$/.test(revision)) return null
+  const path = normalizeCanvasPath(rest.length === 0 ? 'index.html' : rest.join('/'))
+  if (!path || !path.endsWith('.html')) return null
+  return { token, revision: Number(revision), path }
+}
+
+function inspectPolicy(origin: string, prefix: string) {
+  return [
+    "default-src 'none'",
+    `img-src ${prefix}`,
+    `style-src ${prefix} 'unsafe-inline'`,
+    `font-src ${prefix}`,
+    `script-src ${origin}${INSPECTOR}`,
+    `base-uri ${prefix}`,
+    `frame-ancestors ${origin}`,
+    "form-action 'none'",
+    'sandbox allow-scripts',
+  ].join('; ')
+}
+
+function writeBody(
+  res: ServerResponse,
+  method: string,
+  status: number,
+  type: string,
+  body: string,
+  policy: string,
+) {
+  res.writeHead(status, {
+    'content-type': type,
+    'content-length': Buffer.byteLength(body),
+    'cache-control': 'private, no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    'content-security-policy': policy,
+  })
+  res.end(method === 'HEAD' ? undefined : body)
+}
+
+async function loadCompose(): Promise<ComposeInspect> {
+  const href = new URL('../../../packages/dsh-canvas/src/compose.ts', import.meta.url).href
+  const mod = (await import(href)) as { composeInspect: ComposeInspect }
+  return mod.composeInspect
+}
+
+function inspectorSource() {
+  if (inspectorCode != null) return inspectorCode
+  const entry = fileURLToPath(new URL('../../../packages/dsh-canvas/src/inspector.ts', import.meta.url))
+  const result = buildSync({
+    absWorkingDir: fileURLToPath(new URL('../../../packages/dsh-canvas/', import.meta.url)),
+    entryPoints: [entry],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2022',
+    write: false,
+    minify: false,
+    logLevel: 'silent',
+  })
+  inspectorCode = result.outputFiles[0]?.text ?? ''
+  if (inspectorCode === '') throw new Error('inspector bundle was empty')
+  return inspectorCode
 }

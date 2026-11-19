@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from './api'
 import { foundations, foundationsError } from './foundations'
 import { useI18n } from './locale'
@@ -22,6 +23,7 @@ import { CurrentActivity } from './CurrentActivity'
 import { currentActivity } from './current-activity'
 import { MemoryPanel } from './MemoryPanel'
 import { CanvasScope } from './CanvasPreview'
+import { formatCanvasTarget, type CanvasChip } from './canvas-target'
 import { AuthorizationPanel, CuaPanel, PermissionPanel } from './SettingsPanels'
 import { presetLabel } from './permission-label.ts'
 import type { ToolApprovalView } from './ToolApprovalCard'
@@ -184,6 +186,12 @@ export function App() {
   const [usage, setUsage] = useState<UsageBody | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [draft, setDraft] = useState('')
+  const [canvasMentions, setCanvasMentions] = useState<CanvasChip[]>([])
+  const [canvasOpen, setCanvasOpen] = useState(false)
+  const [canvasDismiss, setCanvasDismiss] = useState(0)
+  useEffect(() => {
+    setCanvasMentions([])
+  }, [sessionId])
   const [cursor, setCursor] = useState(0)
   const [mentionIndex, setMentionIndex] = useState(0)
   const [mentionClosed, setMentionClosed] = useState('')
@@ -862,7 +870,7 @@ export function App() {
       observer.disconnect()
       scroll.style.paddingBottom = ''
     }
-  }, [botChat, scrollRef, stickIfFollowing])
+  }, [botChat, canvasOpen, scrollRef, stickIfFollowing])
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -1082,7 +1090,7 @@ export function App() {
   async function submit(text: string) {
     const turnLive = task?.status === 'accepted' && thread.drafting
     const tickets = loadedWorkSession === sessionId ? works : []
-    if (!sessionId || !text || !execution.ready || composerLocked(turnLive, tickets, bots.has(sessionId))) return
+    if (!sessionId || !text || !execution.ready || composerLocked(turnLive, tickets, bots.has(sessionId))) return false
     pin()
     const wasLive = thread.drafting
     setDraft('')
@@ -1112,13 +1120,21 @@ export function App() {
       }))
       const blocked = result.body.execution as { reason?: string } | undefined
       setReason(blocked?.reason || hostText(String(result.body.error || ''), t('composer.notSent'), t))
+      return false
     }
+    return true
   }
 
   async function send() {
     const text = draft.trim()
-    if (!text) return
-    await submit(text)
+    if (!text || !canSend) return
+    const mentions = canvasMentions
+    const blocks = mentions.map(formatCanvasTarget).join('\n')
+    const full = blocks ? `${text}\n\n${blocks}` : text
+    setCanvasMentions([])
+    setCanvasDismiss(count => count + 1)
+    const sent = await submit(full)
+    if (!sent) setCanvasMentions(mentions)
   }
 
   async function supplyWork(ticketId: string, text: string) {
@@ -1417,6 +1433,17 @@ export function App() {
                   sessionId={!botChat && !historyLoading && sessionId ? sessionId : ''}
                   pulse={canvasPulse}
                   tickets={works}
+                  onActive={setCanvasOpen}
+                  dismiss={canvasDismiss}
+                  onMention={chip =>
+                    setCanvasMentions(prev => {
+                      const rest = prev.filter(
+                        item =>
+                          !(item.canvasId === chip.canvasId && item.revision === chip.revision && item.path === chip.path),
+                      )
+                      return [...rest, chip].slice(-8)
+                    })
+                  }
                 >
                   {historyLoading ? null : botChat ? (
                     <BotChatView
@@ -1471,7 +1498,7 @@ export function App() {
             />
           )}
         </div>
-        <div className="composer-wrap" ref={composerRef} hidden={botChat}>
+        <ComposerDock ref={composerRef} lift={canvasOpen} hidden={botChat}>
           {detached ? <LatestButton label={t('scroll.latest')} onClick={() => pin('smooth')} /> : null}
           <form
             className="column"
@@ -1491,6 +1518,33 @@ export function App() {
               />
             ) : null}
             <div className="card">
+              {canvasMentions.length > 0 ? (
+                <div className="canvas-chip-row">
+                  {canvasMentions.map(chip => (
+                    <span key={`${chip.canvasId}:${chip.revision}:${chip.path}`} className="canvas-chip">
+                      <span className="canvas-chip-text">{chip.label}</span>
+                      <button
+                        type="button"
+                        aria-label={t('canvas.removeMention')}
+                        onClick={() =>
+                          setCanvasMentions(prev =>
+                            prev.filter(
+                              item =>
+                                !(
+                                  item.canvasId === chip.canvasId &&
+                                  item.revision === chip.revision &&
+                                  item.path === chip.path
+                                ),
+                            ),
+                          )
+                        }
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
               {mentionOpen ? (
                 <div className="mention-menu" role="listbox" aria-label={t('composer.mention')}>
                   {mentionChoices.length === 0 ? (
@@ -1681,7 +1735,7 @@ export function App() {
               {reason || (!execution.ready ? hostText(execution.reason, execution.reason, t) : statsLine(thread))}
             </p>
           </form>
-        </div>
+        </ComposerDock>
       </section>
       {settings === 'permission' && sessionId ? (
         <PermissionPanel
@@ -1747,3 +1801,32 @@ export function App() {
     </div>
   )
 }
+
+const ComposerDock = forwardRef<HTMLDivElement, { lift: boolean; hidden: boolean; children: ReactNode }>(
+  function ComposerDock({ lift, hidden, children }, ref) {
+    const [box, setBox] = useState<{ left: number; width: number } | null>(null)
+    useLayoutEffect(() => {
+      if (!lift) return
+      const chat = document.querySelector('section.chat')
+      const place = () => {
+        const rect = chat?.getBoundingClientRect()
+        if (!rect) return
+        setBox({ left: rect.left, width: rect.width })
+      }
+      place()
+      window.addEventListener('resize', place)
+      return () => window.removeEventListener('resize', place)
+    }, [lift])
+    const node = (
+      <div
+        ref={ref}
+        className={lift ? 'composer-wrap lifted' : 'composer-wrap'}
+        hidden={hidden}
+        style={lift && box ? { left: box.left, width: box.width, right: 'auto' } : undefined}
+      >
+        {children}
+      </div>
+    )
+    return lift && box ? createPortal(node, document.body) : node
+  },
+)

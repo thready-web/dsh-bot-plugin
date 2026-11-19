@@ -30,6 +30,7 @@ This contract overrides every catalog skill. Catalog skills are taste and critiq
 2. Load at most two catalog skills that match the request. Do not load the whole catalog.
 3. Write `index.html` and its stylesheet in one `canvas_write`, then `canvas_publish`.
 4. A later change writes the files that changed, then publishes again. The host sends the staged package as a delta.
+   If the briefing contains `[canvas-target]` blocks, change only those nodes and the CSS rules that style them. Leave every other element as it is.
 5. A budget pause is not a failed preview. Wait for the grant. Do not invent a failure revision.
 
 The sandbox iframe has no scripts. Design with HTML and CSS only. Skill text does not grant tools.

@@ -109,6 +109,42 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
     assert.equal(second.baseRevision, 1)
     assert.equal(second.revision, 2)
 
+    const cardTicket = canvas.get(canvasId).canvas?.ticketId
+    tickets.set('worker-follow', 'ticket-follow')
+    const savedDispatch = work.dispatch
+    work.dispatch = async (_sessionId, args) => {
+      briefing = String(args.briefing)
+      return { ok: true, ticketId: 'ticket-follow', status: 'accepted' }
+    }
+    const follow = await dispatch.execute(
+      {
+        briefing: `Make the title larger\n\n[canvas-target canvas=${canvasId} rev=2 path=0:h1 tag=h1]Hi[/canvas-target]`,
+        canvasId,
+      },
+      { agent: { id: 'bot-canvas' } },
+    )
+    work.dispatch = savedDispatch
+    assert.equal(follow.ok, true)
+    assert.equal(follow.canvasId, canvasId)
+    assert.match(briefing, /\[canvas-target/)
+    assert.match(briefing, /change only those nodes/)
+    assert.equal(canvas.get(canvasId).canvas?.ticketId, cardTicket)
+    const stranger = await write.execute(
+      { files: [{ path: 'app.css', type: 'text/css', text: 'h1{color:red}' }] },
+      { agent: { id: 'worker-other' } },
+    )
+    assert.equal(stranger.code, 'FORBIDDEN')
+    const followed = await write.execute(
+      { files: [{ path: 'app.css', type: 'text/css', text: 'h1{color:red}' }] },
+      { agent: { id: 'worker-follow' } },
+    )
+    assert.equal(followed.ok, true)
+    const missing = await dispatch.execute(
+      { briefing: 'Take over', canvasId: 'cnv_not_in_sessionX' },
+      { agent: { id: 'bot-canvas' } },
+    )
+    assert.equal(missing.code, 'FORBIDDEN')
+
     const script = await write.execute(
       { files: [{ path: 'index.html', type: 'text/html', text: '<script>1</script>' }] },
       { agent: { id: 'worker-canvas' } },

@@ -19,6 +19,10 @@ export const canvas = {
     'canvas.versions': 'Versions',
     'canvas.reset': 'Reset',
     'canvas.reset.hint': "Back to this version's first page",
+    'canvas.select': 'Select',
+    'canvas.mention': 'Mention',
+    'canvas.path': 'Element path',
+    'canvas.removeMention': 'Remove mention',
     'canvas.unavailable': 'Design previews could not be loaded.',
   },
   zh: {
@@ -41,6 +45,10 @@ export const canvas = {
     'canvas.versions': '版本',
     'canvas.reset': '重置',
     'canvas.reset.hint': '回到这一版的入口页',
+    'canvas.select': '选择',
+    'canvas.mention': '提到输入',
+    'canvas.path': '元素路径',
+    'canvas.removeMention': '移除提及',
     'canvas.unavailable': '设计预览无法加载。',
   },
 } as const

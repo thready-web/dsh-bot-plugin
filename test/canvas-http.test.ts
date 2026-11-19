@@ -115,6 +115,32 @@ test('canvas media trusts the capability token and ignores the login gate', asyn
     assert.match(policy, /sandbox/)
     assert.doesNotMatch(policy, /allow-scripts/)
     assert.doesNotMatch(policy, /allow-same-origin/)
+    const inspect = await fetch(
+      `${origin}/dsh-bot/canvas-inspect/${token.token}/1?nonce=abc123abc123abc123`,
+    )
+    assert.equal(inspect.status, 200)
+    const inspectPolicy = inspect.headers.get('content-security-policy') ?? ''
+    assert.match(inspectPolicy, /sandbox allow-scripts/)
+    assert.doesNotMatch(inspectPolicy, /allow-same-origin/)
+    assert.match(inspectPolicy, /script-src http:\/\/127\.0\.0\.1:\d+\/dsh-bot\/canvas-inspector\.js/)
+    const inspectHtml = await inspect.text()
+    assert.match(inspectHtml, /<script src="\/dsh-bot\/canvas-inspector\.js"><\/script>/)
+    assert.match(inspectHtml, /name="dsh-inspect-page" content="index\.html"/)
+    const named = await fetch(
+      `${origin}/dsh-bot/canvas-inspect/${token.token}/1/index.html?nonce=abc123abc123abc123`,
+    )
+    assert.equal(named.status, 200)
+    const notHtml = await fetch(
+      `${origin}/dsh-bot/canvas-inspect/${token.token}/1/styles.css?nonce=abc123abc123abc123`,
+    )
+    assert.equal(notHtml.status, 400)
+    assert.equal(inspectHtml.includes('<script'), true)
+    assert.equal((inspectHtml.match(/<script/g) ?? []).length, 1)
+    const missingNonce = await fetch(`${origin}/dsh-bot/canvas-inspect/${token.token}/1`)
+    assert.equal(missingNonce.status, 400)
+    const inspector = await fetch(`${origin}/dsh-bot/canvas-inspector.js`)
+    assert.equal(inspector.status, 200)
+    assert.match(await inspector.text(), /canvas-inspect/)
     assert.equal(await cookied.text(), html)
     const style = await fetch(`${origin}/dsh-bot/canvas-media/${token.token}/1/styles.css`)
     assert.equal(style.headers.get('content-type'), 'text/css; charset=utf-8')

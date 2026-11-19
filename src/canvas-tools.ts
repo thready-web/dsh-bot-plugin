@@ -46,6 +46,10 @@ export function canvasToolDefinitions(canvas: CanvasStore, work: CanvasWork, eng
         type: 'object',
         properties: {
           briefing: { type: 'string', description: 'What to design. The host wraps this with the canvas contract.' },
+          canvasId: {
+            type: 'string',
+            description: 'An existing canvas to revise. Omit to open a new preview. Copy it from a canvas-target block.',
+          },
           idempotencyKey: { type: 'string' },
           budget: {
             type: 'object',
@@ -118,6 +122,7 @@ export function canvasBriefing(canvasId: string, request: string, skills: string
     catalog ? `Catalog skills on this bot: ${catalog}. Load at most two that match the request.` : '',
     'A budget pause is not a failed preview. Do not publish a failure because the grant is still pending.',
     'The first canvas_publish is a full snapshot. Later publishes send the staged files as a delta of the current preview.',
+    'If the user request contains canvas-target blocks, change only those nodes and the CSS that styles them. Leave every other element as it is.',
     'User request:',
   ]
     .filter(line => line !== '')
@@ -141,8 +146,11 @@ async function dispatchCanvas(
   if (key != null && (typeof key !== 'string' || key.length < 8 || key.length > 128))
     return toolError('VALIDATION', 'idempotencyKey is not allowed.')
   const title = briefing.split('\n')[0]?.trim().slice(0, 80) ?? ''
-  let canvasId = typeof key === 'string' ? canvas.findIdempotent(hostId, key) : null
-  if (!canvasId) {
+  const requested = typeof args.canvasId === 'string' ? args.canvasId : ''
+  let canvasId = requested !== '' ? requested : typeof key === 'string' ? canvas.findIdempotent(hostId, key) : null
+  if (requested !== '') {
+    if (!canvas.ownedBy(hostId, requested)) return toolError('FORBIDDEN', 'That canvas is not in this session.')
+  } else if (!canvasId) {
     const created = canvas.create({
       sessionId: hostId,
       title,
@@ -166,8 +174,10 @@ async function dispatchCanvas(
   if (args.budget != null) forwarded.budget = args.budget
   if (typeof args.correlationId === 'string') forwarded.correlationId = args.correlationId
   const dispatched = await work.dispatch(hostId, forwarded)
-  if (dispatched.ok === true && typeof dispatched.ticketId === 'string')
-    canvas.attachTicket(canvasId, dispatched.ticketId)
+  if (dispatched.ok === true && typeof dispatched.ticketId === 'string') {
+    if (requested !== '') canvas.attachWriter(canvasId, dispatched.ticketId)
+    else canvas.attachTicket(canvasId, dispatched.ticketId)
+  }
   return { ...dispatched, canvasId }
 }
 

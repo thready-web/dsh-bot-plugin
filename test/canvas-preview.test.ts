@@ -85,7 +85,7 @@ const revisions = [
   { revision: 3, kind: 'failed', status: 'failed' as const, entry: null, error: 'worker stopped' },
 ]
 
-test('the canvas modal is a token-URL sandbox without scripts or same-origin', async () => {
+test('the canvas modal keeps one inspect document and does not reload when selecting', async () => {
   const view = harness()
   const src = '/dsh-bot/canvas-media/token-token-token-token/2/index.html'
   let selected: number | null = null
@@ -109,11 +109,16 @@ test('the canvas modal is a token-URL sandbox without scripts or same-origin', a
     })
     const frame = view.document.querySelector('iframe')
     assert.ok(frame)
-    assert.equal(frame.getAttribute('sandbox'), '')
-    assert.equal(frame.getAttribute('src'), src)
+    const address = frame.getAttribute('src') ?? ''
+    assert.match(address, /^\/dsh-bot\/canvas-inspect\/token-token-token-token\/2\/index\.html\?nonce=[a-z0-9]+$/)
+    assert.equal(frame.getAttribute('sandbox'), 'allow-scripts')
     assert.equal(frame.hasAttribute('srcdoc'), false)
-    assert.equal((frame.getAttribute('sandbox') ?? '').includes('allow-scripts'), false)
     assert.equal((frame.getAttribute('sandbox') ?? '').includes('allow-same-origin'), false)
+    const select = [...view.document.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Select')
+    await view.act(() => select?.click())
+    assert.equal(frame.getAttribute('src'), address)
+    await view.act(() => select?.click())
+    assert.equal(frame.getAttribute('src'), address)
     assert.equal(view.document.querySelector('.canvas-dialog')?.getAttribute('role'), 'dialog')
     const labels = [...view.document.querySelectorAll('button')].map(button => button.textContent)
     assert.equal(labels.includes('Back'), false)
@@ -146,7 +151,7 @@ test('the canvas modal is a token-URL sandbox without scripts or same-origin', a
       onAdopt: () => {},
       onClose: () => {},
     })
-    assert.equal(view.document.querySelector('iframe')?.getAttribute('src'), src)
+    assert.equal(view.document.querySelector('iframe')?.getAttribute('src'), address)
     assert.match(view.document.body.textContent ?? '', /previous one is still open/)
   } finally {
     await view.close()

@@ -1391,6 +1391,8 @@ button.chip {
 }
 .user-bubble {
   max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   background: var(--bubble);
   border-radius: var(--dsw-radius-xl);
   padding: 10px 16px;
@@ -3388,6 +3390,11 @@ button.chip {
   place-items: center;
   padding: 24px;
   background: rgba(15, 17, 21, 0.45);
+  animation: canvas-mask-in 0.2s ease;
+}
+.canvas-modal.leaving {
+  animation: canvas-mask-out 0.2s ease forwards;
+  pointer-events: none;
 }
 .canvas-dialog {
   display: grid;
@@ -3401,6 +3408,44 @@ button.chip {
   background: var(--bg);
   color: var(--ink);
   box-shadow: var(--shadow);
+}
+.canvas-dialog.prepare {
+  opacity: 0;
+}
+.canvas-dialog.enter,
+.canvas-dialog.leave {
+  will-change: transform, opacity;
+}
+.canvas-dialog.enter {
+  animation: canvas-zoom-in 0.2s cubic-bezier(0.08, 0.82, 0.17, 1) backwards;
+}
+.canvas-dialog.leave {
+  animation: canvas-zoom-out 0.2s cubic-bezier(0.78, 0.14, 0.15, 0.86) forwards;
+}
+@keyframes canvas-mask-in {
+  from { background-color: transparent; }
+  to { background-color: rgba(15, 17, 21, 0.45); }
+}
+@keyframes canvas-mask-out {
+  from { background-color: rgba(15, 17, 21, 0.45); }
+  to { background-color: transparent; }
+}
+@keyframes canvas-zoom-in {
+  from { transform: scale(0.2); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+@keyframes canvas-zoom-out {
+  from { transform: scale(1); opacity: 1; }
+  to { transform: scale(0.2); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-modal,
+  .canvas-dialog {
+    animation: none;
+  }
+  .canvas-dialog.prepare {
+    opacity: 1;
+  }
 }
 .canvas-toolbar {
   display: flex;
@@ -3541,10 +3586,100 @@ button.chip {
   background: var(--sidebar);
 }
 .canvas-frame {
+  position: relative;
   height: 100%;
   min-height: 24rem;
   background: white;
   box-shadow: var(--shadow);
+}
+.canvas-select {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+}
+.canvas-select svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+.canvas-select .cursor {
+  stroke: white;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+}
+.canvas-select.on {
+  background: #1a73e8;
+  color: white;
+  border-color: #1a73e8;
+}
+.canvas-select.on .cursor {
+  stroke: #1a73e8;
+}
+.canvas-fly {
+  position: fixed;
+  z-index: 100;
+  margin: 0;
+  padding: 4px 10px;
+  pointer-events: none;
+  color: white;
+  background: #1c1917;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgb(15 17 21 / 0.18);
+  font: 12px/20px ui-sans-serif, system-ui, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-wrap.lifted {
+  position: fixed;
+  z-index: 90;
+  bottom: 0;
+}
+.canvas-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+.card > .canvas-chip-row { padding: 8px 12px 0; }
+.user-bubble .canvas-chip-row { margin-top: 8px; width: 100%; }
+.canvas-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: white;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 18px;
+}
+.canvas-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-bubble .canvas-chip { background: transparent; }
+.canvas-chip button {
+  border: 0;
+  background: transparent;
+  color: var(--secondary);
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
 }
 .canvas-frame iframe {
   display: block;

@@ -235,6 +235,9 @@ function migrateCanvas(db: SqlDatabase) {
   if (!columns.some(column => column.name === 'idempotency_key')) {
     db.exec('ALTER TABLE canvases ADD COLUMN idempotency_key TEXT')
   }
+  if (!columns.some(column => column.name === 'writer_ticket_id')) {
+    db.exec('ALTER TABLE canvases ADD COLUMN writer_ticket_id TEXT')
+  }
   db.exec(
     'CREATE UNIQUE INDEX IF NOT EXISTS canvas_idempotency ON canvases(session_id, idempotency_key) WHERE idempotency_key IS NOT NULL',
   )
@@ -378,8 +381,22 @@ export class CanvasStore {
 
   canvasIdForTicket(ticketId: string | null) {
     if (!ticketId || ticketId.length > 80) return null
-    const row = this.db.prepare('SELECT id FROM canvases WHERE ticket_id = ?').get(ticketId)
+    const row = this.db
+      .prepare('SELECT id FROM canvases WHERE ticket_id = ? OR writer_ticket_id = ?')
+      .get(ticketId, ticketId)
     return typeof row?.id === 'string' ? row.id : null
+  }
+
+  /** The session that opened this preview. A follow-up ticket does not move the card. */
+  ownedBy(sessionId: string, canvasId: string) {
+    if (!CANVAS_ID.test(canvasId)) return false
+    const row = this.db.prepare('SELECT session_id FROM canvases WHERE id = ?').get(canvasId)
+    return row?.session_id === sessionId
+  }
+
+  attachWriter(canvasId: string, ticketId: string) {
+    if (!CANVAS_ID.test(canvasId) || ticketId.length < 1 || ticketId.length > 80) return
+    this.db.prepare('UPDATE canvases SET writer_ticket_id = ? WHERE id = ?').run(ticketId, canvasId)
   }
 
   writeDraft(canvasId: string, files: CanvasFileInput[], remove: string[] = []) {

@@ -2,6 +2,7 @@ import { redactText } from './activity'
 import { Fragment, useRef, useState } from 'react'
 import { useI18n } from './locale'
 import { CanvasCard, useCanvasPlace } from './CanvasPreview'
+import { splitCanvasMessage } from './canvas-target'
 import { BriefingCard, WorkCard, WorkRefusal } from './WorkCard'
 import {
   backgroundOpen,
@@ -25,9 +26,9 @@ import type { UserQuestionWait } from './user-question'
 import type { RetryAttempt, Segment, TurnFailure } from './types'
 import {
   blockKey,
+  canvasMessageId,
   resolveApprovals,
   resolveFloatingWorks,
-  resolveLooseCanvases,
   type ApprovalSpot,
 } from './transcript-place'
 
@@ -132,15 +133,13 @@ export function Transcript({
   }
   const latestTurn = blocks.reduce((max, block) => (block.type === 'turn' ? Math.max(max, block.turn) : max), -1)
   const open = backgroundOpen(tickets)
-  const canvasPlace = useCanvasPlace()
   const pinState = useRef<{
     sessionId: string | undefined
     work: Map<string, string>
-    canvas: Map<string, string>
     approval: Map<string, ApprovalSpot>
-  }>({ sessionId, work: new Map(), canvas: new Map(), approval: new Map() })
+  }>({ sessionId, work: new Map(), approval: new Map() })
   if (pinState.current.sessionId !== sessionId) {
-    pinState.current = { sessionId, work: new Map(), canvas: new Map(), approval: new Map() }
+    pinState.current = { sessionId, work: new Map(), approval: new Map() }
   }
   const here = blocks.length > 0 ? blockKey(blocks[blocks.length - 1]!) : 'start'
   const anchored = new Set(anchorAt.keys())
@@ -148,19 +147,6 @@ export function Transcript({
   for (const [id, key] of pinState.current.work) {
     if (byId.has(id)) floating.set(id, key)
   }
-  const covered = new Set<string>()
-  for (const id of anchored) {
-    if (byId.has(id) && !floating.has(id)) covered.add(id)
-  }
-  for (const id of floating.keys()) {
-    if (byId.has(id)) covered.add(id)
-  }
-  const loosePins = resolveLooseCanvases(
-    [...canvasPlace.loose, ...canvasPlace.byTicket.values()],
-    covered,
-    pinState.current.canvas,
-    here,
-  )
   const callTurn = new Map<string, number>()
   for (const block of blocks) {
     if (block.type !== 'turn') continue
@@ -171,33 +157,15 @@ export function Transcript({
     }
   }
   const approvalSpots = resolveApprovals(approvals, callTurn, pinState.current.approval, latestTurn)
-  const canvasById = new Map([...canvasPlace.loose, ...canvasPlace.byTicket.values()].map(item => [item.id, item]))
-  const canvasForTicket = (ticketId: string) => {
-    const canvas = canvasPlace.byTicket.get(ticketId)
-    if (!canvas || loosePins.has(canvas.id)) return null
-    return canvas
-  }
   const pinnedAfter = (key: string) => {
     const workIds = [...floating.entries()].filter(([, pin]) => pin === key).map(([id]) => id)
-    const canvasIds = [...loosePins.entries()].filter(([, pin]) => pin === key).map(([id]) => id)
-    if (workIds.length === 0 && canvasIds.length === 0) return null
+    if (workIds.length === 0) return null
     return (
       <Fragment key={`pin:${key}`}>
         {workIds.map(id => {
           const ticket = byId.get(id)
           if (!ticket) return null
-          const canvas = canvasForTicket(id)
-          return (
-            <Fragment key={ticket.id}>
-              <WorkCard ticket={ticket} now={now} onSupply={onSupply} onOpen={onOpenSession} />
-              {canvas ? <CanvasCard item={canvas} onOpen={() => canvasPlace.open(canvas.id)} /> : null}
-            </Fragment>
-          )
-        })}
-        {canvasIds.map(id => {
-          const canvas = canvasById.get(id)
-          if (!canvas) return null
-          return <CanvasCard key={canvas.id} item={canvas} onOpen={() => canvasPlace.open(canvas.id)} />
+          return <WorkCard key={ticket.id} ticket={ticket} now={now} onSupply={onSupply} onOpen={onOpenSession} />
         })}
       </Fragment>
     )
@@ -236,7 +204,6 @@ export function Transcript({
               questionWaits={questionWaits}
               onCompose={onCompose}
               skipTickets={floating}
-              looseCanvasIds={loosePins}
             />
           )}
           {pinnedAfter(blockKey(block))}
@@ -276,9 +243,29 @@ function UserBlock({
   }
   return (
     <div className="user-row" data-turn={segment.id}>
-      <div className="user-bubble">{segment.text}</div>
+      <div className="user-bubble">
+        <UserText text={segment.text} />
+      </div>
       {stamp ? <time>{stamp}</time> : null}
     </div>
+  )
+}
+
+function UserText({ text }: { text: string }) {
+  const parts = splitCanvasMessage(text)
+  return (
+    <>
+      {parts.text}
+      {parts.chips.length > 0 ? (
+        <span className="canvas-chip-row">
+          {parts.chips.map(chip => (
+            <span key={`${chip.canvasId}:${chip.revision}:${chip.path}`} className="canvas-chip">
+              <span className="canvas-chip-text">{chip.label}</span>
+            </span>
+          ))}
+        </span>
+      ) : null}
+    </>
   )
 }
 
@@ -291,7 +278,7 @@ function promptForTurn(
     const block = blocks[cursor]
     if (block?.type === 'user' && block.segment && block.segment.text.trim() !== '') {
       if (parseBotMail(block.segment.text) || parseBriefing(block.segment.text)) continue
-      if (block.segment.turn == null || block.segment.turn === turn) return block.segment.text
+      if (block.segment.turn == null || block.segment.turn === turn) return splitCanvasMessage(block.segment.text).text
       break
     }
   }
@@ -398,7 +385,6 @@ function TurnBlock({
   questionWaits,
   onCompose,
   skipTickets,
-  looseCanvasIds,
 }: {
   sessionId?: string
   block: { type: 'turn'; turn: number; seconds?: number; segments: Segment[] }
@@ -425,7 +411,6 @@ function TurnBlock({
   questionWaits?: Record<string, { remainingMs?: number; waitState?: UserQuestionWait }>
   onCompose?: (text: string) => void
   skipTickets: Map<string, string>
-  looseCanvasIds: Map<string, string>
 }) {
   const { t } = useI18n()
   const canvasPlace = useCanvasPlace()
@@ -504,17 +489,14 @@ function TurnBlock({
               {tools.flatMap(segment => {
                 const id = dispatchTicketId(segment)
                 const ticket = id ? byId.get(id) : undefined
-                if (!id || !ticket || anchorAt.get(id) !== segment.id || skipTickets.has(id)) return []
+                if (!id || !ticket || canvasMessageId(id, anchorAt) !== segment.id) return []
                 const canvas = canvasPlace.byTicket.get(ticket.id)
-                const pinnedCanvas = canvas && looseCanvasIds.has(canvas.id) ? null : canvas
                 return [
-                  <WorkCard key={ticket.id} ticket={ticket} now={now} onSupply={onSupply} onOpen={onOpenSession} />,
-                  pinnedCanvas ? (
-                    <CanvasCard
-                      key={pinnedCanvas.id}
-                      item={pinnedCanvas}
-                      onOpen={() => canvasPlace.open(pinnedCanvas.id)}
-                    />
+                  skipTickets.has(id) ? null : (
+                    <WorkCard key={ticket.id} ticket={ticket} now={now} onSupply={onSupply} onOpen={onOpenSession} />
+                  ),
+                  canvas ? (
+                    <CanvasCard key={canvas.id} item={canvas} onOpen={() => canvasPlace.open(canvas.id)} />
                   ) : null,
                 ]
               })}

@@ -8,8 +8,10 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { parseCanvasLink, preserveCanvasUrl } from './canvas-link'
+import { useCanvasPlace } from './CanvasPreview'
 import { ImagePreview } from './ImagePreview'
 import { useI18n } from './locale'
 
@@ -112,6 +114,7 @@ const MARKDOWN_COMPONENTS: Components = {
   },
   a({ href, children, node }) {
     const { streaming, onOpenFile } = useContext(MarkdownContext)
+    const place = useCanvasPlace()
     const { t } = useI18n()
     // An image preview is interactive. Keep it OUTSIDE its Markdown link;
     // expose the original destination separately instead of nesting buttons in anchors.
@@ -123,6 +126,28 @@ const MARKDOWN_COMPONENTS: Components = {
             {t('image.openLink')}
           </a>
         </span>
+      )
+    }
+    const canvas = streaming ? null : parseCanvasLink(href)
+    if (canvas) {
+      const known = [...place.byTicket.values(), ...place.loose].some(item => item.id === canvas.canvasId)
+      if (!known) return <>{children}</>
+      const where = [canvas.page, canvas.anchor ? `#${canvas.anchor}` : ''].filter(Boolean).join('')
+      return (
+        <button
+          type="button"
+          className="file-mention"
+          title={where ? `${canvas.canvasId} ${where}` : canvas.canvasId}
+          onClick={() =>
+            place.open(canvas.canvasId, {
+              revision: canvas.revision,
+              page: canvas.page,
+              anchor: canvas.anchor,
+            })
+          }
+        >
+          {children}
+        </button>
       )
     }
     const file = streaming ? null : fileTarget(href)
@@ -168,7 +193,11 @@ export function MarkdownView({
   return (
     <MarkdownContext.Provider value={context}>
       <div className={streaming ? 'markdown streaming' : 'markdown'}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={MARKDOWN_COMPONENTS}
+          urlTransform={value => preserveCanvasUrl(value, defaultUrlTransform)}
+        >
           {streamingSource(text, streaming)}
         </ReactMarkdown>
       </div>
