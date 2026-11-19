@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CHAT_MIN, DRAWER_PREF, SIDEBAR_MIN, SIDEBAR_PREF, clampDrawerWidth, filePush } from './file-layout.ts'
+import { chrome } from './i18n/chrome.ts'
+import {
+  CHAT_MIN,
+  DRAWER_PREF,
+  SIDEBAR_MIN,
+  SIDEBAR_PREF,
+  clampDrawerWidth,
+  filePush,
+  initialFileLocation,
+} from './file-layout.ts'
 
 test('a drawer that fits in the right blank leaves the centered shell alone', () => {
   const layout = filePush(2000, 300)
@@ -38,6 +47,35 @@ test('a remembered drawer width stays inside the drag limits', () => {
   assert.equal(clampDrawerWidth(100), 320)
   assert.equal(clampDrawerWidth(2000), 960)
   assert.equal(clampDrawerWidth(640.4), 640)
+})
+
+test('the drawer opens the workspace and does not select a closed home', () => {
+  assert.deepEqual(
+    initialFileLocation({
+      workspace: '/opt/dsh-bot/data/workspace',
+      home: null,
+      workspaceReason: '',
+    }),
+    { kind: 'path', root: 'workspace', path: '/opt/dsh-bot/data/workspace' },
+  )
+  assert.deepEqual(initialFileLocation({ workspace: null, home: '/opt/dsh-bot/files', workspaceReason: 'missing' }), {
+    kind: 'path',
+    root: 'home',
+    path: '/opt/dsh-bot/files',
+  })
+  assert.deepEqual(initialFileLocation({ workspace: null, home: '/opt/dsh-bot/files', workspaceReason: 'overlap' }), {
+    kind: 'path',
+    root: 'home',
+    path: '/opt/dsh-bot/files',
+  })
+  assert.deepEqual(initialFileLocation({ workspace: null, home: null, workspaceReason: 'overlap' }), {
+    kind: 'unavailable',
+    notice: 'files.overlap',
+  })
+  const closed = initialFileLocation({ workspace: null, home: null, workspaceReason: 'forbidden' })
+  assert.deepEqual(closed, { kind: 'unavailable', notice: 'files.denied' })
+  assert.equal(chrome.en['files.denied'], 'This location is not available.')
+  assert.equal(initialFileLocation({ workspace: null, home: null, workspaceReason: 'missing' }).kind, 'unavailable')
 })
 
 test('past the minimums the drawer overlaps instead of squeezing further', () => {

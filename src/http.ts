@@ -1,9 +1,9 @@
 import { createReadStream, statSync, type ReadStream } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createDesk, defaultSessionCwd, type DeskRequest } from './desk.ts'
 import { serveWorkspaceImage } from './workspace-image.ts'
+import { selectBrowserHome } from './workspace-files.ts'
 import type { HostContext } from './host.ts'
 import { toolError, type ToolPayload } from './errors.ts'
 import { permissionView, setPermission } from './permissions.ts'
@@ -33,6 +33,7 @@ export function registerHttp(
   extras: {
     getApprovals?: () => import('./approvals.ts').ApprovalAnswerer | null
     getAuthorization?: () => import('./authorization.ts').AuthorizationController | null
+    filesHome?: unknown
   } = {},
 ) {
   const getApprovals = extras.getApprovals ?? (() => null)
@@ -65,7 +66,10 @@ export function registerHttp(
           stillAttached: sessionId => attachedSession(ctx, sessionId),
           rpc: (endpoint, args, req) => hostRpc(req, endpoint, args),
           usage: req => hostUsage(req),
-          files: { home: homedir(), dshHome: process.env.DSH_HOME ?? '' },
+          files: {
+            home: selectBrowserHome(process.env, extras.filesHome),
+            dshHome: process.env.DSH_HOME ?? '',
+          },
         })
   /**
    * @param {import('node:http').IncomingMessage} req

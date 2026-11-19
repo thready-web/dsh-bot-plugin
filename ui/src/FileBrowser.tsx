@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from './api'
 import { useDrawerFrame } from './drawer-frame'
-import { DRAWER_PREF, clampDrawerWidth } from './file-layout'
+import { DRAWER_PREF, clampDrawerWidth, initialFileLocation } from './file-layout'
 import { isMarkdownName } from './highlight'
 import { useI18n } from './locale'
 import { MarkdownView } from './MarkdownView'
@@ -41,6 +41,7 @@ interface Roots {
   workspace: string | null
   workspaceReason: string
   home: string | null
+  homeReason: string
 }
 
 type Preview =
@@ -174,17 +175,16 @@ export function FileBrowser({
         const workspace = typeof result.body.workspace === 'string' ? result.body.workspace : null
         const home = typeof result.body.home === 'string' ? result.body.home : null
         const workspaceReason = typeof result.body.workspaceReason === 'string' ? result.body.workspaceReason : ''
-        setRoots({ workspace, workspaceReason, home })
+        const homeReason = typeof result.body.homeReason === 'string' ? result.body.homeReason : ''
+        setRoots({ workspace, workspaceReason, home, homeReason })
         if (focusRef.current) return
-        if (workspace) {
-          setRoot('workspace')
-          setPath(workspace)
-        } else if (home) {
-          setRoot('home')
-          setPath(home)
+        const location = initialFileLocation({ workspace, home, workspaceReason })
+        if (location.kind === 'path') {
+          setRoot(location.root)
+          setPath(location.path)
         } else {
           setPhase('error')
-          setNotice(workspaceReason === 'overlap' ? t('files.overlap') : t('files.missing'))
+          setNotice(t(location.notice))
         }
       })
       .catch(() => {
@@ -200,8 +200,9 @@ export function FileBrowser({
     if (!open || !focus || !roots) return
     const absolute = resolveFocusPath(roots.workspace, focus.path)
     if (!absolute) {
+      const location = initialFileLocation(roots)
       setPhase('error')
-      setNotice(roots.workspaceReason === 'overlap' ? t('files.overlap') : t('files.missing'))
+      setNotice(t(location.kind === 'unavailable' ? location.notice : 'files.missing'))
       return
     }
     const request = ++requestId.current
@@ -566,7 +567,7 @@ export function FileBrowser({
             aria-selected={shownRoot === 'home'}
             aria-label={t('files.home')}
             disabled={!roots?.home}
-            title={roots?.home || undefined}
+            title={roots?.home || rootHint(roots?.homeReason, t)}
             onClick={() => chooseRoot('home')}
           >
             <HomeIcon />
@@ -578,7 +579,7 @@ export function FileBrowser({
             aria-selected={shownRoot === 'workspace'}
             aria-label={t('files.workspace')}
             disabled={!roots?.workspace}
-            title={roots?.workspace ?? (roots?.workspaceReason === 'overlap' ? t('files.overlap') : undefined)}
+            title={roots?.workspace ?? rootHint(roots?.workspaceReason, t)}
             onClick={() => chooseRoot('workspace')}
           >
             <FolderIcon />
@@ -862,6 +863,16 @@ function PreviewPane({
       )}
     </div>
   )
+}
+
+function rootHint(
+  reason: string | undefined,
+  t: (key: 'files.overlap' | 'files.denied' | 'files.missing') => string,
+): string | undefined {
+  if (reason === 'overlap') return t('files.overlap')
+  if (reason === 'forbidden' || reason === 'invalid') return t('files.denied')
+  if (reason === 'missing') return t('files.missing')
+  return undefined
 }
 
 function resolveFocusPath(workspace: string | null, target: string): string | null {

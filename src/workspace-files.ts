@@ -1,4 +1,7 @@
-/** Workbench file browser. Workspace and the process home are readable. DSH_HOME stays closed. */
+/**
+ * Workbench file browser. Workspace and a separate home directory are readable.
+ * DSH_HOME, the filesystem root, and /etc stay closed.
+ */
 
 import { randomBytes } from 'node:crypto'
 import {
@@ -16,8 +19,12 @@ import {
   unlinkSync,
   type ReadStream,
 } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
+
+/** Explicit file-drawer home. Independent of process HOME. */
+export const FILES_HOME_ENV = 'THREADY_FILES_HOME'
 
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 export const MAX_TEXT_BYTES = 1024 * 1024
@@ -37,8 +44,9 @@ export type FileResult<T> = { ok: true; value: T } | { ok: false; error: FileErr
 
 export interface FileRoots {
   workspace: string | null
-  workspaceReason: '' | 'overlap' | 'missing'
+  workspaceReason: '' | 'overlap' | 'missing' | 'forbidden'
   home: string | null
+  homeReason: '' | 'missing' | 'forbidden' | 'invalid'
 }
 
 export interface FileAccess {
@@ -60,20 +68,43 @@ export interface ListedDirectory {
 }
 
 /**
+ * Candidate home directory. A non-empty plugin config wins over THREADY_FILES_HOME,
+ * which wins over HOME. A non-string config selects nothing, so it is not replaced
+ * by HOME or the environment. This does not write the process environment.
+ */
+export function selectBrowserHome(env: Record<string, string | undefined>, configured?: unknown): string {
+  if (configured != null && typeof configured !== 'string') return ''
+  if (typeof configured === 'string' && configured.trim() !== '') return configured.trim()
+  const fromEnv = env[FILES_HOME_ENV]
+  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return fromEnv.trim()
+  const home = typeof env.HOME === 'string' ? env.HOME.trim() : ''
+  if (home !== '') return home
+  return homedir()
+}
+
+/**
  * Real paths the browser may use. A workspace that is DSH_HOME, or that contains it, is unusable.
  * The workspace directory itself stays allowed when it lives at <DSH_HOME>/workspace.
+ * `legacyWorkspace` is used only when the stored cwd is exactly DSH_HOME. Any other overlap stays closed.
  */
-export function resolveFileRoots(input: { workspace: string; home: string; dshHome: string }): FileAccess {
-  const home = realDir(input.home)
-  const dshHome = realDir(input.dshHome)
-  const workspaceRaw = realDir(input.workspace)
-  let workspace = workspaceRaw
-  let workspaceReason: FileRoots['workspaceReason'] = workspaceRaw ? '' : 'missing'
-  if (workspaceRaw && dshHome && (workspaceRaw === dshHome || inside(workspaceRaw, dshHome))) {
-    workspace = null
-    workspaceReason = 'overlap'
+export function resolveFileRoots(input: {
+  workspace: string
+  home: string
+  dshHome: string
+  legacyWorkspace?: string
+}): FileAccess {
+  const dshHome = realDirectory(input.dshHome).path
+  const home = resolveHome(input.home, dshHome)
+  const workspace = resolveWorkspace(input.workspace, dshHome, input.legacyWorkspace)
+  return {
+    roots: {
+      workspace: workspace.workspace,
+      workspaceReason: workspace.workspaceReason,
+      home: home.home,
+      homeReason: home.homeReason,
+    },
+    dshHome,
   }
-  return { roots: { workspace, workspaceReason, home }, dshHome }
 }
 
 export function listDirectory(filePath: string, access: FileAccess): FileResult<ListedDirectory> {
@@ -211,17 +242,72 @@ export function safeFileName(value: string): string | null {
   return value
 }
 
-function realDir(filePath: string): string | null {
-  if (filePath.trim() === '') return null
-  try {
-    return realpathSync(resolve(filePath))
-  } catch {
-    return null
+function resolveHome(
+  candidate: string,
+  dshHome: string | null,
+): { home: string | null; homeReason: FileRoots['homeReason'] } {
+  const found = realDirectory(candidate)
+  if (!found.path) return { home: null, homeReason: found.reason === 'invalid' ? 'invalid' : 'missing' }
+  if (isForbiddenLocation(found.path) || (dshHome != null && inside(dshHome, found.path))) {
+    return { home: null, homeReason: 'forbidden' }
   }
+  return { home: found.path, homeReason: '' }
+}
+
+/**
+ * A stored cwd of exactly DSH_HOME can fall back to the configured session workspace.
+ * A cwd that merely contains DSH_HOME, or that is `/` or `/etc`, cannot.
+ */
+function resolveWorkspace(
+  candidate: string,
+  dshHome: string | null,
+  legacy: string | undefined,
+): { workspace: string | null; workspaceReason: FileRoots['workspaceReason'] } {
+  const found = realDirectory(candidate)
+  if (!found.path) return { workspace: null, workspaceReason: 'missing' }
+  if (dshHome != null && found.path === dshHome) {
+    const fallback = legacy ? realDirectory(legacy).path : null
+    if (fallback != null && fallback !== found.path && safeWorkspace(fallback, dshHome)) {
+      return { workspace: fallback, workspaceReason: '' }
+    }
+    return { workspace: null, workspaceReason: 'overlap' }
+  }
+  if (isForbiddenLocation(found.path)) return { workspace: null, workspaceReason: 'forbidden' }
+  if (dshHome != null && inside(found.path, dshHome)) return { workspace: null, workspaceReason: 'overlap' }
+  return { workspace: found.path, workspaceReason: '' }
+}
+
+function safeWorkspace(root: string, dshHome: string | null): boolean {
+  if (isForbiddenLocation(root)) return false
+  if (dshHome != null && (root === dshHome || inside(root, dshHome))) return false
+  return true
+}
+
+function realDirectory(filePath: string): { path: string | null; reason: '' | 'missing' | 'invalid' } {
+  if (filePath.trim() === '' || filePath.includes('\0')) return { path: null, reason: 'missing' }
+  let real: string
+  try {
+    real = realpathSync(resolve(filePath))
+  } catch {
+    return { path: null, reason: 'missing' }
+  }
+  try {
+    if (!lstatSync(real).isDirectory()) return { path: null, reason: 'invalid' }
+  } catch {
+    return { path: null, reason: 'missing' }
+  }
+  return { path: real, reason: '' }
+}
+
+function isForbiddenLocation(filePath: string): boolean {
+  if (filePath === sep) return true
+  const etc = `${sep}etc`
+  return filePath === etc || filePath.startsWith(`${etc}${sep}`)
 }
 
 function inside(root: string, target: string): boolean {
-  return target === root || target.startsWith(root + sep)
+  if (root === sep) return target.startsWith(sep)
+  return target === root || target.startsWith(`${root}${sep}`)
 }
 
 function rootOf(filePath: string, access: FileAccess): 'workspace' | 'home' | null {
