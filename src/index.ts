@@ -29,6 +29,7 @@ import { workToolDefinitions } from './work-tools.ts'
 import { openCanvasStore } from './canvas-store.ts'
 import { backlogCanvases, bindCanvasCards, createCardLog, publishCardLog, type CardLog } from './card-log.ts'
 import { canvasToolDefinitions } from './canvas-tools.ts'
+import { forgetWorker, rememberWorker } from './worker-handles.ts'
 
 export const name = 'session-foundations'
 
@@ -423,8 +424,6 @@ function startWork(
   cards: CardLog,
   onDrop: (sessionIds: readonly string[]) => void = () => {},
 ) {
-  /** @type {Map<string, { dispose?: () => Promise<void> }>} */
-  const workerHandles: Map<string, { dispose?: () => Promise<void> }> = new Map()
   const filePreset = ensureWorkerFilePreset(ctx)
   const resolved = resolveWorkBudget(config.work ?? {}, process.env[WORK_BUDGET_ENV])
   if (resolved.ignored.length > 0) {
@@ -500,7 +499,7 @@ function startWork(
         options.setup = workerFileSetup(ctx, preset)
       }
       const handle = await ctx.agents.create(options)
-      workerHandles.set(spec.sessionId, handle)
+      rememberWorker(spec.sessionId, handle)
       return spec.sessionId
     },
     recordCard: input => {
@@ -545,19 +544,12 @@ function startWork(
     for (const sessionId of sessionIds) {
       engine.openViews.delete(sessionId)
       engine.surface.delete(sessionId)
-      const handle = workerHandles.get(sessionId)
-      workerHandles.delete(sessionId)
-      try {
-        void handle?.dispose?.()
-      } catch {
-        /* already closed */
-      }
+      void forgetWorker(sessionId)
     }
   })
   ctx.effect(() => () => {
     publishWorkRuntime(store.root, null)
     publishSessionDrop(store.root, null)
-    workerHandles.clear()
   })
   ctx.on(
     'agent/inbox/claimed',

@@ -53,6 +53,72 @@ export type MessageKey = keyof typeof en
 
 const catalogs: Record<Locale, Record<MessageKey, string>> = { en, zh }
 
+type CatalogPiece = { en: Record<string, string>; zh: Record<string, string> }
+const copyListeners = new Set<() => void>()
+
+function catalogPiece(mod: Record<string, unknown>): CatalogPiece | null {
+  for (const value of Object.values(mod)) {
+    if (!value || typeof value !== 'object') continue
+    const record = value as { en?: unknown; zh?: unknown }
+    if (record.en && typeof record.en === 'object' && record.zh && typeof record.zh === 'object') {
+      return { en: record.en as Record<string, string>, zh: record.zh as Record<string, string> }
+    }
+  }
+  return null
+}
+
+function applyCatalog(piece: CatalogPiece) {
+  Object.assign(catalogs.en, piece.en)
+  Object.assign(catalogs.zh, piece.zh)
+  for (const listener of copyListeners) listener()
+}
+
+/** Re-render after a catalog file is swapped in place. */
+export function subscribeCopy(listener: () => void) {
+  copyListeners.add(listener)
+  return () => {
+    copyListeners.delete(listener)
+  }
+}
+
+declare global {
+  interface ImportMeta {
+    readonly hot?: {
+      accept(
+        deps: string[],
+        callback: (modules: Array<Record<string, unknown> | undefined> | undefined) => void,
+      ): void
+    }
+  }
+}
+
+if (import.meta.hot) {
+  import.meta.hot.accept(
+    [
+      './activity.ts',
+      './approval.ts',
+      './authorization.ts',
+      './bot.ts',
+      './canvas.ts',
+      './chrome.ts',
+      './composer.ts',
+      './cua.ts',
+      './image.ts',
+      './memory.ts',
+      './permission.ts',
+      './question.ts',
+      './session.ts',
+      './work.ts',
+    ],
+    modules => {
+      for (const mod of modules ?? []) {
+        const piece = mod ? catalogPiece(mod) : null
+        if (piece) applyCatalog(piece)
+      }
+    },
+  )
+}
+
 const STORAGE = 'dsh-bot.locale'
 
 export type Copy = (key: MessageKey, vars?: Record<string, string>) => string

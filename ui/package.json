@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node dev-socket.mjs",
     "type-check": "tsc --noEmit",
     "build": "tsc --noEmit && vite build"
   },

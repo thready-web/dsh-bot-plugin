@@ -1,5 +1,8 @@
 import { createReadStream, statSync, type ReadStream } from 'node:fs'
-import { dirname, extname, join, resolve, sep } from 'node:path'
+import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http'
+import { connect as connectSocket } from 'node:net'
+import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
+import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { beginDelete, deleteStatus, type DeleteJob, type DeleteProgress } from './deleting.ts'
 import { createDesk, defaultSessionCwd, type DeskRequest } from './desk.ts'
@@ -178,6 +181,7 @@ export function registerHttp(
       if (response) return sendFetchResponse(res, response)
     }
     if (rawPath === '/dsh-bot' || (rawPath.startsWith('/dsh-bot/') && !rawPath.startsWith('/dsh-bot/api'))) {
+      if (await proxyDevUi(req, res)) return
       if (serveDesk(req, res, rawPath)) return
       if (serveWorkspaceImage(req, res, rawPath, defaultSessionCwd(process.env, { mkdir: false }))) return
       return send(res, 404, { ok: false, code: 'NOT_FOUND' })
@@ -585,10 +589,24 @@ export function registerHttp(
           path: '/api/dsh-bot',
           handler,
         })
+    const disposeUpgrade =
+      devUiSocket() && typeof webServer.registerUpgrade === 'function'
+        ? webServer.registerUpgrade({
+            path: '/dsh-bot/',
+            handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+              if (reject(ctx, req)) {
+                socket.destroy()
+                return
+              }
+              proxyDevUpgrade(req, socket, head)
+            },
+          })
+        : null
     return () => {
       if (typeof disposeFoundations === 'function') disposeFoundations()
       if (typeof disposeDesk === 'function') disposeDesk()
       if (typeof disposeLog === 'function') disposeLog()
+      if (typeof disposeUpgrade === 'function') disposeUpgrade()
       try {
         canvas?.close()
       } catch {
@@ -1011,6 +1029,82 @@ const DESK_TYPES = new Map([
   ['.woff2', 'font/woff2'],
   ['.ttf', 'font/ttf'],
 ])
+
+/**
+ * Absolute Unix socket where the dev Vite server listens.
+ * Unset in production, where `/dsh-bot/` is read from `public/`.
+ */
+export function devUiSocket(): string | null {
+  const raw = process.env.DSH_BOT_UI_DEV
+  if (!raw || !isAbsolute(raw)) return null
+  return raw
+}
+
+/**
+ * Forward one workbench document or asset to the Vite socket.
+ * A connection failure returns false so the caller can serve `public/`.
+ */
+export function proxyDevUi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  const socketPath = devUiSocket()
+  if (!socketPath) return Promise.resolve(false)
+  return new Promise(resolvePromise => {
+    let settled = false
+    const finish = (proxied: boolean) => {
+      if (settled) return
+      settled = true
+      resolvePromise(proxied)
+    }
+    const headers = { ...req.headers }
+    delete headers.connection
+    delete headers['transfer-encoding']
+    const proxy = httpRequest(
+      {
+        socketPath,
+        method: req.method,
+        path: req.url,
+        headers,
+      },
+      upstream => {
+        res.writeHead(upstream.statusCode ?? 502, upstream.headers)
+        upstream.pipe(res)
+        finish(true)
+      },
+    )
+    proxy.on('error', () => {
+      proxy.destroy()
+      finish(false)
+    })
+    req.pipe(proxy)
+  })
+}
+
+/** Forward the workbench hot-reload upgrade to the Vite socket. */
+export function proxyDevUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+  const socketPath = devUiSocket()
+  if (!socketPath) {
+    socket.destroy()
+    return
+  }
+  const upstream = connectSocket(socketPath)
+  const fail = () => {
+    upstream.destroy()
+    socket.destroy()
+  }
+  upstream.on('error', fail)
+  socket.on('error', () => upstream.destroy())
+  upstream.once('connect', () => {
+    const lines = [`${req.method ?? 'GET'} ${req.url ?? '/'} HTTP/1.1`]
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (value == null || key === 'transfer-encoding') continue
+      const items = Array.isArray(value) ? value : [value]
+      for (const item of items) lines.push(`${key}: ${item}`)
+    }
+    upstream.write(`${lines.join('\r\n')}\r\n\r\n`)
+    if (head.length > 0) upstream.write(head)
+    upstream.pipe(socket)
+    socket.pipe(upstream)
+  })
+}
 
 /** Workbench files built into public/. API routes are handled before this. */
 function serveDesk(

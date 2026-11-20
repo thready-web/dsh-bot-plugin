@@ -1653,9 +1653,14 @@ export function App() {
                     </div>
                   ) : null}
                   {thread.preset ? (
-                    <button type="button" className="chip" onClick={() => setSettings('permission')}>
+                    <button
+                      type="button"
+                      className="chip"
+                      aria-label={presetLabel(thread.preset, t)}
+                      title={presetLabel(thread.preset, t)}
+                      onClick={() => setSettings('permission')}
+                    >
                       <PermissionIcon preset={thread.preset} />
-                      {presetLabel(thread.preset, t)}
                     </button>
                   ) : null}
                 </div>
