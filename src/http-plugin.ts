@@ -16,11 +16,11 @@ export const inject = ['webServer', 'agents', 'sessionPersistence', 'sessionQuer
  * Local management routes for the same SQLite the main plugin uses.
  * Loaded only on profiles that have a web server, so headless does not need it.
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ dataDir?: string }} [config]
+ * @param {{ dataDir?: string, files?: { home?: unknown } }} [config]
  */
 export function apply(
   ctx: HostContext & { effect(execute: () => void | (() => void)): void },
-  config: { dataDir?: string } = {},
+  config: { dataDir?: string; files?: { home?: unknown } } = {},
 ) {
   const dataDir = config.dataDir ?? (ctx.profileContext?.dir ? join(ctx.profileContext.dir, 'session-foundations') : '')
   if (dataDir === '') throw new Error('session-foundations-http: pass dataDir or launch with dsh profileContext')
@@ -49,6 +49,7 @@ export function apply(
     {
       getApprovals: () => approvalAnswererFor(key) ?? approvalAnswererFor(dataDir),
       getAuthorization: () => authorizationFor(key) ?? authorizationFor(dataDir),
+      filesHome: config.files?.home,
     },
   )
 }

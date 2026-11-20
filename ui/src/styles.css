@@ -111,6 +111,7 @@ html.files-resizing {
 
 .shell {
   width: min(1120px, 100%);
+  min-width: 0;
   height: 100%;
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr);
@@ -579,13 +580,20 @@ html.files-resizing {
 .chat-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  min-width: 0;
+  max-width: 100%;
   min-height: 52px;
   padding: 0 22px;
 }
+.chat-head > * {
+  max-width: 100%;
+}
 .chat-head h1 {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 12rem;
+  min-width: min(8rem, 100%);
+  max-width: 100%;
   margin: 0;
   font-size: 14px;
   font-weight: 560;
@@ -741,6 +749,7 @@ button.basis:focus-visible {
 .chat-head a,
 .files-open {
   flex: none;
+  max-width: 100%;
   border: 0;
   background: transparent;
   padding: 0;
@@ -752,6 +761,11 @@ button.basis:focus-visible {
 }
 .work-chip {
   flex: none;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--secondary);
   font-size: 12px;
   line-height: 18px;
@@ -2192,8 +2206,9 @@ button.chip {
 .card-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
   padding: 2px 8px 8px;
 }
 .tools,
@@ -2202,6 +2217,7 @@ button.chip {
   align-items: center;
   gap: 12px;
   min-width: 0;
+  max-width: 100%;
 }
 .tools {
   position: relative;
@@ -2241,11 +2257,16 @@ button.chip {
   margin-left: auto;
 }
 .chip {
+  appearance: none;
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
+  min-width: 0;
   height: 28px;
   padding: 0 4px;
+  border: 0;
+  background: transparent;
   color: var(--secondary);
   font-size: 13px;
   font-weight: 500;
@@ -2257,6 +2278,9 @@ button.chip {
   flex: none;
 }
 .model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--secondary);
   font-size: 13px;
   font-weight: 500;
@@ -2325,6 +2349,8 @@ button.chip {
   .back {
     display: inline;
   }
+  .chat-head,
+  .basis,
   .scroll,
   .composer-wrap {
     padding-left: 16px;

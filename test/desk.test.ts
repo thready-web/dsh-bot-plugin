@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -614,6 +623,136 @@ test('file browser uses the session workspace and keeps the runtime directory cl
       new URL(`http://127.0.0.1${API}/files?sessionId=${sessionId}&dir=${encodeURIComponent(workspace)}&name=huge.bin`),
     )
     assert.equal(huge.status, 413)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('legacy bot main keeps its id and browses the safe workspace, not DSH_HOME', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'dsh-bot-legacy-files-'))
+  const dshHome = join(base, 'data')
+  const workspace = join(dshHome, 'workspace')
+  const filesHome = join(base, 'files')
+  const sessionId = 'session-5868eddf-f88a-43b8-8283-4399bb90efc9'
+  const laterId = 'session-b29ac5ef'
+  mkdirSync(workspace, { recursive: true })
+  mkdirSync(filesHome, { recursive: true })
+  writeFileSync(join(dshHome, 'token'), 'secret')
+  writeFileSync(join(workspace, 'readme.md'), '# work')
+  writeFileSync(join(filesHome, 'note.txt'), 'hello files')
+  symlinkSync(join(dshHome, 'token'), join(filesHome, 'leak'))
+  const calls: string[] = []
+  const items = [
+    { sessionId, cwd: dshHome, blank: false, running: false },
+    { sessionId: laterId, cwd: workspace, blank: false, running: false },
+    { sessionId: 'session-parent', cwd: base, blank: false, running: false },
+  ]
+  const desk = createDesk({
+    ledgerFile: join(base, 'desk-ledger.json'),
+    profileDir: base,
+    sessionCwd: workspace,
+    files: { home: filesHome, dshHome },
+    isBot: id => id === sessionId,
+    mark: () => ({ kind: 'bot' }),
+    hold: () => {},
+    release: () => {},
+    usage: async () => ({ connected: false }),
+    rpc: async (endpoint: string) => {
+      calls.push(endpoint)
+      if (endpoint === 'session/list') {
+        return { status: 200, body: { result: { ok: true, value: { items } } } }
+      }
+      return { status: 404, body: { result: { ok: false } } }
+    },
+  })
+  const read = (sub: string) =>
+    desk.handle('GET', `${API}${sub.split('?')[0]}`, new URL(`http://127.0.0.1${API}${sub}`), incoming())
+  try {
+    const roots = await read(`/files/roots?sessionId=${sessionId}`)
+    assert.equal(roots.status, 200)
+    assert.equal(roots.body.workspace, realpathSync(workspace))
+    assert.equal(roots.body.workspaceReason, '')
+    assert.equal(roots.body.home, realpathSync(filesHome))
+    assert.equal(roots.body.homeReason, '')
+    const listed = await read(`/files?sessionId=${sessionId}&path=${encodeURIComponent(workspace)}`)
+    assert.equal(listed.status, 200)
+    assert.equal(listed.body.root, 'workspace')
+    assert.equal(listed.body.items[0].name, 'readme.md')
+    const runtime = await read(`/files?sessionId=${sessionId}&path=${encodeURIComponent(dshHome)}`)
+    assert.equal(runtime.status, 403)
+    assert.equal(runtime.body.error, 'denied')
+    const token = await read(`/files/text?sessionId=${sessionId}&path=${encodeURIComponent(join(dshHome, 'token'))}`)
+    assert.equal(token.status, 403)
+    const home = await read(`/files?sessionId=${sessionId}&path=${encodeURIComponent(filesHome)}`)
+    assert.equal(home.status, 200)
+    assert.deepEqual(
+      home.body.items.map((item: { name: string }) => item.name),
+      ['note.txt'],
+    )
+    const leak = await read(`/files/text?sessionId=${sessionId}&path=${encodeURIComponent(join(filesHome, 'leak'))}`)
+    assert.equal(leak.status, 403)
+    const later = await read(`/files/roots?sessionId=${laterId}`)
+    assert.equal(later.status, 200)
+    assert.equal(later.body.workspace, realpathSync(workspace))
+    const laterList = await read(`/files?sessionId=${laterId}&path=${encodeURIComponent(workspace)}`)
+    assert.equal(laterList.status, 200)
+    const parent = await read('/files/roots?sessionId=session-parent')
+    assert.equal(parent.status, 200)
+    assert.equal(parent.body.workspace, null)
+    assert.equal(parent.body.workspaceReason, 'overlap')
+    const parentList = await read(`/files?sessionId=session-parent&path=${encodeURIComponent(base)}`)
+    assert.equal(parentList.status, 403)
+    assert.deepEqual(
+      calls.filter(call => call !== 'session/list'),
+      [],
+    )
+    assert.equal(items[0]?.cwd, dshHome)
+    assert.equal(items[0]?.sessionId, sessionId)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('a files home that is DSH_HOME stays closed while the workspace descendant lists', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'dsh-bot-closed-home-'))
+  const dshHome = join(base, 'data')
+  const workspace = join(dshHome, 'workspace')
+  mkdirSync(workspace, { recursive: true })
+  writeFileSync(join(dshHome, 'token'), 'secret')
+  const sessionId = 'session-b29ac5ef'
+  const desk = createDesk({
+    ledgerFile: join(base, 'desk-ledger.json'),
+    profileDir: base,
+    sessionCwd: workspace,
+    files: { home: dshHome, dshHome },
+    isBot: () => false,
+    mark: () => ({ kind: 'bot' }),
+    hold: () => {},
+    release: () => {},
+    usage: async () => ({ connected: false }),
+    rpc: async (endpoint: string) => {
+      if (endpoint === 'session/list') {
+        return {
+          status: 200,
+          body: { result: { ok: true, value: { items: [{ sessionId, cwd: workspace }] } } },
+        }
+      }
+      return { status: 404, body: { result: { ok: false } } }
+    },
+  })
+  const read = (sub: string) =>
+    desk.handle('GET', `${API}${sub.split('?')[0]}`, new URL(`http://127.0.0.1${API}${sub}`), incoming())
+  try {
+    const roots = await read(`/files/roots?sessionId=${sessionId}`)
+    assert.equal(roots.status, 200)
+    assert.equal(roots.body.workspace, realpathSync(workspace))
+    assert.equal(roots.body.home, null)
+    assert.equal(roots.body.homeReason, 'forbidden')
+    const home = await read(`/files?sessionId=${sessionId}&path=${encodeURIComponent(dshHome)}`)
+    assert.equal(home.status, 403)
+    assert.equal(home.body.error, 'denied')
+    const work = await read(`/files?sessionId=${sessionId}&path=${encodeURIComponent(workspace)}`)
+    assert.equal(work.status, 200)
   } finally {
     rmSync(base, { recursive: true, force: true })
   }

@@ -127,6 +127,23 @@ A process restart cannot preserve an in-memory DSH turn: the durable wait surviv
 
 Workbench sessions start in `THREADY_SESSION_CWD` when set, otherwise in `<DSH_HOME>/workspace` (created on first use), never in `DSH_HOME` itself, which holds the owner token and profiles.
 
+The file drawer's Home root is a directory you choose, separate from process `HOME`. Set an existing directory with the http plugin's `files.home` or with `THREADY_FILES_HOME` (config wins). Leave `HOME` and `DSH_HOME` unchanged. The home directory is rejected when it is missing, not a directory, `DSH_HOME`, anything inside `DSH_HOME`, `/`, or `/etc`. Symlinks are judged by their real path. An invalid explicit value is not replaced with process `HOME`. When neither value is set, process `HOME` is used only if it passes those checks.
+
+A workspace that is a subdirectory of `DSH_HOME` stays readable. A workspace that is `DSH_HOME`, or that contains it, stays closed. The one exception is a session whose stored cwd is exactly `DSH_HOME`: the drawer shows the configured session workspace instead, and only when that path is itself a safe directory. The stored cwd, session id, and history are not rewritten. Any other overlapping cwd stays closed.
+
+```yaml
+- insert:
+    - id: session-foundations-http
+      name: "@thready-web/dsh-bot-plugin/http"
+      config:
+        files:
+          home: /opt/dsh-bot/files
+```
+
+```bash
+THREADY_FILES_HOME=/opt/dsh-bot/files
+```
+
 Generated raster previews can be embedded at `/dsh-bot/<project>/preview/<image>` or `/dsh-bot/<project>/artifacts/<image>`. These are deliberate artifact directories under that configured workspace, not a general file server or a per-session sharing boundary: authenticated workbench users can view their images. Only JPEG, PNG, GIF and WebP with matching signatures are served, with private/no-store caching. Dotfiles, traversal, symlink escapes, other workspace locations and active HTML/SVG are rejected. With no configured workspace this fallback is disabled. Relative Markdown image paths resolve under `/dsh-bot/`; existing absolute URLs remain unchanged.
 
 Markdown images use bounded, aspect-preserving thumbnails. Click to open a viewport-fit dialog, then choose Original size to scroll through screenshot details. Escape, the close button or the backdrop dismisses it, restoring focus and body scrolling. Linked images expose their link separately from the preview control. Preview and unavailable-state labels follow the English/Chinese UI catalog.

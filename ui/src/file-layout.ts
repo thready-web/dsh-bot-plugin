@@ -78,3 +78,21 @@ export function filePush(viewport: number, desired: number): FilePush {
     overlap: false,
   }
 }
+
+/**
+ * Which directory the drawer shows first. A closed home is never selected.
+ * Workspace wins when both roots are open, so Home is not the landing view.
+ */
+export function initialFileLocation(roots: {
+  workspace: string | null
+  home: string | null
+  workspaceReason: string
+}):
+  | { kind: 'path'; root: 'workspace' | 'home'; path: string }
+  | { kind: 'unavailable'; notice: 'files.overlap' | 'files.denied' | 'files.missing' } {
+  if (roots.workspace) return { kind: 'path', root: 'workspace', path: roots.workspace }
+  if (roots.home) return { kind: 'path', root: 'home', path: roots.home }
+  if (roots.workspaceReason === 'overlap') return { kind: 'unavailable', notice: 'files.overlap' }
+  if (roots.workspaceReason === 'forbidden') return { kind: 'unavailable', notice: 'files.denied' }
+  return { kind: 'unavailable', notice: 'files.missing' }
+}

@@ -1,7 +1,6 @@
 /** Workbench routes inside the DSH process. The browser calls /dsh-bot/api. */
 
 import { mkdirSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { openLedger, validIdempotencyKey } from './desk-ledger.ts'
@@ -15,6 +14,7 @@ import {
   readFileText,
   resolveFileRoots,
   saveUploadFile,
+  selectBrowserHome,
   type FileError,
 } from './workspace-files.ts'
 
@@ -74,7 +74,7 @@ const SECRET_KEY = /token|secret|password|authorization|api[-_]?key|cookie/i
  * @param {(sessionId: string) => boolean} [options.stillAttached]
  * @param {(endpoint: string, args: Record<string, unknown>, req: DeskRequest) => Promise<{ status: number, body: RpcEnvelope }>} options.rpc
  * @param {(req: DeskRequest) => Promise<Record<string, unknown>>} options.usage
- * @param {{ home: string, dshHome: string }} [options.files] Browser roots. Defaults to the process home and DSH_HOME.
+ * @param {{ home: string, dshHome: string }} [options.files] Browser roots. Home is an explicit safe directory, not process HOME. DSH_HOME stays closed.
  */
 export function createDesk(options: {
   ledgerFile: string
@@ -544,8 +544,18 @@ export function createDesk(options: {
   async function browserAccess(req: DeskRequest, sessionId: string) {
     const cwd = await workspaceCwd(req, sessionId)
     if (typeof cwd !== 'string') return cwd
-    const files = options.files ?? { home: homedir(), dshHome: process.env.DSH_HOME ?? '' }
-    return { access: resolveFileRoots({ workspace: cwd, home: files.home, dshHome: files.dshHome }) }
+    const files = options.files ?? {
+      home: selectBrowserHome(process.env, undefined),
+      dshHome: process.env.DSH_HOME ?? '',
+    }
+    return {
+      access: resolveFileRoots({
+        workspace: cwd,
+        home: files.home,
+        dshHome: files.dshHome,
+        legacyWorkspace: options.sessionCwd,
+      }),
+    }
   }
 
   /**

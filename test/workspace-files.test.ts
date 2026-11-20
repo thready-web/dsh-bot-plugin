@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import {
+  FILES_HOME_ENV,
   MAX_TEXT_BYTES,
   listDirectory,
   openDownload,
   readFileText,
   resolveFileRoots,
   saveUploadFile,
+  selectBrowserHome,
 } from '../src/workspace-files.ts'
 
 function layout() {
@@ -186,6 +188,212 @@ test('upload writes into the open directory and refuses escapes, links, and over
       listed.value.items.some(item => item.name.includes('.upload-')),
       false,
     )
+  } finally {
+    rmSync(dirs.base, { recursive: true, force: true })
+  }
+})
+
+function serviceLayout() {
+  const base = mkdtempSync(join(tmpdir(), 'dsh-bot-files-vps-'))
+  const dshHome = join(base, 'data')
+  const workspace = join(dshHome, 'workspace')
+  const filesHome = join(base, 'files')
+  mkdirSync(workspace, { recursive: true })
+  mkdirSync(filesHome, { recursive: true })
+  writeFileSync(join(dshHome, 'token'), 'secret')
+  writeFileSync(join(dshHome, 'persona.sqlite'), 'db')
+  writeFileSync(join(workspace, 'readme.md'), '# work')
+  writeFileSync(join(filesHome, 'note.txt'), 'hello files')
+  symlinkSync(join(dshHome, 'token'), join(filesHome, 'leak'))
+  symlinkSync('/etc/passwd', join(filesHome, 'passwd'))
+  symlinkSync(dshHome, join(base, 'home-link'))
+  symlinkSync(filesHome, join(base, 'files-link'))
+  symlinkSync('/etc', join(base, 'etc-link'))
+  return { base, dshHome, workspace, filesHome }
+}
+
+test('HOME equal to DSH_HOME is not browsable, and a workspace descendant stays open', () => {
+  const dirs = serviceLayout()
+  const saved = {
+    HOME: process.env.HOME,
+    DSH_HOME: process.env.DSH_HOME,
+    [FILES_HOME_ENV]: process.env[FILES_HOME_ENV],
+  }
+  try {
+    const selected = selectBrowserHome({ HOME: dirs.dshHome, DSH_HOME: dirs.dshHome }, undefined)
+    assert.equal(selected, dirs.dshHome)
+    const access = resolveFileRoots({ workspace: dirs.workspace, home: selected, dshHome: dirs.dshHome })
+    assert.equal(access.roots.home, null)
+    assert.equal(access.roots.homeReason, 'forbidden')
+    assert.equal(access.roots.workspace, realpathSync(dirs.workspace))
+    assert.equal(access.roots.workspaceReason, '')
+    const work = listDirectory(dirs.workspace, access)
+    assert.equal(work.ok, true)
+    if (!work.ok) return
+    assert.deepEqual(
+      work.value.items.map(item => item.name),
+      ['readme.md'],
+    )
+    assert.equal(listDirectory(dirs.dshHome, access).ok, false)
+    assert.equal(readFileText(join(dirs.dshHome, 'token'), access).ok, false)
+    assert.equal(readFileText(join(dirs.workspace, '..', 'token'), access).ok, false)
+    assert.equal(listDirectory('/', access).ok, false)
+    assert.equal(listDirectory('/etc', access).ok, false)
+    assert.equal(process.env.HOME, saved.HOME)
+    assert.equal(process.env.DSH_HOME, saved.DSH_HOME)
+    assert.equal(process.env[FILES_HOME_ENV], saved[FILES_HOME_ENV])
+  } finally {
+    rmSync(dirs.base, { recursive: true, force: true })
+  }
+})
+
+test('an explicit home is used when HOME is DSH_HOME, and invalid config does not fall through', () => {
+  const dirs = serviceLayout()
+  try {
+    const selected = selectBrowserHome(
+      { HOME: dirs.dshHome, DSH_HOME: dirs.dshHome, [FILES_HOME_ENV]: dirs.filesHome },
+      undefined,
+    )
+    assert.equal(selected, dirs.filesHome)
+    const configured = selectBrowserHome(
+      { HOME: dirs.dshHome, [FILES_HOME_ENV]: join(dirs.base, 'other') },
+      ` ${dirs.filesHome} `,
+    )
+    assert.equal(configured, dirs.filesHome)
+    assert.equal(selectBrowserHome({ HOME: dirs.dshHome, [FILES_HOME_ENV]: dirs.filesHome }, '  '), dirs.filesHome)
+    const invalid = selectBrowserHome({ HOME: dirs.dshHome, [FILES_HOME_ENV]: dirs.filesHome }, '/etc')
+    assert.equal(invalid, '/etc')
+    const typed = selectBrowserHome({ HOME: dirs.dshHome, [FILES_HOME_ENV]: dirs.filesHome }, 12)
+    assert.equal(typed, '')
+    const access = resolveFileRoots({ workspace: dirs.workspace, home: dirs.filesHome, dshHome: dirs.dshHome })
+    assert.equal(access.roots.home, realpathSync(dirs.filesHome))
+    assert.equal(access.roots.homeReason, '')
+    const listed = listDirectory(dirs.filesHome, access)
+    assert.equal(listed.ok, true)
+    if (!listed.ok) return
+    assert.deepEqual(
+      listed.value.items.map(item => item.name),
+      ['note.txt'],
+    )
+    assert.equal(readFileText(join(dirs.filesHome, 'leak'), access).ok, false)
+    assert.equal(readFileText(join(dirs.filesHome, 'passwd'), access).ok, false)
+    const forbidden = resolveFileRoots({ workspace: dirs.workspace, home: invalid, dshHome: dirs.dshHome })
+    assert.equal(forbidden.roots.home, null)
+    assert.equal(forbidden.roots.homeReason, 'forbidden')
+    const missing = resolveFileRoots({ workspace: dirs.workspace, home: typed, dshHome: dirs.dshHome })
+    assert.equal(missing.roots.home, null)
+    assert.equal(missing.roots.homeReason, 'missing')
+    const nested = join(dirs.dshHome, 'files')
+    mkdirSync(nested)
+    const insideHome = resolveFileRoots({ workspace: dirs.workspace, home: nested, dshHome: dirs.dshHome })
+    assert.equal(insideHome.roots.home, null)
+    assert.equal(insideHome.roots.homeReason, 'forbidden')
+    writeFileSync(join(dirs.base, 'not-a-dir'), 'x')
+    const fileHome = resolveFileRoots({
+      workspace: dirs.workspace,
+      home: join(dirs.base, 'not-a-dir'),
+      dshHome: dirs.dshHome,
+    })
+    assert.equal(fileHome.roots.home, null)
+    assert.equal(fileHome.roots.homeReason, 'invalid')
+    const linked = resolveFileRoots({
+      workspace: dirs.workspace,
+      home: join(dirs.base, 'files-link'),
+      dshHome: dirs.dshHome,
+    })
+    assert.equal(linked.roots.home, realpathSync(dirs.filesHome))
+    const runtimeLink = resolveFileRoots({
+      workspace: dirs.workspace,
+      home: join(dirs.base, 'home-link'),
+      dshHome: dirs.dshHome,
+    })
+    assert.equal(runtimeLink.roots.home, null)
+    assert.equal(runtimeLink.roots.homeReason, 'forbidden')
+    const etcLink = resolveFileRoots({
+      workspace: dirs.workspace,
+      home: join(dirs.base, 'etc-link'),
+      dshHome: dirs.dshHome,
+    })
+    assert.equal(etcLink.roots.home, null)
+    assert.equal(etcLink.roots.homeReason, 'forbidden')
+    const root = resolveFileRoots({ workspace: dirs.workspace, home: '/', dshHome: dirs.dshHome })
+    assert.equal(root.roots.home, null)
+    assert.equal(root.roots.homeReason, 'forbidden')
+  } finally {
+    rmSync(dirs.base, { recursive: true, force: true })
+  }
+})
+
+test('a legacy cwd of exactly DSH_HOME uses the safe workspace and other overlaps stay closed', () => {
+  const dirs = serviceLayout()
+  try {
+    symlinkSync('/etc', join(dirs.base, 'legacy-etc'))
+    symlinkSync(dirs.dshHome, join(dirs.base, 'legacy-runtime'))
+    const legacy = resolveFileRoots({
+      workspace: dirs.dshHome,
+      home: dirs.filesHome,
+      dshHome: dirs.dshHome,
+      legacyWorkspace: dirs.workspace,
+    })
+    assert.equal(legacy.roots.workspace, realpathSync(dirs.workspace))
+    assert.equal(legacy.roots.workspaceReason, '')
+    assert.equal(readFileText(join(dirs.workspace, 'readme.md'), legacy).ok, true)
+    assert.equal(readFileText(join(dirs.dshHome, 'token'), legacy).ok, false)
+    const viaLink = resolveFileRoots({
+      workspace: join(dirs.base, 'legacy-runtime'),
+      home: dirs.filesHome,
+      dshHome: dirs.dshHome,
+      legacyWorkspace: dirs.workspace,
+    })
+    assert.equal(viaLink.roots.workspace, realpathSync(dirs.workspace))
+    const parent = resolveFileRoots({
+      workspace: dirs.base,
+      home: dirs.filesHome,
+      dshHome: dirs.dshHome,
+      legacyWorkspace: dirs.workspace,
+    })
+    assert.equal(parent.roots.workspace, null)
+    assert.equal(parent.roots.workspaceReason, 'overlap')
+    const filesystem = resolveFileRoots({
+      workspace: '/',
+      home: dirs.filesHome,
+      dshHome: dirs.dshHome,
+      legacyWorkspace: dirs.workspace,
+    })
+    assert.equal(filesystem.roots.workspace, null)
+    assert.equal(filesystem.roots.workspaceReason, 'forbidden')
+    const etc = resolveFileRoots({
+      workspace: '/etc',
+      home: dirs.filesHome,
+      dshHome: dirs.dshHome,
+      legacyWorkspace: dirs.workspace,
+    })
+    assert.equal(etc.roots.workspace, null)
+    assert.equal(etc.roots.workspaceReason, 'forbidden')
+    const badFallback = resolveFileRoots({
+      workspace: dirs.dshHome,
+      home: dirs.filesHome,
+      dshHome: dirs.dshHome,
+      legacyWorkspace: join(dirs.base, 'legacy-etc'),
+    })
+    assert.equal(badFallback.roots.workspace, null)
+    assert.equal(badFallback.roots.workspaceReason, 'overlap')
+    const sameFallback = resolveFileRoots({
+      workspace: dirs.dshHome,
+      home: dirs.filesHome,
+      dshHome: dirs.dshHome,
+      legacyWorkspace: dirs.dshHome,
+    })
+    assert.equal(sameFallback.roots.workspace, null)
+    assert.equal(sameFallback.roots.workspaceReason, 'overlap')
+    const kept = resolveFileRoots({
+      workspace: dirs.workspace,
+      home: dirs.filesHome,
+      dshHome: dirs.dshHome,
+      legacyWorkspace: dirs.filesHome,
+    })
+    assert.equal(kept.roots.workspace, realpathSync(dirs.workspace))
+    assert.notEqual(kept.roots.workspace, realpathSync(dirs.filesHome))
   } finally {
     rmSync(dirs.base, { recursive: true, force: true })
   }
