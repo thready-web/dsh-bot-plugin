@@ -1389,7 +1389,11 @@ export function App() {
                     setCanvasMentions(prev => {
                       const rest = prev.filter(
                         item =>
-                          !(item.canvasId === chip.canvasId && item.revision === chip.revision && item.path === chip.path),
+                          !(
+                            item.canvasId === chip.canvasId &&
+                            item.revision === chip.revision &&
+                            item.path === chip.path
+                          ),
                       )
                       return [...rest, chip].slice(-8)
                     })

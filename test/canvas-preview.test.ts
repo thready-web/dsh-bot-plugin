@@ -114,7 +114,9 @@ test('the canvas modal keeps one inspect document and does not reload when selec
     assert.equal(frame.getAttribute('sandbox'), 'allow-scripts')
     assert.equal(frame.hasAttribute('srcdoc'), false)
     assert.equal((frame.getAttribute('sandbox') ?? '').includes('allow-same-origin'), false)
-    const select = [...view.document.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Select')
+    const select = [...view.document.querySelectorAll('button')].find(
+      button => button.getAttribute('aria-label') === 'Select',
+    )
     await view.act(() => select?.click())
     assert.equal(frame.getAttribute('src'), address)
     await view.act(() => select?.click())

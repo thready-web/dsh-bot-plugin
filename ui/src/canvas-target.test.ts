@@ -19,12 +19,7 @@ test('a canvas mention survives a round trip and leaves the typed text', () => {
 })
 
 test('a mention names the canvas card and the revision inside it', () => {
-  const label = mentionLabel(
-    '用户反馈：当前 canvas 产物的 padding',
-    '版本 1',
-    'h1',
-    '两套视觉语言，一套编辑方法。',
-  )
+  const label = mentionLabel('用户反馈：当前 canvas 产物的 padding', '版本 1', 'h1', '两套视觉语言，一套编辑方法。')
   assert.match(label, /^用户反馈：当前 canvas 产物的… · 版本 1 · h1 · /)
   assert.equal(label.includes('cnv_'), false)
   assert.ok(label.endsWith('…'))

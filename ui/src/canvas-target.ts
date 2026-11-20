@@ -20,7 +20,10 @@ export function mentionLabel(canvasName: string, version: string, tag: string, t
 }
 
 export function formatCanvasTarget(chip: CanvasChip): string {
-  const label = chip.label.replace(/[[\]\r\n]/g, ' ').replace(/\s+/g, ' ').trim()
+  const label = chip.label
+    .replace(/[[\]\r\n]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   const path = chip.path === '' ? '.' : chip.path
   return `[canvas-target canvas=${chip.canvasId} rev=${chip.revision} path=${path} tag=${chip.tag}]${label}[/canvas-target]`
 }

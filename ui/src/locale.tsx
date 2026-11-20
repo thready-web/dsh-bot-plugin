@@ -1,5 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { english, readLocale, subscribeCopy, translate, writeLocale, type Copy, type Locale, type MessageKey } from './i18n/index.ts'
+import {
+  english,
+  readLocale,
+  subscribeCopy,
+  translate,
+  writeLocale,
+  type Copy,
+  type Locale,
+  type MessageKey,
+} from './i18n/index.ts'
 
 interface LocaleValue {
   locale: Locale
