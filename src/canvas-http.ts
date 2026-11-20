@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { buildSync } from 'esbuild'
 import { fileURLToPath } from 'node:url'
+import { composeInspect } from './canvas-compose.ts'
 import { asStoreFailure, toolError, type ToolPayload } from './errors.ts'
 import { CANVAS_MAX_JSON_BYTES, normalizeCanvasPath, type CanvasFileInput, type CanvasStore } from './canvas-store.ts'
 
@@ -262,11 +264,6 @@ function json(res: ServerResponse, status: number, body: ToolPayload) {
 const NONCE = /^[A-Za-z0-9_-]{16,80}$/
 let inspectorCode: string | null = null
 
-type ComposeInspect = (
-  html: string,
-  options: { baseHref: string; nonce: string; parentOrigin: string; inspectorSrc: string; page?: string },
-) => string
-
 /** Token-only inspect document. The design stays scriptless; only the host inspector runs. */
 export async function serveCanvasInspect(
   req: IncomingMessage,
@@ -317,8 +314,7 @@ export async function serveCanvasInspect(
     return
   }
   const prefix = `${origin}${MEDIA}${parsed.token}/${parsed.revision}/`
-  const compose = await loadCompose()
-  const html = compose(found.bytes.toString('utf8'), {
+  const html = composeInspect(found.bytes.toString('utf8'), {
     baseHref: prefix,
     nonce,
     parentOrigin: origin,
@@ -357,14 +353,7 @@ function inspectPolicy(origin: string, prefix: string) {
   ].join('; ')
 }
 
-function writeBody(
-  res: ServerResponse,
-  method: string,
-  status: number,
-  type: string,
-  body: string,
-  policy: string,
-) {
+function writeBody(res: ServerResponse, method: string, status: number, type: string, body: string, policy: string) {
   res.writeHead(status, {
     'content-type': type,
     'content-length': Buffer.byteLength(body),
@@ -376,17 +365,13 @@ function writeBody(
   res.end(method === 'HEAD' ? undefined : body)
 }
 
-async function loadCompose(): Promise<ComposeInspect> {
-  const href = new URL('../../../packages/dsh-canvas/src/compose.ts', import.meta.url).href
-  const mod = (await import(href)) as { composeInspect: ComposeInspect }
-  return mod.composeInspect
-}
-
 function inspectorSource() {
   if (inspectorCode != null) return inspectorCode
-  const entry = fileURLToPath(new URL('../../../packages/dsh-canvas/src/inspector.ts', import.meta.url))
+  // Same relative path from src/ (tests) and dist/ (built server): both sit next to ui/.
+  const entry = fileURLToPath(new URL('../ui/src/canvas-inspector.ts', import.meta.url))
+  if (!existsSync(entry)) throw new Error('canvas inspector source is missing')
   const result = buildSync({
-    absWorkingDir: fileURLToPath(new URL('../../../packages/dsh-canvas/', import.meta.url)),
+    absWorkingDir: fileURLToPath(new URL('../ui/', import.meta.url)),
     entryPoints: [entry],
     bundle: true,
     format: 'iife',

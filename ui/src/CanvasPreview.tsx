@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { mentionFrom } from '../../../../packages/dsh-canvas/src/mention.ts'
 import { isCanvasAnchor, isCanvasPage, splitCanvasRoute } from './canvas-link'
+import { mentionFrom } from './canvas-mention.ts'
+import { adoptElement, type RawNode } from './canvas-path.ts'
 import { mentionLabel } from './canvas-target'
-import { adoptElement, type RawNode } from '../../../../packages/dsh-canvas/src/path.ts'
 import { api } from './api'
 import { placeCanvases } from './canvas-place'
 import {
@@ -339,8 +339,7 @@ export function CanvasPreview({
       if (!selectingRef.current) return
       if (data.type === 'ready') {
         const path = pinnedRef.current
-        if (path != null)
-          frameRef.current?.contentWindow?.postMessage({ dsh: CHANNEL, nonce, type: 'pin', path }, '*')
+        if (path != null) frameRef.current?.contentWindow?.postMessage({ dsh: CHANNEL, nonce, type: 'pin', path }, '*')
         return
       }
       if (data.type !== 'select' || typeof data.path !== 'string') return
@@ -351,12 +350,7 @@ export function CanvasPreview({
       if (!mention || !id || revision == null) return
       setPinnedPath(data.path)
       const from = viewportRect(frameRef.current, data.rect)
-      const label = mentionLabel(
-        name,
-        t('canvas.revision', { revision: String(revision) }),
-        mention.tag,
-        mention.text,
-      )
+      const label = mentionLabel(name, t('canvas.revision', { revision: String(revision) }), mention.tag, mention.text)
       const chip = { canvasId: id, revision, path: mention.path, tag: mention.tag, label }
       void flyToComposer(from, label).then(() => mentionRef.current?.(chip))
     }
@@ -438,7 +432,16 @@ export function CanvasPreview({
               }}
             >
               <svg viewBox="0 0 20 20" aria-hidden="true">
-                <rect x="6.4" y="6.4" width="11" height="11" rx="1.4" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                <rect
+                  x="6.4"
+                  y="6.4"
+                  width="11"
+                  height="11"
+                  rx="1.4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                />
                 <path
                   className="cursor"
                   d="M1.8 1.4 2.15 9.2 4.6 6.8 6.7 11.4 8 10.8 5.9 6.2 9.2 6.4Z"
@@ -692,7 +695,7 @@ export function CanvasScope({
   const openIdRef = useRef<string | null>(null)
   openIdRef.current = openId
   const [paint, setPaint] = useState(false)
-  const [openTarget, setOpenTarget] = useState<{ id: string; stamp: number } & CanvasLocation | null>(null)
+  const [openTarget, setOpenTarget] = useState<({ id: string; stamp: number } & CanvasLocation) | null>(null)
   const openStamp = useRef(0)
   const clickRef = useRef<{ x: number; y: number; at: number } | null>(null)
   const [openOrigin, setOpenOrigin] = useState<CanvasOpenOrigin | null>(null)
@@ -710,8 +713,7 @@ export function CanvasScope({
     if (dismiss > 0) setOpenId(null)
   }
   const open = items.find(item => item.id === openId) ?? null
-  const requested =
-    openTarget && openTarget.id === openId && openTarget.revision != null ? openTarget.revision : null
+  const requested = openTarget && openTarget.id === openId && openTarget.revision != null ? openTarget.revision : null
   const followRevision = requested ?? open?.previewRevision ?? open?.stableRevision ?? null
   const showRef = useRef<(canvasId: string, revision: number) => Promise<void>>(async () => {})
 
