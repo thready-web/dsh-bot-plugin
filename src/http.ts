@@ -13,6 +13,14 @@ import { selectBrowserHome } from './workspace-files.ts'
 import type { HostContext } from './host.ts'
 import { toolError, type ToolPayload } from './errors.ts'
 import { permissionView, setPermission } from './permissions.ts'
+import {
+  applyFreshMainPermission,
+  forgetPending,
+  permissionDefaultFile,
+  permissionDefaultView,
+  rememberFreshMain,
+  setDefaultPermission,
+} from './permission-default.ts'
 import { cuaAction, cuaSnapshot } from './cua-access.ts'
 import { provisionSession } from './provision.ts'
 import { handleWorkApi, openPageLive, openWorkLive } from './work-http.ts'
@@ -77,6 +85,20 @@ export function registerHttp(
           stillAttached: sessionId => attachedSession(ctx, sessionId),
           rpc: (endpoint, args, req) => hostRpc(req, endpoint, args),
           usage: req => hostUsage(req),
+          onFreshMain: sessionId => {
+            if (storeDir === '') return
+            const file = permissionDefaultFile(storeDir)
+            try {
+              rememberFreshMain(file, sessionId)
+              applyFreshMainPermission(ctx, file, sessionId, id => engine.isBot(id))
+            } catch (error) {
+              ctx.logger?.warn?.(
+                'session-foundations: default permission was not armed session=%s %s',
+                sessionId,
+                error instanceof Error ? error.message : String(error),
+              )
+            }
+          },
           files: {
             home: selectBrowserHome(process.env, extras.filesHome),
             dshHome: process.env.DSH_HOME ?? '',
@@ -332,16 +354,26 @@ export function registerHttp(
         const sessionId = url.searchParams.get('sessionId') ?? ''
         return send(res, 200, { ok: true, ...permissionView(ctx, sessionId) })
       }
-      if (req.method === 'POST' && path === '/session-foundations/api/permissions') {
+      if (req.method === 'GET' && path === '/session-foundations/api/permissions/default') {
+        if (storeDir === '')
+          return send(res, 503, toolError('UNAVAILABLE', 'Permission defaults need a profile data directory.'))
+        return send(res, 200, { ok: true, ...permissionDefaultView(ctx, permissionDefaultFile(storeDir)) })
+      }
+      if (req.method === 'POST' && path === '/session-foundations/api/permissions/default') {
+        if (storeDir === '')
+          return send(res, 503, toolError('UNAVAILABLE', 'Permission defaults need a profile data directory.'))
         const body = await readJson(req)
         return sendTool(
           res,
-          setPermission(
-            ctx,
-            typeof body.sessionId === 'string' ? body.sessionId : '',
-            typeof body.name === 'string' ? body.name : '',
-          ),
+          setDefaultPermission(ctx, permissionDefaultFile(storeDir), typeof body.name === 'string' ? body.name : ''),
         )
+      }
+      if (req.method === 'POST' && path === '/session-foundations/api/permissions') {
+        const body = await readJson(req)
+        const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+        const result = setPermission(ctx, sessionId, typeof body.name === 'string' ? body.name : '')
+        if (result.ok !== false && storeDir !== '') forgetPending(permissionDefaultFile(storeDir), sessionId)
+        return sendTool(res, result)
       }
       if (req.method === 'GET' && path === '/session-foundations/api/authorization') {
         const authorization = getAuthorization()

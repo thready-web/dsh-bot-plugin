@@ -15,6 +15,13 @@ type PermissionBody = {
   message?: string
 }
 
+type DefaultBody = {
+  available?: boolean
+  defaultPreset?: string
+  options?: PermissionOption[]
+  message?: string
+}
+
 export function SettingsDrawer({
   title,
   closeLabel,
@@ -74,12 +81,15 @@ export function PermissionPanel({
 }) {
   const { t } = useI18n()
   const [view, setView] = useState<PermissionBody | null>(null)
+  const [defaults, setDefaults] = useState<DefaultBody | null>(null)
   const [confirm, setConfirm] = useState<PermissionOption | null>(null)
+  const [confirmDefault, setConfirmDefault] = useState<PermissionOption | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     void api(`/permissions?sessionId=${encodeURIComponent(sessionId)}`).then(response => setView(response.body))
+    void api('/permissions/default').then(response => setDefaults(response.body))
   }, [sessionId])
 
   async function apply(name: string) {
@@ -108,10 +118,43 @@ export function PermissionPanel({
   function choose(option: PermissionOption) {
     if (option.value === view?.currentValue || option.value === 'custom') return
     if (option.value === 'danger-full-access' || option.value === 'auto') {
+      setConfirmDefault(null)
       setConfirm(option)
       return
     }
     void apply(option.value)
+  }
+
+  async function applyDefault(name: string) {
+    setBusy(true)
+    setError('')
+    try {
+      const response = await api('/permissions/default', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      if (response.status === 200 && response.body.ok !== false) {
+        setDefaults(response.body)
+        setConfirmDefault(null)
+        return
+      }
+      setError(typeof response.body.message === 'string' ? response.body.message : t('permission.failed'))
+    } catch {
+      setError(t('permission.failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function chooseDefault(option: PermissionOption) {
+    if (option.value === defaults?.defaultPreset || option.value === 'custom' || option.value === 'auto') return
+    if (option.value === 'danger-full-access') {
+      setConfirm(null)
+      setConfirmDefault(option)
+      return
+    }
+    void applyDefault(option.value)
   }
 
   const options = view?.options ?? []
@@ -157,6 +200,52 @@ export function PermissionPanel({
               className="user-question-submit"
               disabled={busy}
               onClick={() => void apply(confirm.value)}
+            >
+              {t('permission.confirm')}
+            </button>
+          </div>
+        </div>
+      ) : null}
+      <h4 className="user-question-header">{t('permission.defaultTitle')}</h4>
+      <p className="user-question-hint">{t('permission.defaultHelp')}</p>
+      {defaults && defaults.available === false ? (
+        <p className="user-question-hint">{t('permission.unavailable')}</p>
+      ) : null}
+      <ul className="user-question-options">
+        {(defaults?.options ?? []).map(option => (
+          <li key={`default-${option.value}`}>
+            <button
+              type="button"
+              className={
+                option.value === defaults?.defaultPreset ? 'user-question-option selected' : 'user-question-option'
+              }
+              disabled={busy || option.value === 'custom' || option.value === 'auto'}
+              onClick={() => chooseDefault(option)}
+            >
+              <span className="user-question-option-label">{presetDisplayName(option.value, option.name, t)}</span>
+              {option.description ? <span className="user-question-option-desc">{option.description}</span> : null}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {confirmDefault ? (
+        <div className="settings-confirm">
+          <p className="user-question-text">{t('permission.confirmTitle')}</p>
+          <p className="user-question-hint">{t('permission.confirmDefaultFull')}</p>
+          <div className="user-question-row">
+            <button
+              type="button"
+              className="user-question-skip"
+              disabled={busy}
+              onClick={() => setConfirmDefault(null)}
+            >
+              {t('permission.cancel')}
+            </button>
+            <button
+              type="button"
+              className="user-question-submit"
+              disabled={busy}
+              onClick={() => void applyDefault(confirmDefault.value)}
             >
               {t('permission.confirm')}
             </button>

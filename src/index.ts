@@ -30,6 +30,7 @@ import { openCanvasStore } from './canvas-store.ts'
 import { backlogCanvases, bindCanvasCards, createCardLog, publishCardLog, type CardLog } from './card-log.ts'
 import { canvasToolDefinitions } from './canvas-tools.ts'
 import { forgetWorker, rememberWorker } from './worker-handles.ts'
+import { applyFreshMainPermission, permissionDefaultFile } from './permission-default.ts'
 
 export const name = 'session-foundations'
 
@@ -266,6 +267,15 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
       parentSessionId: session?.header?.parentSession ?? null,
       seeded: session?.header?.isSeeded === true,
     })
+    try {
+      applyFreshMainPermission(ctx, permissionDefaultFile(dataDir), agent.id, id => engine.isBot(id))
+    } catch (error) {
+      ctx.logger?.warn?.(
+        'session-foundations: default permission was not applied session=%s %s',
+        agent.id,
+        error instanceof Error ? error.message : String(error),
+      )
+    }
   })
   ctx.on('agent/inbox/inserted', (payload: { agent?: { id?: string } } | null) => {
     pinMainReasoning(payload?.agent, id => engine.isBot(id))

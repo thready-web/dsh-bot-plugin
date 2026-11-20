@@ -18,6 +18,16 @@ test('presetLabel maps official ids to the composer chip copy', () => {
   assert.equal(presetLabel('auto', zh), '自动审阅')
 })
 
+test('the default-permission help names Fully allow and limits it to later main sessions', () => {
+  assert.match(english('permission.defaultHelp'), /Fully allow/)
+  assert.match(english('permission.defaultHelp'), /new main session/)
+  assert.match(english('permission.defaultHelp'), /already exists/)
+  assert.match(translate('zh', 'permission.defaultHelp'), /完全允许/)
+  assert.match(translate('zh', 'permission.defaultHelp'), /新建的主会话/)
+  assert.match(translate('zh', 'permission.confirmDefaultFull'), /完全允许/)
+  assert.match(english('permission.confirmDefaultFull'), /broad/)
+})
+
 test('presetDisplayName prefers i18n labels over raw official names', () => {
   assert.equal(presetDisplayName('read-only', 'read-only', english), 'Read Only')
   assert.equal(presetDisplayName('workspace-write', 'workspace-write', english), 'Workspace Write')

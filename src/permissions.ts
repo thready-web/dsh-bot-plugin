@@ -4,6 +4,8 @@
  * The write path is `ctx.permissionPresets.set(session, name)`. Auto is
  * offered only when the live catalog includes it (the experimental package
  * has registered it). This is a settings concern, not a transcript card.
+ * The instance default for a future main session is `permission-default.ts`;
+ * it calls this setter and does not invent a second sandbox policy.
  */
 import { toolError, type ToolPayload } from './errors.ts'
 import type { HostContext } from './host.ts'

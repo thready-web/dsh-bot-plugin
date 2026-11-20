@@ -96,6 +96,8 @@ export function createDesk(options: {
   ) => Promise<{ status: number; body: RpcEnvelope }>
   usage: (req: DeskRequest) => Promise<Record<string, unknown>>
   files?: { home: string; dshHome: string }
+  /** A main session id that was created now, not reused from a blank or an idempotency key. */
+  onFreshMain?: (sessionId: string) => void
 }) {
   const ledger = openLedger(options.ledgerFile)
   const sessionPreviews = openSessionPreviews(join(dirname(options.ledgerFile), 'session-previews.json'))
@@ -266,10 +268,18 @@ export function createDesk(options: {
         return { status: 502, body: { error: 'bot_marker_failed', sessionId } }
       }
     }
+    const reused = Boolean(reusable) && sessionId === reusable.sessionId
     ledger.rememberSession(key, sessionId)
+    if (!reused) {
+      try {
+        options.onFreshMain?.(sessionId)
+      } catch {
+        /* creation already succeeded; agent/created applies a saved pending id */
+      }
+    }
     return {
       status: 201,
-      body: { sessionId, kind: 'bot', marker, reused: Boolean(reusable) && sessionId === reusable.sessionId },
+      body: { sessionId, kind: 'bot', marker, reused },
     }
   }
 
