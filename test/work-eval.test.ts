@@ -75,6 +75,8 @@ test('eval: product defaults allow two running workers per bot and four globally
   assert.equal(DEFAULT_WORK_BUDGET.mainWallMs, 30 * 60_000)
   assert.equal(DEFAULT_WORK_BUDGET.chatMaxSteps, 80)
   assert.equal(DEFAULT_WORK_BUDGET.chatWallMs, 30 * 60_000)
+  assert.equal(DEFAULT_WORK_BUDGET.workerWallMs, 60 * 60_000)
+  assert.equal(DEFAULT_WORK_BUDGET.workerMaxTokens, 2_000_000)
   const ctx = boot()
   assert.equal(ctx.work.limits.perBot, 2)
   assert.equal(ctx.work.limits.global, 4)

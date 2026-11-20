@@ -67,13 +67,6 @@ export function canvasToolDefinitions(
               'An existing canvas to revise. Omit to open a new preview. Copy it from a canvas-target block.',
           },
           idempotencyKey: { type: 'string' },
-          budget: {
-            type: 'object',
-            properties: {
-              wallMs: { type: 'integer' },
-              maxTokens: { type: 'integer' },
-            },
-          },
           correlationId: { type: 'string' },
         },
         required: ['briefing'],
@@ -275,7 +268,6 @@ async function dispatchCanvas(
     briefing: canvasBriefing(canvasId, briefing, skills, canvas.previewPaths(canvasId)),
   }
   if (typeof key === 'string') forwarded.idempotencyKey = key
-  if (args.budget != null) forwarded.budget = args.budget
   if (typeof args.correlationId === 'string') forwarded.correlationId = args.correlationId
   const dispatched = await work.dispatch(hostId, forwarded)
   if (dispatched.ok === true && typeof dispatched.ticketId === 'string') {

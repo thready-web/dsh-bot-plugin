@@ -44,6 +44,7 @@ test('real DSH host: two workers overlap, a third queues, then starts after a sl
           perBotQueue: 2
           globalQueue: 4
           workerWallMs: 10000
+          workerMaxTokens: 1000
           leaseMs: 1000
     - id: session-foundations-http
       name: ${JSON.stringify(join(ROOT, 'dist/http-plugin.js'))}

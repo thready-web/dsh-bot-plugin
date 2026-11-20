@@ -27,20 +27,12 @@ export function workToolDefinitions(
   return [
     tool(
       'foundations_dispatch',
-      'Hand a non-trivial job to a worker session. Prefer this over doing the work with bash, write, edit, or an official subagent in the main session. Available only on a bot. status=accepted means received, and may wait for an execution slot. status=enqueued means it entered the execution queue, not that it has started. queued=true means it is waiting for a slot and will start automatically when one is free. The return value is never started. A BUDGET error means both the slot cap and the queue cap are full; do not start the job in the main session. ownerSessionId is ignored.',
+      `Hand a non-trivial job to a worker session. Prefer this over doing the work with bash, write, edit, or an official subagent in the main session. Available only on a bot. The host assigns the opening budget of one standard slice (${SLICE}). Do not pass a budget. status=accepted means received, and may wait for an execution slot. status=enqueued means it entered the execution queue, not that it has started. queued=true means it is waiting for a slot and will start automatically when one is free. The return value is never started. A BUDGET error means both the slot cap and the queue cap are full; do not start the job in the main session. ownerSessionId is ignored.`,
       {
         type: 'object',
         properties: {
           briefing: { type: 'string' },
           idempotencyKey: { type: 'string' },
-          budget: {
-            type: 'object',
-            description: `Time and token budget for this ticket. When omitted, the host uses one standard slice (${SLICE}). Pass that slice. Do not estimate a smaller budget. Later grants add more slices with no cumulative ceiling.`,
-            properties: {
-              wallMs: { type: 'integer', description: 'Expected maximum runtime in milliseconds.' },
-              maxTokens: { type: 'integer', description: 'Expected maximum tokens.' },
-            },
-          },
           correlationId: { type: 'string' },
           ownerSessionId: { type: 'string', description: 'Ignored. The host uses the current session.' },
           parentTicketId: { type: 'string', description: 'The MVP rejects a non-empty value.' },

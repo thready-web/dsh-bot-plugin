@@ -43,9 +43,9 @@ export const DEFAULT_WORK_BUDGET: WorkBudget = Object.freeze({
   holdMs: 15_000,
   workerMaxSteps: 8,
   /** One budget slice. A grant adds another slice; there is no cumulative ceiling. */
-  workerWallMs: 30 * 60 * 1000,
+  workerWallMs: 60 * 60 * 1000,
   /** One budget slice. A grant adds another slice; there is no cumulative ceiling. */
-  workerMaxTokens: 1_000_000,
+  workerMaxTokens: 2_000_000,
   perBot: 2,
   global: 4,
   perBotQueue: 8,
@@ -279,32 +279,21 @@ export function budgetTrip(input: {
 }
 
 /**
- * Positive integer at or above `min`. A non-finite value is omitted.
- * @param {unknown} value
- * @param {number} min
- */
-function clampAtLeast(value: unknown, min: number) {
-  const number = Number(value)
-  if (!Number.isFinite(number)) return null
-  return Math.max(min, Math.floor(number))
-}
-
-/**
- * Ticket budget chosen when the main bot dispatches.
- * An omitted field is one standard slice. An explicit estimate is kept, with a
- * floor of 1000. Later grants add on top and are not capped by this slice.
+ * Opening ticket budget. Dispatch does not choose it: a budget passed with the
+ * ticket is ignored, and every ticket starts on one host slice. Later grants
+ * add another slice and are not capped by this one.
  * @param {string} _briefing
- * @param {{ wallMs?: number, maxTokens?: number } | null | undefined} suggestion
+ * @param {{ wallMs?: number, maxTokens?: number } | null | undefined} _suggestion
  * @param {typeof DEFAULT_WORK_BUDGET} defaults
  */
 export function estimateWorkerBudget(
   _briefing: string,
-  suggestion: { wallMs?: number; maxTokens?: number } | null | undefined,
+  _suggestion: { wallMs?: number; maxTokens?: number } | null | undefined,
   defaults: typeof DEFAULT_WORK_BUDGET = DEFAULT_WORK_BUDGET,
 ) {
   return {
-    wallMs: clampAtLeast(suggestion?.wallMs, 1000) ?? defaults.workerWallMs,
-    maxTokens: clampAtLeast(suggestion?.maxTokens, 1000) ?? defaults.workerMaxTokens,
+    wallMs: defaults.workerWallMs,
+    maxTokens: defaults.workerMaxTokens,
     perBot: defaults.perBot,
     global: defaults.global,
     perBotQueue: defaults.perBotQueue,

@@ -1010,24 +1010,24 @@ test('an interrupt hold blocks ticket notices until the next user message or the
   ctx.close()
 })
 
-test('worker budget uses one standard slice unless the dispatch names its own', async () => {
+test('dispatch budget is ignored and every ticket starts on the host slice', async () => {
   const ctx = boot()
-  const omitted = await dispatched(ctx, 'take your time', 'estimate')
   const expected = estimateWorkerBudget('take your time', null)
+  const omitted = await dispatched(ctx, 'take your time', 'estimate')
   const stored = JSON.parse(ctx.work.detail(omitted.ticketId)!.ticket.budget_json)
   assert.equal(stored.wallMs, expected.wallMs)
   assert.equal(stored.maxTokens, expected.maxTokens)
   await ctx.work.cancelTicket('bot-a', { ticketId: omitted.ticketId })
 
-  const tight = await ctx.work.dispatch('bot-a', {
+  const named = await ctx.work.dispatch('bot-a', {
     briefing: 'take your time',
-    idempotencyKey: 'tight',
+    idempotencyKey: 'named',
     budget: { wallMs: 90_000, maxTokens: 8_000 },
   })
-  const clamped = JSON.parse(ctx.work.detail(tight.ticketId)!.ticket.budget_json)
-  assert.equal(clamped.wallMs, 90_000)
-  assert.equal(clamped.maxTokens, 8_000)
-  await ctx.work.cancelTicket('bot-a', { ticketId: tight.ticketId })
+  const ignored = JSON.parse(ctx.work.detail(named.ticketId)!.ticket.budget_json)
+  assert.equal(ignored.wallMs, expected.wallMs)
+  assert.equal(ignored.maxTokens, expected.maxTokens)
+  await ctx.work.cancelTicket('bot-a', { ticketId: named.ticketId })
 
   const high = await ctx.work.dispatch('bot-a', {
     briefing: 'take your time',
@@ -1035,13 +1035,13 @@ test('worker budget uses one standard slice unless the dispatch names its own', 
     budget: { wallMs: 9_999_999, maxTokens: 9_999_999 },
   })
   const capped = JSON.parse(ctx.work.detail(high.ticketId)!.ticket.budget_json)
-  assert.equal(capped.wallMs, 9_999_999)
-  assert.equal(capped.maxTokens, 9_999_999)
+  assert.equal(capped.wallMs, expected.wallMs)
+  assert.equal(capped.maxTokens, expected.maxTokens)
   ctx.close()
 })
 
 test('a granted limit asks the main bot for more instead of failing the ticket', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
   const job = await ctx.work.dispatch('bot-a', {
     briefing: 'take your time',
     idempotencyKey: 'extend',
@@ -1116,8 +1116,8 @@ test('a granted limit asks the main bot for more instead of failing the ticket',
   assert.equal(denied.ok, true)
   assert.equal(denied.denied, false)
   assert.equal(denied.refusalIgnored, true)
-  assert.equal(denied.maxTokens, 25_000 + DEFAULT_WORK_BUDGET.workerMaxTokens)
-  assert.equal(denied.wallMs, 180_000 + DEFAULT_WORK_BUDGET.workerWallMs)
+  assert.equal(denied.maxTokens, 25_000 + 5_000)
+  assert.equal(denied.wallMs, 180_000 + 120_000)
   assert.equal(ctx.work.detail(job.ticketId)!.ticket.status, 'started')
   assert.equal(
     ctx.world.cancels.some(call => call.sessionId === job.childSessionId),
@@ -1380,7 +1380,7 @@ test('investigation: one usage overshoot pauses at the host ceiling rather than 
 })
 
 test('investigation: grant retains the same attempt and sums usage without resetting it', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
   try {
     const job = await ctx.work.dispatch('bot-a', {
       briefing: 'inspect in-place grant',
@@ -1420,7 +1420,7 @@ test('investigation: grant retains the same attempt and sums usage without reset
 })
 
 test('investigation: budget decisions bypass pending user input immediately', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
   try {
     const job = await ctx.work.dispatch('bot-a', {
       briefing: 'inspect extension admission',
@@ -1454,7 +1454,7 @@ test('investigation: budget decisions bypass pending user input immediately', as
 })
 
 test('investigation: grant after worker turn end changes budget but does not wake the worker', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
   try {
     const job = await ctx.work.dispatch('bot-a', {
       briefing: 'inspect idle grant',
@@ -1482,7 +1482,7 @@ test('investigation: grant after worker turn end changes budget but does not wak
 })
 
 test('an extension-only wake is admitted immediately even when a notice or user is pending', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
   try {
     const prior = await ctx.work.dispatch('bot-a', {
       briefing: 'ordinary progress first',
@@ -1539,7 +1539,7 @@ test('ordinary progress does not starve-bypass a pending user message', async ()
 })
 
 test('an extension and a later failure are not delivered as one contradictory grant notice', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
   try {
     const job = await ctx.work.dispatch('bot-a', {
       briefing: 'grant then fail',
@@ -1562,7 +1562,7 @@ test('an extension and a later failure are not delivered as one contradictory gr
     assert.match(present(ctx.world.pushes.at(-1)).text, /foundations_grant/)
     assert.doesNotMatch(present(ctx.world.pushes.at(-1)).text, /failed \(failed\)/)
 
-    const other = boot()
+    const other = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
     const late = await other.work.dispatch('bot-a', {
       briefing: 'fail before the grant arrives',
       idempotencyKey: 'fail-before-grant',
@@ -1600,7 +1600,7 @@ test('an extension and a later failure are not delivered as one contradictory gr
 })
 
 test('an open extension request is not lease-expired by expireQuiet', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
   try {
     const job = await ctx.work.dispatch('bot-a', {
       briefing: 'wait for a grant',
@@ -1705,7 +1705,7 @@ test('a dead child can still lease-expire and is cancelled', async () => {
 })
 
 test('budget pre-step suspension makes no next dispatch across lease/host-wall time; sufficient grant resumes same identity', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
   try {
     const job = await ctx.work.dispatch('bot-a', {
       briefing: 'pause the loop',
@@ -1829,7 +1829,7 @@ test('repeated grants keep adding and a refusal does not cancel the worker', asy
 })
 
 test('restored durable waits do not create children or dispatch models; grant alone cannot resurrect a disposed turn', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerWallMs: 120_000, workerMaxTokens: 5_000 })
   try {
     const job = await ctx.work.dispatch('bot-a', {
       briefing: 'restart while paused',
@@ -1868,7 +1868,7 @@ test('restored durable waits do not create children or dispatch models; grant al
 })
 
 test('turn abort cleans the gate listener without approving budget, and claimed notice completion closes admission barrier', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerMaxTokens: 1000 })
   try {
     const job = await ctx.work.dispatch('bot-a', { briefing: 'abort boundary', budget: { maxTokens: 1000 } })
     ctx.work.observeSession(job.childSessionId, ctx.world.seeUser(job.childSessionId, job.nativeMessageId, 1))
@@ -1899,7 +1899,7 @@ test('turn abort cleans the gate listener without approving budget, and claimed 
 })
 
 test('a finishing in-flight batch counts toward active host ceilings before the boundary freezes time', async () => {
-  const ctx = boot({ workerWallMs: 2000 })
+  const ctx = boot({ workerWallMs: 1000, workerMaxTokens: 1000 })
   try {
     const job = await ctx.work.dispatch('bot-a', {
       briefing: 'slow tools finishing',
@@ -1929,7 +1929,7 @@ test('a finishing in-flight batch counts toward active host ceilings before the 
 })
 
 test('waiting retains its worker slot but never gates the main bot; explicit cancellation promotes queued independent work', async () => {
-  const ctx = boot({ perBot: 1, global: 1 })
+  const ctx = boot({ perBot: 1, global: 1, workerMaxTokens: 1000 })
   try {
     const first = await ctx.work.dispatch('bot-a', { briefing: 'paused worker', budget: { maxTokens: 1000 } })
     ctx.work.observeSession(first.childSessionId, ctx.world.seeUser(first.childSessionId, first.nativeMessageId, 1))
@@ -1954,7 +1954,7 @@ test('waiting retains its worker slot but never gates the main bot; explicit can
 })
 
 test('concurrent urgent admission is single-flight; an already sufficient grant suppresses an obsolete extension notice', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerMaxTokens: 1000 })
   try {
     const job = await ctx.work.dispatch('bot-a', { briefing: 'urgent once', budget: { maxTokens: 1000 } })
     ctx.work.observeSession(job.childSessionId, ctx.world.seeUser(job.childSessionId, job.nativeMessageId, 1))
@@ -1984,7 +1984,7 @@ test('concurrent urgent admission is single-flight; an already sufficient grant 
 })
 
 test('an explicit detached grant durably re-enters the same child and fences old aborted turn replay from the result', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerMaxTokens: 1000, workerWallMs: 120_000 })
   try {
     const job = await ctx.work.dispatch('bot-a', {
       briefing: 'resume after restart',
@@ -2037,7 +2037,7 @@ test('an explicit detached grant durably re-enters the same child and fences old
 })
 
 test('an explicit retry is a new fenced attempt and does not inherit the cancelled attempt quota', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerMaxTokens: 1000 })
   try {
     const job = await ctx.work.dispatch('bot-a', { briefing: 'manual retry', budget: { maxTokens: 1000 } })
     ctx.work.observeSession(job.childSessionId, ctx.world.seeUser(job.childSessionId, job.nativeMessageId, 1))
@@ -2062,7 +2062,7 @@ test('an explicit retry is a new fenced attempt and does not inherit the cancell
 })
 
 test('legacy open-extension metadata still schedules the granted wall boundary, not the host ceiling', async () => {
-  const ctx = boot({ workerWallMs: 10000 })
+  const ctx = boot({ workerWallMs: 1000 })
   try {
     const job = await ctx.work.dispatch('bot-a', { briefing: 'legacy boundary', budget: { wallMs: 1000 } })
     const budget = JSON.parse(ctx.work.detail(job.ticketId)!.ticket.budget_json)
@@ -2085,7 +2085,7 @@ test('legacy open-extension metadata still schedules the granted wall boundary, 
 })
 
 test('a persisted sufficient grant retains durable expiry protection until actual loop admission', async () => {
-  const ctx = boot()
+  const ctx = boot({ workerMaxTokens: 5_000 })
   const abort = new AbortController()
   try {
     const job = await ctx.work.dispatch('bot-a', { briefing: 'grant crash boundary', budget: { maxTokens: 5000 } })
