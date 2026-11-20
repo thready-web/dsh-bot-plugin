@@ -346,23 +346,27 @@ export function fileChange(tool: ToolSegment): FileChange | null {
     const lines = contentLines(content).map(text => ({ kind: 'add' as const, text }))
     return change(path, content.length, lines, lines.length, 0)
   }
-  if (name === 'edit' || name === 'apply_patch' || name === 'str_replace_editor') {
+  if (name === 'edit' || name === 'canvas_edit' || name === 'apply_patch' || name === 'str_replace_editor') {
     const oldText =
       typeof parsed.old_string === 'string'
         ? parsed.old_string
         : typeof parsed.old_str === 'string'
           ? parsed.old_str
-          : null
+          : typeof parsed.old === 'string'
+            ? parsed.old
+            : null
     const newText =
       typeof parsed.new_string === 'string'
         ? parsed.new_string
         : typeof parsed.new_str === 'string'
           ? parsed.new_str
-          : typeof parsed.content === 'string'
-            ? parsed.content
-            : typeof parsed.file_text === 'string'
-              ? parsed.file_text
-              : ''
+          : typeof parsed.replacement === 'string'
+            ? parsed.replacement
+            : typeof parsed.content === 'string'
+              ? parsed.content
+              : typeof parsed.file_text === 'string'
+                ? parsed.file_text
+                : ''
     const lines =
       oldText == null || oldText === ''
         ? contentLines(newText).map(text => ({ kind: 'add' as const, text }))

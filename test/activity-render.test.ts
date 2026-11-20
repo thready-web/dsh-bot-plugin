@@ -551,6 +551,33 @@ test('SSR: successful activity omits Completed; exceptions remain visible and fa
     const summary = /<button\b[^>]*>([\s\S]*?)<\/button>/.exec(html)?.[1] ?? ''
     assert.ok(summary.includes(label!))
   }
+  const readRow = renderTool!({
+    segment: tool('read-file', {
+      name: 'read',
+      args: JSON.stringify({ file_path: 'ui/src/styles.css', offset: 12, limit: 29 }),
+      description: undefined,
+    }),
+  })
+  const readSummary = /<button\b[^>]*>([\s\S]*?)<\/button>/.exec(readRow)?.[1] ?? ''
+  assert.ok(readSummary.includes('Read') && readSummary.includes('styles.css') && readSummary.includes('L12-40'))
+  const edited = renderTool!({
+    segment: tool('edit-file', {
+      name: 'canvas_edit',
+      args: JSON.stringify({ path: 'src/styles.css', old: 'color: red;', replacement: 'color: blue;\ncolor: white;' }),
+    }),
+  })
+  const editSummary = /<button\b[^>]*>([\s\S]*?)<\/button>/.exec(edited)?.[1] ?? ''
+  assert.ok(editSummary.includes('canvas_edit') && editSummary.includes('styles.css'))
+  assert.ok(editSummary.includes('+2') && editSummary.includes('-1'))
+  const written = renderTool!({
+    segment: tool('write-file', {
+      name: 'canvas_write',
+      args: JSON.stringify({ files: [{ path: 'index.html', type: 'text/html', text: '<html>\n</html>' }] }),
+    }),
+  })
+  const writeSummary = /<button\b[^>]*>([\s\S]*?)<\/button>/.exec(written)?.[1] ?? ''
+  assert.ok(writeSummary.includes('canvas_write') && writeSummary.includes('index.html') && writeSummary.includes('+2'))
+  assert.ok(!readRow.includes('activity-detail'))
   const noDescription = renderTool!({
     segment: tool('generic', { args: '{"command":"VERY_LONG_COMMAND --token=doNotShow"}' }),
   })

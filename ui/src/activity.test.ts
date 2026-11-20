@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import test from 'node:test'
-import { argsOf, resultStatus, toolPresentation, toolState } from './activity.ts'
+import { argsOf, callDetailText, callDetail, resultStatus, toolPresentation, toolState } from './activity.ts'
 import { applyLogEvent, applyEphemeralFrame } from './follow.ts'
 import { emptyThread, type ToolSegment, type ThreadState } from './types.ts'
 import type { WorkTicket } from './work.ts'
@@ -392,4 +392,91 @@ test('a failed model attempt does not block a fresh retry on the same turn and s
   })
   assert.equal(state.streamAttempt?.attemptId, 'b')
   assert.ok(!state.segments.some(s => s.kind === 'think' && s.text === 'Partial failed attempt'))
+})
+
+test('a read call labels the file and the line window', () => {
+  const text = (values: Partial<ToolSegment>) => {
+    const detail = callDetail(tool(values))
+    return detail ? callDetailText(detail) : ''
+  }
+  assert.equal(
+    text({ name: 'read', args: '{"file_path":"/workspace/plugins/dsh-bot-plugin/ui/src/styles.css"}' }),
+    'Read styles.css',
+  )
+  assert.equal(
+    text({ name: 'read', args: '{"file_path":"ui/src/styles.css","offset":12,"limit":29}' }),
+    'Read styles.css L12-40',
+  )
+  assert.equal(text({ name: 'read', args: '{"file_path":"ui/src/styles.css","offset":12}' }), 'Read styles.css L12')
+  const shown = `<path>/workspace/plugins/dsh-bot-plugin/ui/src/styles.css</path>
+<type>file</type>
+<content>
+1: body {}
+
+(Showing lines 1-80 of 3780. Use offset=81 to continue.)
+</content>`
+  assert.equal(
+    text({ name: 'read', args: '{"file_path":"ui/src/styles.css"}', result: shown }),
+    'Read styles.css L1-80',
+  )
+  const eof = `<path>ui/src/styles.css</path>\n<type>file</type>\n<content>\n(End of file - total 12 lines)\n</content>`
+  assert.equal(text({ name: 'read', args: '{"file_path":"ui/src/styles.css"}', result: eof }), 'Read styles.css L1-12')
+  assert.equal(text({ name: 'canvas_read', args: '{"path":"src/styles.css"}' }), 'canvas_read styles.css')
+  assert.equal(text({ name: 'canvas_read', args: '{}' }), 'canvas_read files')
+  assert.equal(
+    text({
+      name: 'canvas_edit',
+      args: JSON.stringify({ path: 'src/styles.css', old: 'a\nb', replacement: 'a\nb\nc' }),
+    }),
+    'canvas_edit styles.css +3 -2',
+  )
+  assert.equal(
+    text({ name: 'edit', args: JSON.stringify({ file_path: 'src/App.tsx', old_string: 'a', new_string: 'b\nc' }) }),
+    'Edit App.tsx +2 -1',
+  )
+  assert.equal(
+    text({
+      name: 'canvas_write',
+      args: JSON.stringify({ files: [{ path: 'index.html', type: 'text/html', text: '<html>\n</html>' }] }),
+    }),
+    'canvas_write index.html +2',
+  )
+  assert.equal(
+    text({
+      name: 'canvas_write',
+      args: JSON.stringify({
+        files: [
+          { path: 'index.html', type: 'text/html', text: '<html></html>' },
+          { path: 'styles.css', type: 'text/css', text: 'body {}' },
+        ],
+      }),
+    }),
+    'canvas_write index.html, styles.css',
+  )
+  assert.equal(
+    text({
+      name: 'canvas_write',
+      args: JSON.stringify({
+        files: ['a.html', 'b.css', 'c.png', 'd.woff2'].map(path => ({ path, type: 'text/html', body: 'xx' })),
+      }),
+    }),
+    'canvas_write a.html + 3 files',
+  )
+  assert.equal(
+    text({ name: 'canvas_write', args: JSON.stringify({ remove: ['assets/old.css', 'hero.png'] }) }),
+    'canvas_write remove old.css, hero.png',
+  )
+  assert.equal(
+    text({
+      name: 'canvas_write',
+      args: JSON.stringify({ files: [{ path: 'index.html', type: 'text/html', text: 'x' }], remove: ['old.css'] }),
+    }),
+    'canvas_write index.html +1 remove old.css',
+  )
+  assert.equal(
+    text({ name: 'grep', args: '{"pattern":"call-verb","path":"ui/src/styles.css"}' }),
+    'Grep call-verb in styles.css',
+  )
+  const read = toolPresentation(tool({ name: 'read', args: '{"file_path":"ui/src/styles.css"}' })).detail
+  assert.equal(read ? callDetailText(read) : '', 'Read styles.css')
 })

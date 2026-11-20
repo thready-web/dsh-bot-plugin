@@ -1,4 +1,4 @@
-import { OPEN_TOOL_STATES, toolPresentation, toolStatus, type ToolStatus } from './activity.ts'
+import { callDetailText, OPEN_TOOL_STATES, toolPresentation, toolStatus, type ToolStatus } from './activity.ts'
 import { isAnswerableQuestion, isUserQuestionTool, userQuestionView } from './user-question.ts'
 import type { ToolApprovalView } from './tool-approval.ts'
 import { english, type Copy, type MessageKey } from './i18n/index.ts'
@@ -68,7 +68,7 @@ export function currentActivity(input: CurrentActivityInput): ActivitySummary | 
       if (representedTickets.has(view.ticketId)) continue
       representedTickets.add(view.ticketId)
     }
-    const detail = view.description || view.command || view.title
+    const detail = view.description || view.command || (view.detail ? callDetailText(view.detail) : view.title)
     const item = { text: `${toolLabel(view.status)}: ${detail}`, moving: view.status !== 'background' }
     if (view.status === 'background') {
       // Last-known is not completion, but it is also not current pending work after the turn settles.

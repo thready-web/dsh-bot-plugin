@@ -2350,6 +2350,21 @@ button.chip {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.call-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.file-call .call-verb {
+  color: var(--secondary);
+}
+.canvas-call .call-tool {
+  color: var(--tertiary);
+}
+.call-lines {
+  color: var(--caption);
+}
 /* Collapse owns height and reduced-motion transitions; nested toggles stay independent. */
 .tool-activity.open > .official-title .chevron,
 .activity-arguments.open > .official-title .chevron {
@@ -3471,20 +3486,40 @@ button.chip {
   animation: canvas-zoom-out 0.2s cubic-bezier(0.78, 0.14, 0.15, 0.86) forwards;
 }
 @keyframes canvas-mask-in {
-  from { background-color: transparent; }
-  to { background-color: rgba(15, 17, 21, 0.45); }
+  from {
+    background-color: transparent;
+  }
+  to {
+    background-color: rgba(15, 17, 21, 0.45);
+  }
 }
 @keyframes canvas-mask-out {
-  from { background-color: rgba(15, 17, 21, 0.45); }
-  to { background-color: transparent; }
+  from {
+    background-color: rgba(15, 17, 21, 0.45);
+  }
+  to {
+    background-color: transparent;
+  }
 }
 @keyframes canvas-zoom-in {
-  from { transform: scale(0.2); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
+  from {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 @keyframes canvas-zoom-out {
-  from { transform: scale(1); opacity: 1; }
-  to { transform: scale(0.2); opacity: 0; }
+  from {
+    transform: scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: scale(0.2);
+    opacity: 0;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .canvas-modal,
@@ -3681,7 +3716,10 @@ button.chip {
   background: #1c1917;
   border-radius: 999px;
   box-shadow: 0 8px 24px rgb(15 17 21 / 0.18);
-  font: 12px/20px ui-sans-serif, system-ui, sans-serif;
+  font:
+    12px / 20px ui-sans-serif,
+    system-ui,
+    sans-serif;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3698,8 +3736,13 @@ button.chip {
   max-width: 100%;
   min-width: 0;
 }
-.card > .canvas-chip-row { padding: 8px 12px 0; }
-.user-bubble .canvas-chip-row { margin-top: 8px; width: 100%; }
+.card > .canvas-chip-row {
+  padding: 8px 12px 0;
+}
+.user-bubble .canvas-chip-row {
+  margin-top: 8px;
+  width: 100%;
+}
 .canvas-chip {
   display: inline-flex;
   align-items: center;
@@ -3720,7 +3763,9 @@ button.chip {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.user-bubble .canvas-chip { background: transparent; }
+.user-bubble .canvas-chip {
+  background: transparent;
+}
 .canvas-chip button {
   border: 0;
   background: transparent;

@@ -1,7 +1,21 @@
 import { useId, useState, type ReactNode } from 'react'
 import { Collapse } from './Collapse'
 import { fileChange, type ActivitySegment, type FileChange } from './follow'
-import { OPEN_TOOL_STATES, isShell, statusLabel, toolPresentation, toolStatus } from './activity'
+import {
+  canvasEditCall,
+  canvasReadCall,
+  canvasWriteCall,
+  fileEditCall,
+  fileReadCall,
+  fileWriteCall,
+  grepCall,
+  OPEN_TOOL_STATES,
+  isShell,
+  statusLabel,
+  toolPresentation,
+  toolStatus,
+  type PresentedCall,
+} from './activity'
 import { useI18n } from './locale'
 import type { WorkTicket } from './work'
 import { type ThinkSegment, type ToolSegment } from './types'
@@ -106,6 +120,90 @@ interface ToolRowProps {
   stale?: boolean
 }
 
+function FileReadLabel({ detail }: { detail: { path: string; span: string } }) {
+  return (
+    <span className="official-label call-label file-call">
+      <span className="call-verb">Read</span>
+      <span className="call-target">{detail.path}</span>
+      {detail.span ? <span className="call-lines">{detail.span}</span> : null}
+    </span>
+  )
+}
+
+function FileEditLabel({ detail }: { detail: { path: string; added: number; removed: number } }) {
+  return (
+    <span className="official-label call-label file-call">
+      <span className="call-verb">Edit</span>
+      <span className="call-target">{detail.path}</span>
+      {detail.added > 0 ? <span className="diff-plus">+{detail.added}</span> : null}
+      {detail.removed > 0 ? <span className="diff-minus">-{detail.removed}</span> : null}
+    </span>
+  )
+}
+
+function FileWriteLabel({ detail }: { detail: { path: string; added: number } }) {
+  return (
+    <span className="official-label call-label file-call">
+      <span className="call-verb">Write</span>
+      <span className="call-target">{detail.path}</span>
+      {detail.added > 0 ? <span className="diff-plus">+{detail.added}</span> : null}
+    </span>
+  )
+}
+
+function GrepLabel({ detail }: { detail: { pattern: string; where: string } }) {
+  return (
+    <span className="official-label call-label file-call">
+      <span className="call-verb">Grep</span>
+      <span className="call-target">{detail.pattern}</span>
+      {detail.where ? <span className="call-lines">in {detail.where}</span> : null}
+    </span>
+  )
+}
+
+function CanvasReadLabel({ detail }: { detail: { path: string } }) {
+  return (
+    <span className="official-label call-label canvas-call">
+      <span className="call-tool">canvas_read</span>
+      <span className="call-target">{detail.path || 'files'}</span>
+    </span>
+  )
+}
+
+function CanvasEditLabel({ detail }: { detail: { path: string; added: number; removed: number } }) {
+  return (
+    <span className="official-label call-label canvas-call">
+      <span className="call-tool">canvas_edit</span>
+      <span className="call-target">{detail.path}</span>
+      {detail.added > 0 ? <span className="diff-plus">+{detail.added}</span> : null}
+      {detail.removed > 0 ? <span className="diff-minus">-{detail.removed}</span> : null}
+    </span>
+  )
+}
+
+function CanvasWriteLabel({ detail }: { detail: { files: string; added: number | null; remove: string } }) {
+  return (
+    <span className="official-label call-label canvas-call">
+      <span className="call-tool">canvas_write</span>
+      {detail.files ? <span className="call-target">{detail.files}</span> : null}
+      {detail.added != null && detail.added > 0 ? <span className="diff-plus">+{detail.added}</span> : null}
+      {detail.remove ? <span className="call-lines">remove {detail.remove}</span> : null}
+    </span>
+  )
+}
+
+fileReadCall.show(detail => <FileReadLabel detail={detail} />)
+fileEditCall.show(detail => <FileEditLabel detail={detail} />)
+fileWriteCall.show(detail => <FileWriteLabel detail={detail} />)
+grepCall.show(detail => <GrepLabel detail={detail} />)
+canvasReadCall.show(detail => <CanvasReadLabel detail={detail} />)
+canvasEditCall.show(detail => <CanvasEditLabel detail={detail} />)
+canvasWriteCall.show(detail => <CanvasWriteLabel detail={detail} />)
+
+function CallLabel({ detail }: { detail: PresentedCall }) {
+  return detail.view() as ReactNode
+}
+
 export function ToolCallRow(props: ToolRowProps) {
   const [open, setOpen] = useState(false)
   const [argsOpen, setArgsOpen] = useState(false)
@@ -136,12 +234,11 @@ export function ToolCallRowView({
   const view = toolPresentation(segment, cwd, tickets)
   const change = fileChange({ ...segment, args: view.args, result: view.output })
   const fallback = isShell(segment.name) ? t('activity.runCommand') : view.title
-  const title =
+  const phrase =
     view.description ||
     (view.todos.length ? t('activity.updatePlan') : '') ||
     (view.ticket ? view.ticket.summary : '') ||
-    change?.name ||
-    fallback
+    (view.detail ? '' : change?.name || fallback)
   const exceptional = ['failed', 'cancelled', 'unknown'].includes(view.status)
   return (
     <ActivityDisclosure
@@ -157,7 +254,11 @@ export function ToolCallRowView({
             <ToolIcon />
             <Chevron />
           </span>
-          <span className="official-label">{title}</span>
+          {view.detail && phrase === '' ? (
+            <CallLabel detail={view.detail} />
+          ) : (
+            <span className="official-label">{phrase}</span>
+          )}
           {exceptional ? (
             <span className="activity-status">
               {statusLabel(view.status, t)}
