@@ -56,7 +56,7 @@ const catalogs: Record<Locale, Record<MessageKey, string>> = { en, zh }
 type CatalogPiece = { en: Record<string, string>; zh: Record<string, string> }
 const copyListeners = new Set<() => void>()
 
-function catalogPiece(mod: Record<string, unknown>): CatalogPiece | null {
+function catalogPiece(mod: object): CatalogPiece | null {
   for (const value of Object.values(mod)) {
     if (!value || typeof value !== 'object') continue
     const record = value as { en?: unknown; zh?: unknown }
@@ -81,17 +81,6 @@ export function subscribeCopy(listener: () => void) {
   }
 }
 
-declare global {
-  interface ImportMeta {
-    readonly hot?: {
-      accept(
-        deps: string[],
-        callback: (modules: Array<Record<string, unknown> | undefined> | undefined) => void,
-      ): void
-    }
-  }
-}
-
 if (import.meta.hot) {
   import.meta.hot.accept(
     [
@@ -111,7 +100,7 @@ if (import.meta.hot) {
       './work.ts',
     ],
     modules => {
-      for (const mod of modules ?? []) {
+      for (const mod of modules) {
         const piece = mod ? catalogPiece(mod) : null
         if (piece) applyCatalog(piece)
       }
