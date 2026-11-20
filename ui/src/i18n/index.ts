@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { activity } from './activity.ts'
 import { bot } from './bot.ts'
 import { chrome } from './chrome.ts'
