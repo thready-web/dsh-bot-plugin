@@ -1652,6 +1652,40 @@ test('a live child without turn/end renews its lease across a gap longer than le
   }
 })
 
+test('a completed turn without a report continues once, and a second stop is not a lease expiry', async () => {
+  const ctx = boot()
+  try {
+    const job = await dispatched(ctx, 'write the pages', 'quiet-stop')
+    ctx.work.observeSession(job.childSessionId, ctx.world.seeUser(job.childSessionId, job.nativeMessageId, 1))
+    ctx.work.observeSession(job.childSessionId, ctx.world.endTurn(job.childSessionId, 1, 'completed'))
+    ctx.clock.ms += DEFAULT_WORK_BUDGET.leaseMs + 5_000
+    const pushes = ctx.world.pushes.length
+    await ctx.work.tick()
+    assert.notEqual(ctx.work.detail(job.ticketId)!.ticket.status, 'failed')
+    assert.equal(ctx.world.pushes.length, pushes + 1)
+    const continued = ctx.world.pushes.at(-1)!
+    assert.match(continued.text, /\[foundations:continue\]/)
+    assert.match(continued.text, /not a timeout/)
+    assert.equal(
+      ctx.world.cancels.some(call => call.reason === 'worker-expire:lease'),
+      false,
+    )
+    ctx.work.observeSession(job.childSessionId, ctx.world.seeUser(job.childSessionId, continued.messageId, 2))
+    ctx.work.observeSession(job.childSessionId, ctx.world.endTurn(job.childSessionId, 2, 'completed'))
+    await ctx.work.tick()
+    const failed = ctx.work.detail(job.ticketId)!
+    assert.equal(failed.ticket.status, 'failed')
+    const failure = failed.events.find((event: { kind?: string }) => event.kind === 'failure')
+    assert.match(String(failure?.text), /not a lease or heartbeat timeout/)
+    assert.equal(
+      ctx.world.cancels.some(call => call.reason === 'worker-expire:no-report'),
+      true,
+    )
+  } finally {
+    ctx.close()
+  }
+})
+
 test('a dead child can still lease-expire and is cancelled', async () => {
   const ctx = boot()
   try {

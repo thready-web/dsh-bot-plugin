@@ -1524,6 +1524,8 @@ function hostFailureText(reason: string) {
   if (reason === 'tokens') return 'The worker hit its token limit and this round has stopped.'
   if (reason === 'grant-denied') return 'The main session refused more budget and this round has stopped.'
   if (reason === 'lease') return 'The worker lease expired and this round has stopped.'
+  if (reason === 'no-report')
+    return 'The worker ended its turn without a report. The session was still running; this was not a lease or heartbeat timeout.'
   if (reason === 'enqueue-wall') return 'The task entered the queue and did not start before the time limit.'
   if (reason === 'reserve-wall')
     return 'The reserved start did not create a worker before the time limit, so the slot was released.'

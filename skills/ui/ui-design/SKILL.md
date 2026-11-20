@@ -14,11 +14,13 @@ This contract overrides every catalog skill. Catalog skills are taste and critiq
 - At most 64 files, 1.5 MiB each, 8 MiB together
 - Relative URLs only, such as `styles.css` and `hero.png`
 - Read the current preview with `canvas_read`. Do not search the disk for `cnv_` or a canvas store
-- Change an existing HTML or CSS file with `canvas_edit`. Do not paste the whole file into a tool argument
-- `canvas_write` `source` is a workspace-relative path. The host reads the file. `text` is only for a short new HTML or CSS file. `body` base64 is only for images and fonts
-- Call `canvas_publish` once, after every file for this task is staged. A second call on the same ticket is rejected
+- New HTML and CSS go through `canvas_write` `text`, up to the 1.5 MiB file cap
+- Change an existing HTML or CSS file with `canvas_edit`. Do not paste the whole file into `canvas_edit`
+- Images and fonts use `canvas_write` `body` (base64). `source` is only for a file that is already in the workspace
+- This worker has no `write`, `edit`, or bash tool. A file on disk is not the preview
+- Call `canvas_publish` once, after every file for this task is staged. It files the result report. After it succeeds, stop. Do not keep editing and do not call `foundations_report`
 - The first publish is a full snapshot. A later ticket publishes a delta of the staged set
-- Do not use bash. This worker has no command tool. Do not write a browser probe
+- Do not write a browser probe
 
 ## Forbidden
 
@@ -31,8 +33,8 @@ This contract overrides every catalog skill. Catalog skills are taste and critiq
 
 1. Load this skill first.
 2. Load at most two catalog skills that match the request. Do not load the whole catalog.
-3. Read existing files with `canvas_read`. Change them with `canvas_edit`. Put a new image, font, or long file in the workspace and stage it with `canvas_write` `source`.
-4. Call `canvas_publish` once at the end. Do not publish after each file.
+3. Read the current preview with `canvas_read`. Read reference files already in the workspace with `read` only. Stage new HTML and CSS with `canvas_write` `text`. Change an existing preview file with `canvas_edit`. Stage images and fonts with `canvas_write` `body`.
+4. Call `canvas_publish` once at the end. Do not publish after each file. That call files the result. Stop after it succeeds.
    If the briefing contains `[canvas-target]` blocks, change only those nodes and the CSS rules that style them. Leave every other element as it is.
 5. A budget pause is not a failed preview. Wait for the grant. Do not invent a failure revision.
 

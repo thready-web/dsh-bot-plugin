@@ -77,6 +77,21 @@ export function openLedger(file: string) {
     tasks() {
       return tasksOf().sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
     },
+    /** Drop idempotency rows and tasks that point at one deleted session. */
+    forgetSession(sessionId: string) {
+      let changed = false
+      for (const [key, record] of Object.entries(state.sessions)) {
+        if (record.sessionId !== sessionId) continue
+        delete state.sessions[key]
+        changed = true
+      }
+      for (const [key, record] of Object.entries(state.tasks)) {
+        if (record.sessionId !== sessionId) continue
+        delete state.tasks[key]
+        changed = true
+      }
+      if (changed) save()
+    },
   }
 }
 

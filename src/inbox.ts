@@ -4,6 +4,7 @@
  * This module does not keep a second execution queue.
  */
 
+import { isFenced } from './deleting.ts'
 import type { HostContext } from './host.ts'
 import {
   createLogSource,
@@ -115,6 +116,16 @@ async function deliverUser(
   text: string,
   method: 'followup' | 'steer',
 ) {
+  if (isFenced(sessionId)) {
+    return {
+      ok: false,
+      ambiguous: false,
+      seq: null,
+      error: 'deleting',
+      target: method === 'steer' ? 'next-step' : 'next-turn',
+      wakeup: false,
+    }
+  }
   const loaded = await loadAgent(ctx, sessionId)
   const agent = loaded.agent
   try {

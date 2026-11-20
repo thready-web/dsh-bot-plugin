@@ -48,11 +48,25 @@ export function NewSessionSheet({
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId, personaText, idempotencyKey: crypto.randomUUID() }),
     })
-    const note =
-      opened.body.ok === true
-        ? text('new.created', { name: botName })
-        : foundationsError(opened.body, text('new.personaFailed'))
-    onCreated(sessionId, note, botName)
+    if (opened.body.ok !== true) {
+      setError(foundationsError(opened.body, text('new.personaFailed')))
+      setBusy(false)
+      return
+    }
+    const kickoff = task.trim() || text('new.kickoff')
+    const prompted = await api('/tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() },
+      body: JSON.stringify({ sessionId, text: kickoff }),
+    })
+    if (prompted.status !== 202) {
+      const execution = prompted.body.execution as { reason?: string } | undefined
+      const taskRecord = prompted.body.task as { reason?: string } | undefined
+      setError(execution?.reason || taskRecord?.reason || text('new.turnFailed'))
+      setBusy(false)
+      return
+    }
+    onCreated(sessionId, text('new.created', { name: botName }), botName)
   }
 
   return (

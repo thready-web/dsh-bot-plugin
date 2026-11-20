@@ -305,6 +305,40 @@ export class CanvasStore {
     this.db.close()
   }
 
+  /** Drop canvases owned by these sessions, then blobs no remaining file uses. */
+  deleteSessions(sessionIds: readonly string[]) {
+    const ids = [...new Set(sessionIds.filter(id => id !== ''))]
+    if (ids.length === 0) return
+    const marks = ids.map(() => '?').join(', ')
+    let canvasIds: string[] = []
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      canvasIds = (
+        this.db.prepare(`SELECT id FROM canvases WHERE session_id IN (${marks})`).all(...ids) as Array<{ id: string }>
+      ).map(row => row.id)
+      if (canvasIds.length > 0) {
+        const canvasMarks = canvasIds.map(() => '?').join(', ')
+        this.db.prepare(`DELETE FROM canvas_files WHERE canvas_id IN (${canvasMarks})`).run(...canvasIds)
+        this.db.prepare(`DELETE FROM canvas_drafts WHERE canvas_id IN (${canvasMarks})`).run(...canvasIds)
+        this.db.prepare(`DELETE FROM canvas_tokens WHERE canvas_id IN (${canvasMarks})`).run(...canvasIds)
+        this.db.prepare(`DELETE FROM canvas_revisions WHERE canvas_id IN (${canvasMarks})`).run(...canvasIds)
+        this.db.prepare(`DELETE FROM canvases WHERE id IN (${canvasMarks})`).run(...canvasIds)
+      }
+      this.db.prepare('DELETE FROM canvas_blobs WHERE hash NOT IN (SELECT hash FROM canvas_files)').run()
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        /* already rolled back */
+      }
+      throw error
+    }
+    for (const [id, notice] of this.notices) {
+      if (ids.includes(notice.sessionId) || canvasIds.includes(id)) this.notices.delete(id)
+    }
+  }
+
   /** Latest renderable revision per canvas, so a restarted process can still notify. */
   seed() {
     const rows = this.db

@@ -1,9 +1,19 @@
 /** Remove one session's on-disk log. DSH has no delete RPC; session/list rescans these directories. */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 
 const SESSION_ID = /^session-[A-Za-z0-9-]+$/
+const STORED_ID = /^(?:session|worker)-[A-Za-z0-9-]+$/
 
 /**
  * Same project-directory key as @deepseek-ai/dsh-session-persistence-jsonl.
@@ -92,6 +102,33 @@ export function purgeSessionFiles(input: {
     if (!lstatSync(input.cacheFile).isSymbolicLink()) rmSync(input.cacheFile, { force: true })
   }
   forgetWorkspaceId(input.workspaceFile, input.sessionId)
+}
+
+/**
+ * Remove one session's log directory, project cache, and workspace.json id.
+ * The directory is found by name under the sessions root, so a worker does not
+ * need the owner's cwd. The workspace directory itself stays.
+ * @param {{ sessionsRoot: string, stateRoot: string, sessionId: string }} input
+ */
+export function eraseSessionStorage(input: { sessionsRoot: string; stateRoot: string; sessionId: string }) {
+  if (!STORED_ID.test(input.sessionId)) throw new Error('session id is not a storage name')
+  if (input.sessionsRoot !== '' && existsSync(input.sessionsRoot)) {
+    const realRoot = realpathSync(input.sessionsRoot)
+    for (const project of readdirSync(realRoot)) {
+      const dir = join(realRoot, project, input.sessionId)
+      if (!existsSync(dir)) continue
+      if (lstatSync(dir).isSymbolicLink()) throw new Error('refusing to delete a symlink')
+      const realDir = realpathSync(dir)
+      if (!inside(realRoot, realDir)) throw new Error('session path escapes the session root')
+      rmSync(realDir, { recursive: true, force: true })
+    }
+  }
+  const cache =
+    input.stateRoot === ''
+      ? ''
+      : join(input.stateRoot, 'storages', 'session_projcache', 'sessions', `${input.sessionId}.json`)
+  if (cache !== '' && existsSync(cache) && !lstatSync(cache).isSymbolicLink()) rmSync(cache, { force: true })
+  if (input.stateRoot !== '') forgetWorkspaceId(join(input.stateRoot, 'storages', 'workspace.json'), input.sessionId)
 }
 
 /**

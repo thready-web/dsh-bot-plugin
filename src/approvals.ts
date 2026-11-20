@@ -162,6 +162,15 @@ export function createApprovalAnswerer() {
     return { ok: true, path: 'approval', outcome: input.outcome, requestId: entry.requestId }
   }
 
+  function abandonSession(sessionId: string) {
+    for (const entry of [...pending]) {
+      if (entry.sessionId !== sessionId) continue
+      if (!detach(entry)) continue
+      remember(entry, 'unavailable')
+      entry.resolve('unavailable')
+    }
+  }
+
   function snapshot(sessionId?: string): ApprovalSnapshot[] {
     const open = [...pending]
       .filter(entry => !sessionId || entry.sessionId === sessionId)
@@ -194,6 +203,7 @@ export function createApprovalAnswerer() {
     listen,
     handle,
     submit,
+    abandonSession,
     snapshot,
     pendingCount() {
       return pending.size

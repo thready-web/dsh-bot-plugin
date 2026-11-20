@@ -250,9 +250,10 @@ test('a timed-out turn keeps the retry chain and the terminal failure', () => {
     }),
   ])
   assert.equal(state.completed[3], 193)
-  assert.deepEqual(state.failures[3], { message: 'Request timed out.', code: 'TIMEOUT' })
+  assert.deepEqual(state.failures[3], { message: 'Request timed out.', code: 'TIMEOUT', seq: 5 })
   assert.equal(state.retries[3]?.length, 1)
   assert.equal(state.retries[3]?.[0]?.state, 'started')
+  assert.equal(state.retries[3]?.[0]?.seq, 3)
   assert.equal(state.retries[3]?.[0]?.delayMs, 8483)
   assert.equal(state.drafting, false)
 })

@@ -1,6 +1,8 @@
 import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from './api'
+import { readDeleteEvents, type DeleteEvent } from './delete-job'
+import { forgetLogCache } from './sync/checkpoint'
 import { foundations, foundationsError } from './foundations'
 import { useI18n } from './locale'
 import {
@@ -198,6 +200,7 @@ export function App() {
   const [reason, setReason] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [sessionMenu, setSessionMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  const [deleteJob, setDeleteJob] = useState<{ id: string; phase: string; percent: number; error: string } | null>(null)
   const [settings, setSettings] = useState<'permission' | 'authorization' | 'cua' | 'memory' | null>(null)
   const [approvals, setApprovals] = useState<ToolApprovalView[]>([])
   const [questionWaits, setQuestionWaits] = useState<
@@ -219,7 +222,7 @@ export function App() {
   const [canvasPulse, setCanvasPulse] = useState(0)
   const [filesOpen, setFilesOpen] = useState(false)
   const [archived, setArchived] = useState<ReadonlySet<string>>(() => new Set())
-  const [blanksOpen, setBlanksOpen] = useState(false)
+  const [freshBots, setFreshBots] = useState<ReadonlySet<string>>(() => new Set())
   const [setupOpen, setSetupOpen] = useState(false)
   const [botChat, setBotChat] = useState(false)
   const [setupNote, setSetupNote] = useState('')
@@ -876,22 +879,13 @@ export function App() {
     const needle = query.trim().toLowerCase()
     return items.filter(item => {
       if (isWorkerSession(item.sessionId) || archived.has(item.sessionId)) return false
+      if (item.blank === true && !freshBots.has(item.sessionId)) return false
       if (!needle) return true
       const name = sessionName(item)
       return [name, item.cwd ?? '', previews[item.sessionId] ?? ''].join(' ').toLowerCase().includes(needle)
     })
-  }, [items, query, titles, previews, archived, botNames])
-  const conversations = visible.filter(item => !item.blank)
-  const blanks = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    return items.filter(item => {
-      if (item.blank !== true || isWorkerSession(item.sessionId)) return false
-      if (!needle) return true
-      const name = sessionName(item)
-      return [name, item.cwd ?? ''].join(' ').toLowerCase().includes(needle)
-    })
-  }, [items, query, titles, botNames])
-  const showBlanks = blanksOpen || query.trim() !== ''
+  }, [items, query, titles, previews, archived, botNames, freshBots])
+  const conversations = visible
   const mentionTargets = useMemo(() => {
     if (!sessionId || !bots.has(sessionId)) return []
     return items.flatMap(item => {
@@ -899,12 +893,13 @@ export function App() {
         !bots.has(item.sessionId) ||
         item.sessionId === sessionId ||
         archived.has(item.sessionId) ||
+        (item.blank === true && !freshBots.has(item.sessionId)) ||
         isWorkerSession(item.sessionId)
       )
         return []
       return [{ sessionId: item.sessionId, label: sessionName(item) }]
     })
-  }, [items, bots, sessionId, archived, botNames, titles])
+  }, [items, bots, sessionId, archived, botNames, titles, freshBots])
   const mention = sessionId && bots.has(sessionId) ? mentionQuery(draft, cursor) : null
   const mentionKey = mention ? `${mention.start}:${mention.query}` : ''
   const mentionChoices = mention ? filterMentions(mentionTargets, mention.query) : []
@@ -914,6 +909,21 @@ export function App() {
   useEffect(() => {
     setMentionIndex(0)
   }, [mentionKey])
+
+  useEffect(() => {
+    setFreshBots(current => {
+      let changed = false
+      const next = new Set(current)
+      for (const id of current) {
+        const item = items.find(entry => entry.sessionId === id)
+        if (item && item.blank !== true) {
+          next.delete(id)
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [items])
 
   function acceptSessions(rows: SessionItem[] | undefined) {
     const gone = deletedSessions.current
@@ -947,98 +957,108 @@ export function App() {
     if (sessionId === id) selectSession('')
   }
 
-  function rememberArchived(ids: unknown, removed: string[]) {
-    const next = new Set(archived)
-    for (const id of removed) next.add(id)
-    if (Array.isArray(ids)) {
-      for (const id of ids) if (typeof id === 'string') next.add(id)
-    }
-    setArchived(next)
-    if (removed.includes(sessionId)) selectSession('')
-  }
-
-  async function removeBlank(id: string) {
-    const result = await api(`/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' })
-    if (result.status !== 200) {
-      const upstream = result.body.upstream as { message?: string } | undefined
-      setSessionNote(
-        upstream?.message ||
-          (result.body.error === 'not_blank' ? t('session.notBlankArchive') : t('session.archiveFailed')),
-      )
-      return
-    }
-    setSessionNote('')
-    rememberArchived(result.body.archivedSessionIds, [id])
-  }
-
   function openSessionMenu(event: { preventDefault(): void; clientX: number; clientY: number }, id: string) {
     event.preventDefault()
     setSessionMenu({ id, x: event.clientX, y: event.clientY })
   }
 
-  async function deleteSession(id: string) {
-    const result = await api(`/sessions/${encodeURIComponent(id)}/delete`, { method: 'POST' })
-    if (result.status !== 200) {
-      const error = result.body.error
-      const message = typeof result.body.message === 'string' ? result.body.message : ''
-      setSessionNote(
-        error === 'running'
-          ? t('session.deleteRunning')
-          : error === 'attached'
-            ? t('session.deleteAttached')
-            : message || t('session.deleteFailed'),
-      )
-      return
+  function deleteLabel(phase: string) {
+    if (phase === 'fence') return t('session.deleteFence')
+    if (phase === 'stop') return t('session.deleteStop')
+    if (phase === 'idle') return t('session.deleteIdle')
+    if (phase === 'store') return t('session.deleteStore')
+    if (phase === 'canvas') return t('session.deleteCanvas')
+    if (phase === 'files') return t('session.deleteFiles')
+    if (phase === 'cache') return t('session.deleteCache')
+    if (phase === 'done') return t('session.deleteDone')
+    return t('session.deleteProgress')
+  }
+
+  function deleteError(event: DeleteEvent) {
+    if (event.error === 'running') return t('session.deleteBusy')
+    if (event.error === 'session_unreadable') return t('session.deleteUnreadable')
+    return event.error || t('session.deleteFailed')
+  }
+
+  async function finishDelete(id: string, event: DeleteEvent) {
+    if (event.phase === 'error') {
+      setDeleteJob({ id, phase: 'error', percent: event.percent, error: deleteError(event) })
+      return false
     }
+    if (event.phase !== 'done') {
+      setDeleteJob({ id, phase: event.phase, percent: event.percent, error: t('session.deleteFailed') })
+      return false
+    }
+    const gone = event.deletedSessionIds?.length ? event.deletedSessionIds : [id]
+    setDeleteJob({ id, phase: 'cache', percent: 94, error: '' })
+    try {
+      await forgetLogCache(gone)
+    } catch {
+      /* the server copy is already gone; the browser cache expires by size */
+    }
+    for (const sessionId of gone) forgetSession(sessionId)
     setSessionNote('')
-    forgetSession(id)
+    setDeleteJob(null)
+    return true
   }
 
-  async function removeBlanks() {
-    if (blanks.length === 0) return
-    if (!window.confirm(t('session.archiveConfirm', { count: String(blanks.length) }))) return
-    const removed: string[] = []
-    let archivedIds: unknown = []
-    for (const item of blanks) {
-      const result = await api(`/sessions/${encodeURIComponent(item.sessionId)}/archive`, { method: 'POST' })
-      if (result.status !== 200) {
-        const upstream = result.body.upstream as { message?: string } | undefined
-        setSessionNote(upstream?.message || t('session.archiveSomeFailed'))
-        break
+  async function runDelete(id: string) {
+    if (deleteJob && deleteJob.error === '' && deleteJob.id !== id) return false
+    setDeleteJob({ id, phase: 'fence', percent: 8, error: '' })
+    try {
+      const response = await fetch(`/dsh-bot/api/sessions/${encodeURIComponent(id)}/delete`, {
+        method: 'POST',
+        headers: { accept: 'application/x-ndjson' },
+      })
+      const type = response.headers.get('content-type') ?? ''
+      if (!type.includes('ndjson')) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string }
+        setDeleteJob({
+          id,
+          phase: 'error',
+          percent: 8,
+          error: body.message || body.error || t('session.deleteFailed'),
+        })
+        return false
       }
-      removed.push(item.sessionId)
-      archivedIds = result.body.archivedSessionIds
+      const last = await readDeleteEvents(response, event => {
+        if (event.phase === 'done') return
+        setDeleteJob({
+          id,
+          phase: event.phase,
+          percent: event.percent,
+          error: event.phase === 'error' ? deleteError(event) : '',
+        })
+      })
+      if (!last) return recoverDelete(id)
+      return finishDelete(id, last)
+    } catch {
+      return recoverDelete(id)
     }
-    if (removed.length > 0) rememberArchived(archivedIds, removed)
   }
 
-  async function purgeBlank(id: string) {
-    const item = items.find(entry => entry.sessionId === id)
-    const name = titles[id] || baseName(item?.cwd) || t('session.blankName')
-    if (!window.confirm(t('session.purgeOneConfirm', { name }))) return
-    const result = await api(`/sessions/${encodeURIComponent(id)}/purge`, { method: 'POST' })
-    if (result.status !== 200) {
-      setSessionNote(result.body.error === 'not_blank' ? t('session.purgeNotBlank') : t('session.purgeFailed'))
-      return
-    }
-    forgetSession(id)
-  }
-
-  async function purgeBlanks() {
-    const targets = blanks.filter(item => item.blank === true)
-    if (targets.length === 0) return
-    if (!window.confirm(t('session.purgeAllConfirm', { count: String(targets.length) }))) return
-    const removed: string[] = []
-    for (const item of targets) {
-      const result = await api(`/sessions/${encodeURIComponent(item.sessionId)}/purge`, { method: 'POST' })
-      if (result.status !== 200) {
-        setSessionNote(t('session.purgeSomeFailed'))
-        break
+  async function recoverDelete(id: string) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const result = await api(`/sessions/${encodeURIComponent(id)}/delete`)
+      const phase = typeof result.body.phase === 'string' ? result.body.phase : 'absent'
+      if (phase === 'absent') break
+      const event: DeleteEvent = {
+        phase,
+        percent: typeof result.body.percent === 'number' ? result.body.percent : 8,
+        ...(typeof result.body.error === 'string' ? { error: result.body.error } : {}),
+        ...(Array.isArray(result.body.deletedSessionIds)
+          ? { deletedSessionIds: result.body.deletedSessionIds.filter(item => typeof item === 'string') }
+          : {}),
       }
-      removed.push(item.sessionId)
-      forgetSession(item.sessionId)
+      if (phase !== 'done' && phase !== 'error') {
+        setDeleteJob({ id, phase, percent: event.percent, error: '' })
+        await new Promise(resolve => setTimeout(resolve, 400))
+        continue
+      }
+      return finishDelete(id, event)
     }
-    if (removed.length === 0) return
+    setDeleteJob({ id, phase: 'error', percent: 8, error: t('session.deleteFailed') })
+    return false
   }
 
   async function finishCreate(id: string, note: string, name: string) {
@@ -1052,6 +1072,7 @@ export function App() {
         return next
       })
     }
+    setFreshBots(current => new Set(current).add(id))
     const listed = await api('/sessions')
     const value = listed.body.result as { value?: { items?: SessionItem[] } } | undefined
     setItems(acceptSessions(value?.value?.items))
@@ -1160,7 +1181,8 @@ export function App() {
 
   const turnLive = task?.status === 'accepted' && thread.drafting
   const workTickets = loadedWorkSession === sessionId ? works : []
-  const locked = composerLocked(turnLive, workTickets, isBotSession)
+  const deleteLocked = deleteJob?.id === sessionId
+  const locked = composerLocked(turnLive, workTickets, isBotSession) || deleteLocked
   const canSend = Boolean(sessionId) && execution.ready && draft.trim() !== '' && !locked
 
   function signalFor(item: { sessionId: string; running?: boolean }): 'run' | 'wait' | null {
@@ -1203,8 +1225,8 @@ export function App() {
         {sessionNote ? <p className="note">{sessionNote}</p> : null}
         {setupNote ? <p className="note ok">{setupNote}</p> : null}
         <ul className="sessions">
-          {conversations.length === 0 && blanks.length === 0 ? (
-            <li className="empty">{items.length ? t('session.noMatch') : t('session.none')}</li>
+          {conversations.length === 0 ? (
+            <li className="empty">{query.trim() ? t('session.noMatch') : t('session.none')}</li>
           ) : null}
           {conversations.map(item => {
             const name = sessionName(item)
@@ -1232,81 +1254,6 @@ export function App() {
               </li>
             )
           })}
-          {blanks.length > 0 ? (
-            <li className="blank-head">
-              <button type="button" aria-expanded={showBlanks} onClick={() => setBlanksOpen(value => !value)}>
-                {showBlanks ? t('session.hide') : t('session.show')}{' '}
-                {t('session.blankCount', { count: String(blanks.length) })}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void removeBlanks()
-                }}
-              >
-                {t('session.archiveAll')}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void purgeBlanks()
-                }}
-              >
-                {t('session.purgeAll')}
-              </button>
-            </li>
-          ) : null}
-          {showBlanks
-            ? blanks.map(item => {
-                const name = sessionName(item)
-                return (
-                  <li
-                    key={item.sessionId}
-                    className="session-row"
-                    onContextMenu={event => openSessionMenu(event, item.sessionId)}
-                  >
-                    <button
-                      type="button"
-                      className={item.sessionId === sessionId ? 'session selected' : 'session'}
-                      title={item.cwd || item.sessionId}
-                      onClick={() => selectSession(item.sessionId)}
-                    >
-                      <span className={bots.has(item.sessionId) ? 'mark bot-mark' : 'mark'}>
-                        {bots.has(item.sessionId) ? 'BOT' : Array.from(name)[0]}
-                      </span>
-                      <span className="copy">
-                        <span className="name">{name}</span>
-                        <span className="preview">
-                          {archived.has(item.sessionId) ? t('session.archived') : t('session.blank')}
-                        </span>
-                      </span>
-                    </button>
-                    {archived.has(item.sessionId) ? null : (
-                      <button
-                        type="button"
-                        className="session-delete"
-                        aria-label={t('session.archiveLabel', { name })}
-                        onClick={() => {
-                          void removeBlank(item.sessionId)
-                        }}
-                      >
-                        {t('session.archive')}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="session-delete purge"
-                      aria-label={t('session.purgeLabel', { name })}
-                      onClick={() => {
-                        void purgeBlank(item.sessionId)
-                      }}
-                    >
-                      {t('session.purge')}
-                    </button>
-                  </li>
-                )
-              })
-            : null}
         </ul>
         {statusOpen ? <Status health={health} usage={usage} execution={execution} model={thread.model} /> : null}
         <div className="me-row">
@@ -1768,6 +1715,32 @@ export function App() {
       {sessionId && !botChat ? (
         <MemoryPanel open={settings === 'memory'} sessionId={sessionId} onClose={() => setSettings(null)} />
       ) : null}
+      {deleteJob
+        ? createPortal(
+            <div className="delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-progress-title">
+              <div className="delete-card">
+                <h2 id="delete-progress-title">{t('session.deleteProgress')}</h2>
+                <p>{deleteJob.error || deleteLabel(deleteJob.phase)}</p>
+                <div
+                  className="delete-track"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={deleteJob.percent}
+                  aria-valuetext={deleteLabel(deleteJob.phase)}
+                >
+                  <div className="delete-bar" style={{ width: `${Math.max(0, Math.min(100, deleteJob.percent))}%` }} />
+                </div>
+                {deleteJob.error ? (
+                  <button type="button" onClick={() => void runDelete(deleteJob.id)}>
+                    {t('session.deleteRetry')}
+                  </button>
+                ) : null}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
       {sessionMenu ? (
         <div
           ref={sessionMenuRef}
@@ -1783,7 +1756,7 @@ export function App() {
             onClick={() => {
               const id = sessionMenu.id
               setSessionMenu(null)
-              void deleteSession(id)
+              void runDelete(id)
             }}
           >
             {t('session.delete')}

@@ -135,6 +135,30 @@ async function evictChunks(store: IDBObjectStore) {
   }
 }
 
+/** Drop one session's cached events and cursor. Chunks stay until the size cap evicts them. */
+export async function forgetLogCache(sessionIds: readonly string[], factory?: IDBFactory) {
+  const opened = await openLogDbSafe(factory)
+  if (opened.ok !== true) return
+  const db = opened.db
+  try {
+    await withStore(db, 'log_events', 'readwrite', async store => {
+      const index = store.index('bySession')
+      for (const sessionId of sessionIds) {
+        const rows = await requestOf<Array<{ sessionId: string; seq: number }>>(index.getAll(sessionId))
+        for (const row of rows) {
+          if (!row || row.sessionId !== sessionId) continue
+          await requestOf(store.delete([row.sessionId, row.seq]))
+        }
+      }
+    })
+    await withStore(db, 'log_cursors', 'readwrite', async store => {
+      for (const sessionId of sessionIds) await requestOf(store.delete(sessionId))
+    })
+  } finally {
+    db.close()
+  }
+}
+
 function openLogDbSafe(factory?: IDBFactory): Promise<OpenLogDbResult> {
   try {
     return openLogDb(factory)

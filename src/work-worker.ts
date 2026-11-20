@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { sha256 } from './fs-safe.ts'
+import { isFenced } from './deleting.ts'
 import { toolError } from './errors.ts'
 import { isCanvasWorkerBriefing } from './canvas-tools.ts'
 import { createTicketBook } from './work-tickets.ts'
@@ -23,6 +24,8 @@ import {
 } from './work-ledger.ts'
 
 const KINDS = new Set(['progress', 'question', 'artifact', 'result', 'failure'])
+const CONTINUE_TEXT =
+  '[foundations:continue] You ended the turn before foundations_report. The ticket is still running. This is not a timeout. Continue the same task from the current files. Do not repeat completed writes. Finish the task, then call foundations_report. If this is a canvas preview, it is unfinished until canvas_publish succeeds; a workspace file is not the preview.'
 const OPEN_TICKET_STATUSES = ['accepted', 'enqueued', 'started', 'needs_user', 'ready']
 const LABEL: Record<string, string> = {
   accepted: 'accepted',
@@ -194,6 +197,7 @@ export function createWorkRuntime(
     admit,
     promoteQueued,
     observeSession,
+    silence,
     observeClaimed,
     gateStep,
     waitForBudget,
@@ -452,7 +456,7 @@ export function createWorkRuntime(
     const started: string[] = []
     const launched: Promise<unknown>[] = []
     const launch = (ticket: Record<string, any> | null) => {
-      if (!ticket?.id || starting.has(ticket.id)) return
+      if (!ticket?.id || starting.has(ticket.id) || isFenced(ticket.owner_session_id)) return
       started.push(ticket.id)
       launched.push(
         startReserved(ticket).catch(error => {
@@ -469,6 +473,7 @@ export function createWorkRuntime(
       const claimed = await store.write('work', () => {
         for (const ticket of book.nextPromotable()) {
           if (book.slotHeld(ticket)) continue
+          if (isFenced(ticket.owner_session_id)) continue
           if (ticket.status !== 'accepted' && ticket.status !== 'needs_user') continue
           if (!hasSlot(ticket.owner_session_id)) continue
           return book.reserveSlot(ticket.id)
@@ -931,6 +936,8 @@ export function createWorkRuntime(
     await reconcileInputs(book, deps)
     await reconcileNotices(book, deps)
     await renewLiveLeases()
+    const quiet = await continueQuietWorkers()
+    await stopExpiredChildren(quiet)
     const expired = await store.write('work', () => book.expireQuiet())
     await stopExpiredChildren(expired)
     for (const owner of book.ownerIds()) {
@@ -939,6 +946,128 @@ export function createWorkRuntime(
     for (const child of book.childIdsForReconcile()) await reconcileChild(child)
     for (const owner of book.ownerIdsForReconcile()) await reconcileOwner(owner)
     await promoteQueued()
+  }
+
+  async function isChildPresent(sessionId: string) {
+    if (options.childPresent) {
+      try {
+        return (await options.childPresent(sessionId)) === true
+      } catch {
+        return false
+      }
+    }
+    return options.snapshot != null
+  }
+
+  function extensionOpen(ticket: Record<string, any>) {
+    try {
+      return JSON.parse(ticket.budget_json ?? '')?.extension === 'open'
+    } catch {
+      return false
+    }
+  }
+
+  function hasTerminalReport(ticketId: string, attemptId: string) {
+    const detail = book.detail(ticketId)
+    return (detail?.events ?? []).some(
+      (event: Record<string, any>) =>
+        event.attempt_id === attemptId &&
+        (event.kind === 'result' || event.kind === 'failure' || event.kind === 'question') &&
+        event.apply_status !== 'stale',
+    )
+  }
+
+  function continueInput(ticketId: string) {
+    const rows = store.db
+      .prepare(`SELECT * FROM work_inputs WHERE ticket_id = ? AND kind = 'supply' ORDER BY created_at`)
+      .all(ticketId) as Array<Record<string, any>>
+    return rows.find(row => String(book.readBriefing(row.payload_hash)).startsWith('[foundations:continue]')) ?? null
+  }
+
+  /**
+   * A completed turn with no result, question, or failure is the worker stopping
+   * early, not a dead process. Continue that same ticket once. A second completed
+   * turn with no report fails as no-report, so the main session does not describe
+   * a lease or heartbeat timeout. An open turn still renews through renewLiveLeases.
+   * A child that is gone still lease-expires.
+   */
+  async function continueQuietWorkers() {
+    const failed: Array<{ ticketId: string; reason: string; childSessionId: string | null }> = []
+    for (const child of book.childIdsForReconcile()) {
+      const attempt = book.attemptForChild(child)
+      if (!attempt || (attempt.status !== 'started' && attempt.status !== 'enqueued')) continue
+      const ticket = book.ticket(attempt.ticket_id)
+      if (!ticket || (ticket.status !== 'started' && ticket.status !== 'enqueued')) continue
+      if (ticket.active_attempt_id !== attempt.id) continue
+      if (extensionOpen(ticket)) continue
+      if (!(await isChildPresent(child))) continue
+      let events: Array<Record<string, any>> = []
+      try {
+        events = options.snapshot ? await options.snapshot(child) : []
+      } catch {
+        continue
+      }
+      const ended = latestEndedTurn(events)
+      if (!ended || ended.reason !== 'completed') continue
+      if (hasTerminalReport(ticket.id, attempt.id)) continue
+      const nudge = continueInput(ticket.id)
+      if (!nudge) {
+        const input = await store.write('work', () => {
+          const fresh = book.ticket(ticket.id)
+          if (!fresh || fresh.status !== 'started' || fresh.active_attempt_id !== attempt.id) return null
+          if (continueInput(fresh.id)) return null
+          store.db
+            .prepare(
+              'UPDATE work_tickets SET revision = revision + 1, briefing_revision = briefing_revision + 1, updated_at = ? WHERE id = ?',
+            )
+            .run(now().toISOString(), fresh.id)
+          const created = book.insertInput({
+            ticketId: fresh.id,
+            attemptId: fresh.active_attempt_id,
+            revision: fresh.briefing_revision + 1,
+            kind: 'supply',
+            text: CONTINUE_TEXT,
+          })
+          book.touchLease(
+            attempt.id,
+            new Date(now().getTime() + limits.leaseMs).toISOString(),
+            typeof attempt.lease_observed_seq === 'number' ? attempt.lease_observed_seq : null,
+          )
+          return created
+        })
+        if (input) await pushInput(book, input, deps)
+        continue
+      }
+      if (nudge.flush_status !== 'accepted') {
+        await store.write('work', () => {
+          book.touchLease(
+            attempt.id,
+            new Date(now().getTime() + limits.leaseMs).toISOString(),
+            typeof attempt.lease_observed_seq === 'number' ? attempt.lease_observed_seq : null,
+          )
+        })
+        continue
+      }
+      const nudgeTurn = turnOfMessage(events, nudge.native_message_id)
+      if (nudgeTurn == null || !turnEnded(events, nudgeTurn)) {
+        await store.write('work', () => {
+          book.touchLease(
+            attempt.id,
+            new Date(now().getTime() + limits.leaseMs).toISOString(),
+            typeof attempt.lease_observed_seq === 'number' ? attempt.lease_observed_seq : null,
+          )
+        })
+        continue
+      }
+      const stopped = await store.write('work', () => {
+        const fresh = book.ticket(ticket.id)
+        if (!fresh || (fresh.status !== 'started' && fresh.status !== 'enqueued')) return null
+        if (hasTerminalReport(fresh.id, attempt.id)) return null
+        return book.failRunning(fresh.id, 'no-report')
+      })
+      if (stopped) failed.push({ ticketId: ticket.id, reason: 'no-report', childSessionId: child })
+    }
+    return failed
   }
 
   /**
@@ -1045,6 +1174,7 @@ export function createWorkRuntime(
    * @param {string} owner
    */
   async function admit(owner: string) {
+    if (isFenced(owner)) return { admitted: false, reason: 'deleting' }
     if (admitting.has(owner)) return { admitted: false, reason: 'admission-inflight' }
     admitting.add(owner)
     try {
@@ -1232,6 +1362,7 @@ export function createWorkRuntime(
    * @param {Record<string, any>} ticket
    */
   async function ensureChild(ticket: Record<string, any>) {
+    if (isFenced(ticket.owner_session_id)) return { error: toolError('FORBIDDEN', 'This session is being deleted.') }
     if (ticket.child_session_id) return { ticket }
     if (!options.createChild) return { error: publicDispatch(ticket, { flush: 'pending' }) }
     const sessionId = `worker-${ticket.id}`
@@ -2006,6 +2137,15 @@ export function createWorkRuntime(
   /**
    * @param {string} sessionId
    */
+  function silence(sessionId: string) {
+    holds.delete(sessionId)
+    const waiters = budgetWaiters.get(sessionId)
+    if (waiters) {
+      for (const done of [...waiters]) done(false)
+    }
+    clearBudget(sessionId)
+  }
+
   function clearBudget(sessionId: string) {
     const state = arms.get(sessionId)
     if (state?.role === 'worker') saveQuota(sessionId, state)
@@ -2020,6 +2160,46 @@ export function createWorkRuntime(
  * No turn at all, or an open turn, means it may still be running.
  * @param {Array<Record<string, any>>} events
  */
+function latestEndedTurn(events: Array<Record<string, any>>): { turn: number; reason: string } | null {
+  const open = new Set<number>()
+  const reason = new Map<number, string>()
+  let sawTurn = false
+  for (const event of events) {
+    const turn = event.data?.turn
+    if (typeof turn !== 'number') continue
+    if (event.type === 'turn/start' || event.type === 'user/message') {
+      sawTurn = true
+      open.add(turn)
+    } else if (event.type === 'turn/end') {
+      sawTurn = true
+      open.delete(turn)
+      reason.set(turn, reasonKindOf(event))
+    }
+  }
+  if (!sawTurn || open.size > 0) return null
+  let last = -1
+  let kind = ''
+  for (const [turn, value] of reason) {
+    if (turn >= last) {
+      last = turn
+      kind = value
+    }
+  }
+  return last < 0 ? null : { turn: last, reason: kind }
+}
+
+function turnOfMessage(events: Array<Record<string, any>>, messageId: string) {
+  for (const event of events) {
+    if (event.type !== 'user/message' || messageIdOf(event) !== messageId) continue
+    return typeof event.data?.turn === 'number' ? event.data.turn : null
+  }
+  return null
+}
+
+function turnEnded(events: Array<Record<string, any>>, turn: number) {
+  return events.some(event => event.type === 'turn/end' && event.data?.turn === turn)
+}
+
 function latestTurnEnded(events: Array<Record<string, any>>) {
   const open = new Set()
   let sawTurn = false

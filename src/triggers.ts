@@ -1,6 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual, createHash } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { isFenced } from './deleting.ts'
 import { toolError } from './errors.ts'
 import { nextCron } from './cron.ts'
 
@@ -573,6 +574,9 @@ export function createTriggers(
    * @param {Record<string, unknown>} input
    */
   async function enqueueNew(input: Record<string, unknown>) {
+    if (isFenced(String(input.target ?? '')) || isFenced(String(input.sender ?? ''))) {
+      return toolError('FORBIDDEN', 'This session is being deleted.')
+    }
     const hash = sha(String(input.body))
     const existing = db
       .prepare(`
@@ -660,6 +664,10 @@ export function createTriggers(
    * @param {Record<string, any>} row
    */
   async function fireSchedule(row: Record<string, any>) {
+    if (isFenced(row.session_id)) {
+      db.prepare('UPDATE schedules SET enabled = 0, updated_at = ? WHERE id = ?').run(iso(), row.id)
+      return
+    }
     if (requireBot(row.session_id)) {
       db.prepare('UPDATE schedules SET enabled = 0, updated_at = ? WHERE id = ?').run(iso(), row.id)
       return

@@ -1202,7 +1202,9 @@ export function applyLogEvent(state: ThreadState, event: SessionEvent): ThreadSt
       completed[turn] = Math.max(1, Math.round((event.time - next.turnStartedAt) / 1000))
     }
     const failure = turn == null ? null : failureOf(data.reason)
-    const failures = failure == null || turn == null ? next.failures : { ...next.failures, [turn]: failure }
+    const recorded =
+      failure == null ? null : { ...failure, ...(typeof event.seq === 'number' ? { seq: event.seq } : {}) }
+    const failures = recorded == null || turn == null ? next.failures : { ...next.failures, [turn]: recorded }
     const endKind =
       data.reason && typeof data.reason === 'object' && typeof (data.reason as { kind?: unknown }).kind === 'string'
         ? (data.reason as { kind: string }).kind
@@ -1236,6 +1238,7 @@ export function applyLogEvent(state: ThreadState, event: SessionEvent): ThreadSt
       delayMs: typeof data.delayMs === 'number' ? data.delayMs : 0,
       message: typeof failure.message === 'string' ? failure.message : 'Request failed.',
       ...(typeof failure.code === 'string' ? { code: failure.code } : {}),
+      ...(typeof event.seq === 'number' ? { seq: event.seq } : {}),
       state: 'scheduled',
     }
     const prior = next.retries[turn] ?? []

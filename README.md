@@ -83,7 +83,7 @@ Parked `needs_user` tickets still count toward the combined unfinished cap (`slo
 
 Workers share the owner's workspace. There is no filesystem isolation; briefings should state file boundaries, or dependent work should stay serial.
 
-Workers use the `foundations-files` preset: official file tools plus official `@deepseek-ai/dsh-tool-bash` and `@deepseek-ai/dsh-tool-jobs`. A canvas worker uses `foundations-canvas` instead, which mounts the file tools and does not mount bash or jobs. The host sandbox stays `workspace-write` with the existing approval policy. This does not mount the web preset, add writable roots, or switch the sandbox to `danger-full-access`. A reserved start that does not create a worker within `min(ticket wallMs, 10m)` fails with `reserve-wall` and frees the slot; a late `createChild` is cancelled instead of attached.
+Workers use the `foundations-files` preset: official file tools plus official `@deepseek-ai/dsh-tool-bash` and `@deepseek-ai/dsh-tool-jobs`. A canvas worker uses `foundations-canvas` instead, which mounts the file tools with `write` and `edit` disabled and does not mount bash or jobs. Preview bytes go through `canvas_write`, not the workspace. The host sandbox stays `workspace-write` with the existing approval policy. This does not mount the web preset, add writable roots, or switch the sandbox to `danger-full-access`. A reserved start that does not create a worker within `min(ticket wallMs, 10m)` fails with `reserve-wall` and frees the slot; a late `createChild` is cancelled instead of attached.
 
 Runnable examples (any one of these is enough; `config.work` wins over the environment):
 

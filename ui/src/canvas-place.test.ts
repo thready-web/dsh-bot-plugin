@@ -40,6 +40,23 @@ test('the newest delivery stays on its own ticket instead of leaving the transcr
   assert.equal(placed.loose.length, 0)
 })
 
+test('a published preview stays visible when the ticket is ready or failed', () => {
+  const ready = canvas({ id: 'ready', ticketId: 't-ready' })
+  const failed = canvas({ id: 'failed', ticketId: 't-failed' })
+  const empty = canvas({ id: 'empty', ticketId: 't-failed-empty', previewRevision: null })
+  const placed = placeCanvases(
+    [ready, failed, empty],
+    [
+      { id: 't-ready', status: 'ready' },
+      { id: 't-failed', status: 'failed' },
+      { id: 't-failed-empty', status: 'failed' },
+    ],
+  )
+  assert.equal(placed.byTicket.get('t-ready')?.id, 'ready')
+  assert.equal(placed.byTicket.get('t-failed')?.id, 'failed')
+  assert.equal(placed.byTicket.has('t-failed-empty'), false)
+})
+
 test('a published canvas with no loaded ticket still counts as delivered', () => {
   const placed = placeCanvases([canvas({ id: 'kept', ticketId: 'gone' })], [])
   assert.equal(placed.byTicket.get('gone')?.id, 'kept')

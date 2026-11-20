@@ -11,7 +11,11 @@
 
 export const WORKER_FILE_PRESET = 'foundations-files'
 
-/** Canvas workers edit preview files. They do not get bash or job tools. */
+/**
+ * Canvas workers read workspace reference files and write the preview through
+ * canvas tools. They do not get write, edit, bash, or jobs. A workspace `write`
+ * is not a canvas revision, and models treat that tool as the deliverable.
+ */
 export const CANVAS_WORKER_PRESET = 'foundations-canvas'
 
 /**
@@ -43,6 +47,11 @@ export function ensureWorkerFilePreset(ctx: import('./host.ts').HostContext) {
     name: '@deepseek-ai/dsh-tool-fs',
     config: { applyPatch: false, readImage: false },
   }
+  const canvasFileTools = {
+    id: 'tool-fs',
+    name: '@deepseek-ai/dsh-tool-fs',
+    config: { applyPatch: false, readImage: false, write: false, edit: false },
+  }
   return registerPreset(presets, {
     id: WORKER_FILE_PRESET,
     plugins: [
@@ -54,7 +63,7 @@ export function ensureWorkerFilePreset(ctx: import('./host.ts').HostContext) {
     .then(() =>
       registerPreset(presets, {
         id: CANVAS_WORKER_PRESET,
-        plugins: [fileTools],
+        plugins: [canvasFileTools],
       }),
     )
     .then(() => WORKER_FILE_PRESET)

@@ -416,6 +416,14 @@ export function createQuestionAnswerer() {
     return { ok: true, path: 'cancelled' }
   }
 
+  function cancelSession(sessionId: string) {
+    for (const entry of [...pending]) {
+      if (entry.sessionId !== sessionId) continue
+      if (!detach(entry)) continue
+      entry.reject(questionRejection('ASK_CANCELLED', 'This session is being deleted.'))
+    }
+  }
+
   function timeout(input: { sessionId: string; callId?: string }): ToolPayload {
     if (typeof input.sessionId !== 'string' || input.sessionId === '') {
       return toolError('VALIDATION', 'sessionId is required.')
@@ -487,6 +495,7 @@ export function createQuestionAnswerer() {
     handle,
     submit,
     cancel,
+    cancelSession,
     timeout,
     takeTime,
     snapshot,

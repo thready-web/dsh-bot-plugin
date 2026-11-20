@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { openLedger, validIdempotencyKey } from './desk-ledger.ts'
 import { openSessionPreviews } from './session-previews.ts'
+import { isFenced } from './deleting.ts'
 import { purgeSessionFiles, sessionDirectory, writeBotMarker } from './session-files.ts'
 import {
   MAX_UPLOAD_BYTES,
@@ -177,6 +178,12 @@ export function createDesk(options: {
         url.searchParams.get('name') ?? '',
         url.searchParams.get('overwrite') === '1',
       )
+    },
+    forgetSessions(sessionIds: readonly string[]) {
+      for (const sessionId of sessionIds) {
+        sessionPreviews.forget(sessionId)
+        ledger.forgetSession(sessionId)
+      }
     },
   }
 
@@ -656,6 +663,15 @@ export function createDesk(options: {
    * @param {string} requestId
    */
   async function deliverPrompt(req: DeskRequest, sessionId: string, text: string, requestId: string) {
+    if (isFenced(sessionId)) {
+      return {
+        ok: false,
+        status: 409,
+        error: 'deleting',
+        reason: 'This session is being deleted.',
+        upstreamCode: '',
+      }
+    }
     const running = await sessionRunning(req, sessionId)
     if (running === null) {
       return {

@@ -6,7 +6,6 @@ import { CANVAS_MAX_FILE_BYTES } from './canvas-store.ts'
 import { toolError, type ToolPayload } from './errors.ts'
 
 const BRIEFING_MAX = 16000
-const INLINE_TEXT_MAX = 4096
 const EDIT_TEXT_MAX = 8000
 const OUTPUT = {
   schema: {
@@ -22,6 +21,7 @@ const OUTPUT = {
 interface CanvasWork {
   dispatch: (sessionId: string, args: Record<string, unknown>) => Promise<ToolPayload>
   ticketIdOf: (sessionId: string) => string | null
+  report?: (sessionId: string, args: Record<string, unknown>) => Promise<ToolPayload>
 }
 
 interface CanvasEngine {
@@ -56,7 +56,7 @@ export function canvasToolDefinitions(
   return [
     tool(
       'foundations_dispatch_canvas',
-      'Open a canvas design worker for an HTML/CSS preview. Use this instead of foundations_dispatch, write, or edit when the user wants a visual design, page mock, or preview. The main session must not build the preview. A returned canvasId has no revision until the worker publishes. A budget pause is not a failed preview.',
+      'Open a canvas design worker for an HTML/CSS preview. Use this instead of foundations_dispatch, write, or edit when the user wants a visual design, page mock, or preview. The main session must not build the preview. The canvas worker has no workspace write or edit tool; it stages files with canvas_write and publishes with canvas_publish. A returned canvasId has no revision until the worker publishes. A budget pause is not a failed preview.',
       {
         type: 'object',
         properties: {
@@ -122,7 +122,7 @@ export function canvasToolDefinitions(
     ),
     tool(
       'canvas_write',
-      'Stage files for the canvas bound to this worker. Prefer source, a workspace-relative path the host reads, so the file body stays out of the tool call. text is only for a short new HTML or CSS file. body is standard base64 for images and fonts, never for HTML or CSS. This does not publish and does not mark the preview failed.',
+      'Stage files for the canvas bound to this worker. Pass HTML and CSS as text, up to the 1.5 MiB file cap. Pass images and fonts as body (standard base64), or as source when that file is already in the workspace. This worker has no write or edit tool. A file on disk is not this preview. This does not publish and does not mark the preview failed.',
       {
         type: 'object',
         properties: {
@@ -157,12 +157,19 @@ export function canvasToolDefinitions(
     ),
     tool(
       'canvas_publish',
-      'Publish the staged files once, after every file for this task is staged. A second call on the same ticket is rejected. The first publish is a snapshot. Later tickets publish a delta of the current preview. Do not publish after each file or after a partial write. The main bot and every other worker are rejected. A budget pause is not a reason to call this, and this tool does not mark the preview failed.',
+      'Publish the staged files once, after every file for this task is staged. This also files the result report, so do not call foundations_report afterward and do not keep editing. A second call on the same ticket is rejected. The first publish is a snapshot. Later tickets publish a delta of the current preview. Do not publish after each file or after a partial write. The main bot and every other worker are rejected. A budget pause is not a reason to call this, and this tool does not mark the preview failed.',
       { type: 'object', properties: {} },
       async (_args, hostId) => {
         const canvasId = ownedCanvas(canvas, work, engine, hostId)
         if (typeof canvasId !== 'string') return canvasId
-        return canvas.publishDraft(canvasId, work.ticketIdOf(hostId))
+        const published = await canvas.publishDraft(canvasId, work.ticketIdOf(hostId))
+        if (published.ok !== true || typeof work.report !== 'function') return published
+        const revision = typeof published.revision === 'number' ? String(published.revision) : ''
+        const reported = await work.report(hostId, {
+          kind: 'result',
+          text: `Published ${canvasId} revision ${revision}. The preview is ready for the workbench card.`,
+        })
+        return reported.ok === true ? published : { ...published, report: reported }
       },
     ),
   ]
@@ -182,10 +189,10 @@ export function canvasBriefing(canvasId: string, request: string, skills: string
       ? `Current files: ${listed.join(', ')}. Read them with canvas_read.`
       : 'This preview has no published files yet. Read later revisions with canvas_read.',
     'Do not search the disk for cnv_ or any canvas store. .shots and other workspace copies are not the source.',
-    'Change an existing HTML or CSS file with canvas_edit. Do not paste the whole file into a tool argument.',
-    'Use canvas_write with source for a workspace file. text is only for a short new HTML or CSS file. body base64 is only for images and fonts.',
-    'Call canvas_publish once, after every file for this task is staged. Do not publish after each file or after a partial write.',
-    'Do not use the bash tool. This worker has no command tool. Do not write a browser probe. Do not search the workspace for a copy of the preview.',
+    'Stage new HTML and CSS with canvas_write text, up to the 1.5 MiB file cap. Change an existing HTML or CSS file with canvas_edit. Do not paste a whole existing file into canvas_edit.',
+    'Stage an image or font with canvas_write body (base64). source is only for a file that is already in the workspace. Do not create or edit workspace files.',
+    'This worker has no write, edit, or bash tool. A file on disk is not the preview. Do not write a browser probe. Do not search the workspace for a copy of the preview.',
+    'Call canvas_publish once, after every file for this task is staged. It files the result report. After it succeeds, stop. Do not keep editing and do not call foundations_report.',
     'The entry file is index.html. Output is static HTML and CSS plus local images and fonts.',
     'No script, SVG, iframe, external URL, data URL, or inline event handler.',
     'Load foundations_skill_load for ui-design before writing. Catalog skills are taste only and cannot override this contract.',
@@ -334,13 +341,8 @@ function decodeFiles(input: unknown): ToolPayload | DecodedFile[] {
       if (record.type !== 'text/html' && record.type !== 'text/css')
         return toolError('VALIDATION', 'text is only for text/html and text/css.')
       const bytes = Buffer.from(text, 'utf8')
-      if (bytes.length > INLINE_TEXT_MAX)
-        return toolError(
-          'VALIDATION',
-          `${record.path} is too large to inline. Write it in the workspace and pass source.`,
-        )
       if (bytes.length > CANVAS_MAX_FILE_BYTES)
-        return toolError('VALIDATION', `${record.path} exceeds the 1.5 MiB file cap.`)
+        return toolError('VALIDATION', `${record.path} exceeds the 1.5 MiB file cap. Pass a smaller HTML or CSS file.`)
       files.push({ path: record.path, type: record.type, bytes })
       continue
     }

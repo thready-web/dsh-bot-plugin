@@ -68,6 +68,8 @@ export type Segment = UserSegment | ThinkSegment | ToolSegment | AssistantSegmen
 export interface TurnFailure {
   message: string
   code?: string
+  /** Session seq of the turn/end that recorded this failure. */
+  seq?: number
 }
 
 export interface RetryAttempt {
@@ -77,6 +79,8 @@ export interface RetryAttempt {
   delayMs: number
   message: string
   code?: string
+  /** Session seq of the llm/retry event. */
+  seq?: number
   state: 'scheduled' | 'started'
 }
 

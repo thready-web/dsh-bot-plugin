@@ -2,7 +2,10 @@ import { createReadStream, statSync, type ReadStream } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { beginDelete, deleteStatus, type DeleteJob, type DeleteProgress } from './deleting.ts'
 import { createDesk, defaultSessionCwd, type DeskRequest } from './desk.ts'
+import { dropSessions } from './runtime-registry.ts'
+import { executeDelete } from './session-delete-job.ts'
 import { serveWorkspaceImage } from './workspace-image.ts'
 import type { HostContext } from './host.ts'
 import { toolError, type ToolPayload } from './errors.ts'
@@ -104,6 +107,51 @@ export function registerHttp(
       },
     }
   }
+  const stateRoot = sessionsRoot !== '' ? dirname(sessionsRoot) : ''
+
+  function sessionDeleteRoute(
+    res: import('node:http').ServerResponse,
+    req: DeskRequest,
+    ownerId: string,
+    statusOnly: boolean,
+  ) {
+    if (statusOnly) return send(res, 200, deleteStatus(ownerId) ?? { phase: 'absent', percent: 0 })
+    const job = beginDelete(ownerId, publish =>
+      executeDelete(
+        {
+          store: engine.store,
+          canvas,
+          sessionsRoot,
+          stateRoot,
+          running: sessionId => sessionListedRunning(req, sessionId),
+          stop: sessionId => stopForDelete(ctx, sessionId),
+          silence: sessionId => {
+            getWork()?.silence(sessionId)
+          },
+          cancelQuestions: sessionId => {
+            getQuestions()?.cancelSession(sessionId)
+          },
+          abandonApprovals: sessionId => {
+            getApprovals()?.abandonSession(sessionId)
+          },
+          forgetDesk: sessionIds => {
+            desk?.forgetSessions(sessionIds)
+          },
+          dropMemory: sessionIds => {
+            for (const sessionId of sessionIds) {
+              engine.openViews.delete(sessionId)
+              engine.surface.delete(sessionId)
+            }
+            dropSessions(engine.store.root, sessionIds)
+          },
+        },
+        ownerId,
+        publish,
+      ),
+    )
+    writeDeleteStream(res, job)
+  }
+
   const handler = async (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
     const requestTarget = req.url ?? '/'
     if ((requestTarget.split('?')[0] ?? '').startsWith('/dsh-bot/canvas-media/')) {
@@ -140,6 +188,10 @@ export function registerHttp(
         send(res, outcome.status, outcome.body)
         if (outcome.status === 413) res.on('finish', () => req.destroy())
         return
+      }
+      const sessionDelete = path.match(/^\/session-foundations\/api\/sessions\/(session-[A-Za-z0-9-]+)\/delete$/)
+      if (sessionDelete && (req.method === 'GET' || req.method === 'POST')) {
+        return sessionDeleteRoute(res, req, sessionDelete[1], req.method === 'GET')
       }
       if (desk && desk.owns(req.method ?? 'GET', path)) {
         const outcome = await desk.handle(req.method ?? 'GET', path, url, req)
@@ -799,6 +851,58 @@ function readJson(req: import('node:http').IncomingMessage): Promise<any> {
  * @param {string} endpoint
  * @param {Record<string, unknown>} args
  */
+async function sessionListedRunning(req: DeskRequest, sessionId: string): Promise<boolean | null> {
+  const listed = await hostRpc(req, 'session/list', { _request: {} })
+  const items = listed.body?.result?.value?.items
+  if (listed.body?.result?.ok !== true || !Array.isArray(items)) return null
+  const item = items.find((entry: { sessionId?: string }) => entry?.sessionId === sessionId)
+  if (!item) return false
+  return item.running === true
+}
+
+async function stopForDelete(ctx: HostContext, sessionId: string) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const stopped = await Promise.race([
+    unloadAttachedSession(ctx, sessionId).then(
+      () => true,
+      () => true,
+    ),
+    new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(false), 15_000)
+    }),
+  ])
+  clearTimeout(timer)
+  return stopped
+}
+
+function writeDeleteStream(res: import('node:http').ServerResponse, job: DeleteJob) {
+  res.writeHead(200, {
+    'content-type': 'application/x-ndjson; charset=utf-8',
+    'cache-control': 'no-store',
+  })
+  let finished = false
+  const write = (event: DeleteProgress) => {
+    if (finished || res.writableEnded) return
+    res.write(`${JSON.stringify(event)}\n`)
+  }
+  const finish = () => {
+    if (finished) return
+    finished = true
+    job.unlisten(listener)
+    if (!res.writableEnded) res.end()
+  }
+  const listener = (event: DeleteProgress) => {
+    write(event)
+    if (event.phase === 'done' || event.phase === 'error') finish()
+  }
+  job.listen(listener)
+  write(job.latest)
+  res.on('close', () => {
+    job.unlisten(listener)
+  })
+  void job.promise.finally(finish)
+}
+
 async function hostRpc(req: DeskRequest, endpoint: string, args: Record<string, unknown>) {
   const origin = localOrigin(req)
   const cookie = header(req, 'cookie') ?? ''

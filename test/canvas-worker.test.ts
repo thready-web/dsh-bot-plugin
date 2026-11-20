@@ -21,6 +21,7 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
   const canvas = openCanvasStore(join(dir, 'canvas.sqlite'))
   const tickets = new Map<string, string>([['worker-canvas', 'ticket-canvas']])
   let briefing = ''
+  const reports: Array<Record<string, unknown>> = []
   const work = {
     async dispatch(_sessionId: string, args: Record<string, unknown>): Promise<ToolPayload> {
       briefing = String(args.briefing)
@@ -28,6 +29,10 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
     },
     ticketIdOf(sessionId: string) {
       return tickets.get(sessionId) ?? null
+    },
+    async report(sessionId: string, args: Record<string, unknown>): Promise<ToolPayload> {
+      reports.push({ sessionId, ...args })
+      return { ok: true, kind: args.kind }
     },
   }
   try {
@@ -53,6 +58,10 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
     assert.match(briefing, /canvas_write/)
     assert.match(briefing, /canvas_edit/)
     assert.match(briefing, /canvas_publish once/)
+    assert.match(briefing, /files the result report/)
+    assert.match(briefing, /no write, edit, or bash tool/)
+    assert.match(briefing, /canvas_write text/)
+    assert.doesNotMatch(briefing, /short new HTML/)
     assert.match(briefing, /Do not search the disk for cnv_/)
     assert.match(briefing, /no published files yet/)
     assert.match(briefing, /index\.html/)
@@ -88,20 +97,33 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
     const ordinary = await publish.execute({}, { agent: { id: 'worker-other' } })
     assert.equal(ordinary.code, 'FORBIDDEN')
 
+    const longCss = `h1{color:black}${'a'.repeat(5000)}`
+    assert.ok(Buffer.byteLength(longCss) > 4096)
     const staged = await write.execute(
       {
         files: [
           { path: 'index.html', type: 'text/html', text: html },
-          { path: 'app.css', type: 'text/css', text: css },
+          { path: 'app.css', type: 'text/css', text: longCss },
         ],
       },
       { agent: { id: 'worker-canvas' } },
     )
     assert.equal(staged.ok, true)
+    const huge = `<!doctype html><html><body>${'b'.repeat(Math.floor(1.5 * 1024 * 1024))}</body></html>`
+    const over = await write.execute(
+      { files: [{ path: 'index.html', type: 'text/html', text: huge }] },
+      { agent: { id: 'worker-canvas' } },
+    )
+    assert.equal(over.code, 'VALIDATION')
+    assert.match(String(over.message), /1\.5 MiB/)
+    assert.doesNotMatch(String(over.message), /workspace/)
     const first = await publish.execute({}, { agent: { id: 'worker-canvas' } })
     assert.equal(first.ok, true)
     assert.equal(first.kind, 'snapshot')
     assert.equal(first.revision, 1)
+    assert.equal(reports.length, 1)
+    assert.equal(reports[0]?.kind, 'result')
+    assert.match(String(reports[0]?.text), new RegExp(canvasId))
     const reader = openCanvasStore(join(dir, 'canvas.sqlite'))
     const notice = reader.live('bot-canvas')
     assert.equal(notice.events[0]?.revision, 1)
@@ -229,7 +251,10 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
 })
 
 test('canvas workers are registered without bash', async () => {
-  const registered: Array<{ id: string; plugins: Array<{ name: string }> }> = []
+  const registered: Array<{
+    id: string
+    plugins: Array<{ name: string; config?: { write?: boolean; edit?: boolean } }>
+  }> = []
   const preset = await ensureWorkerFilePreset({
     get() {
       return {
@@ -247,6 +272,11 @@ test('canvas workers are registered without bash', async () => {
     canvas.plugins.some(plugin => plugin.name.includes('bash') || plugin.name.includes('jobs')),
     false,
   )
+  const canvasFs = canvas.plugins.find(plugin => plugin.name.includes('tool-fs'))
+  assert.equal(canvasFs?.config?.write, false)
+  assert.equal(canvasFs?.config?.edit, false)
+  const files = registered.find(item => item.id === 'foundations-files')
+  assert.equal(files?.plugins.find(plugin => plugin.name.includes('tool-fs'))?.config?.write, undefined)
   assert.equal(
     registered.some(
       item => item.id === 'foundations-files' && item.plugins.some(plugin => plugin.name.includes('bash')),

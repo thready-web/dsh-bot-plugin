@@ -11,7 +11,8 @@ import { toolError } from './errors.ts'
 import { createQuestionAnswerer, publishQuestionAnswerer, questionAnswererFor } from './questions.ts'
 import { createApprovalAnswerer, publishApprovalAnswerer, approvalAnswererFor } from './approvals.ts'
 import { createAuthorizationController, publishAuthorization, authorizationFor } from './authorization.ts'
-import { publishRuntime, publishWorkRuntime, runtimeFor } from './runtime-registry.ts'
+import { isFenced } from './deleting.ts'
+import { publishRuntime, publishSessionDrop, publishWorkRuntime, runtimeFor } from './runtime-registry.ts'
 import { type HostContext, type PluginHost } from './host.ts'
 import {
   childCreateOptions,
@@ -264,7 +265,11 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
   })
 
   triggers = ctx.agents ? startTriggers(ctx, store, engine) : null
-  work = ctx.agents ? startWork(ctx, store, engine, config) : null
+  work = ctx.agents
+    ? startWork(ctx, store, engine, config, sessionIds => {
+        for (const sessionId of sessionIds) rendered.delete(sessionId)
+      })
+    : null
   if (triggers) {
     for (const definition of triggerTools(triggers, engine)) ctx.tools.register(definition)
   }
@@ -397,6 +402,7 @@ function startWork(
   store: import('./store.ts').Store,
   engine: import('./engine.ts').Engine,
   config: FoundationsConfig,
+  onDrop: (sessionIds: readonly string[]) => void = () => {},
 ) {
   /** @type {Map<string, { dispose?: () => Promise<void> }>} */
   const workerHandles: Map<string, { dispose?: () => Promise<void> }> = new Map()
@@ -446,6 +452,9 @@ function startWork(
       })
     },
     createChild: async spec => {
+      if (isFenced(spec.ownerSessionId) || isFenced(spec.sessionId)) {
+        throw Object.assign(new Error('session is being deleted'), { code: 'DELETING' })
+      }
       let cwd = ''
       let model = null
       try {
@@ -506,8 +515,23 @@ function startWork(
     childPresent: sessionId => liveAgent(ctx, sessionId) != null,
   })
   publishWorkRuntime(store.root, work)
+  publishSessionDrop(store.root, sessionIds => {
+    onDrop(sessionIds)
+    for (const sessionId of sessionIds) {
+      engine.openViews.delete(sessionId)
+      engine.surface.delete(sessionId)
+      const handle = workerHandles.get(sessionId)
+      workerHandles.delete(sessionId)
+      try {
+        void handle?.dispose?.()
+      } catch {
+        /* already closed */
+      }
+    }
+  })
   ctx.effect(() => () => {
     publishWorkRuntime(store.root, null)
+    publishSessionDrop(store.root, null)
     workerHandles.clear()
   })
   ctx.on(

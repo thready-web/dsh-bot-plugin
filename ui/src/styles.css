@@ -268,6 +268,54 @@ html.files-resizing {
   background: var(--hover);
   outline: none;
 }
+.delete-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(20, 16, 12, 0.35);
+}
+.delete-card {
+  width: min(420px, 100%);
+  padding: 20px;
+  border-radius: 16px;
+  background: white;
+  box-shadow: var(--shadow);
+}
+.delete-card h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 620;
+}
+.delete-card p {
+  margin: 0 0 14px;
+  color: var(--secondary, #57534e);
+  font-size: 14px;
+  line-height: 20px;
+}
+.delete-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #f1ece4;
+}
+.delete-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: #9a3412;
+  transition: width 180ms ease;
+}
+.delete-card button {
+  margin-top: 14px;
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: #9a3412;
+  color: white;
+  font-size: 13px;
+}
 .blank-head {
   flex-wrap: wrap;
 }

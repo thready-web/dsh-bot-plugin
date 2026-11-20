@@ -26,8 +26,10 @@ import type { RetryAttempt, Segment, TurnFailure } from './types'
 import {
   blockKey,
   canvasMessageId,
+  placeOrphanTurns,
   resolveApprovals,
   resolveFloatingWorks,
+  turnAnchorSeq,
   type ApprovalSpot,
 } from './transcript-place'
 
@@ -108,9 +110,23 @@ export function Transcript({
   }
   flush()
   const seen = new Set(blocks.flatMap(block => (block.type === 'turn' ? [block.turn] : [])))
-  for (const key of Object.keys(failures)) {
-    const turn = Number(key)
-    if (!seen.has(turn)) blocks.push({ type: 'turn', turn, seconds: completed[turn], segments: [] })
+  const orphans: { seq?: number; block: (typeof blocks)[number] }[] = []
+  const queueOrphan = (turn: number) => {
+    if (seen.has(turn) || !Number.isFinite(turn)) return
+    const failure = failures[turn]
+    const attempts = retries[turn]
+    if (!failure && !attempts?.length) return
+    seen.add(turn)
+    orphans.push({
+      seq: turnAnchorSeq(failure, attempts),
+      block: { type: 'turn', turn, seconds: completed[turn], segments: [] },
+    })
+  }
+  for (const key of Object.keys(failures)) queueOrphan(Number(key))
+  for (const key of Object.keys(retries)) queueOrphan(Number(key))
+  if (orphans.length) {
+    const placed = placeOrphanTurns(blocks, orphans)
+    blocks.splice(0, blocks.length, ...placed)
   }
   const byId = new Map(tickets.map(ticket => [ticket.id, ticket]))
   const anchorAt = new Map<string, string>()
