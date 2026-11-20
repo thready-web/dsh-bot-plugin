@@ -3,10 +3,11 @@
  * so their request header otherwise lists only host tools.
  * This preset mounts official file tools and official command tools
  * (`@deepseek-ai/dsh-tool-bash`, `@deepseek-ai/dsh-tool-jobs`). It does not
- * change the host sandbox mode, add writable roots, or mount the web preset
- * (no web_fetch, subagent, or other profile tools). The session cwd copied
- * at create remains the workspace-write boundary; bash uses the already
- * composed host bash-sandbox and approval policy.
+ * mount the web preset (no web_fetch, subagent, or other profile tools),
+ * add writable roots, or itself change the sandbox mode or approval policy.
+ * Those knobs are copied from the parent main session when the worker is
+ * created. The session cwd copied at create remains the workspace path;
+ * bash uses the composed host bash-sandbox under the inherited sandbox mode.
  */
 
 export const WORKER_FILE_PRESET = 'foundations-files'

@@ -5,7 +5,8 @@
  * offered only when the live catalog includes it (the experimental package
  * has registered it). This is a settings concern, not a transcript card.
  * The instance default for a future main session is `permission-default.ts`;
- * it calls this setter and does not invent a second sandbox policy.
+ * a worker copies its parent with `worker-permission.ts`. Both call this
+ * setter and do not invent a second sandbox policy.
  */
 import { toolError, type ToolPayload } from './errors.ts'
 import type { HostContext } from './host.ts'
@@ -45,6 +46,29 @@ function optionList(value: unknown): PermissionOption[] {
     if (typeof row.description === 'string' && row.description !== '') option.description = row.description
     return [option]
   })
+}
+
+export type EffectivePermission = {
+  available: boolean
+  /** False when no live session object exists for this id. */
+  found: boolean
+  /** `permissionPresets.current` when the session is live. Empty when it is not. */
+  preset: string
+}
+
+/**
+ * The preset the live session is actually running under.
+ * A missing session does not fall back to the catalog composition default:
+ * that default is the host pin, not this session's policy.
+ */
+export function effectivePermission(ctx: HostContext, sessionId: string): EffectivePermission {
+  const service = ctx.get?.('permissionPresets')
+  if (!service || typeof service.catalog !== 'function' || typeof service.current !== 'function') {
+    return { available: false, found: false, preset: '' }
+  }
+  const session = sessionOf(ctx, sessionId)
+  if (!session) return { available: true, found: false, preset: '' }
+  return { available: true, found: true, preset: String(service.current(session) ?? '') }
 }
 
 export function permissionView(ctx: HostContext, sessionId: string): PermissionView {

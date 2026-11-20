@@ -18,7 +18,7 @@ const en = {
   'permission.preset.auto': 'Auto review',
   'permission.defaultTitle': 'Default for new sessions',
   'permission.defaultHelp':
-    'Fully allow is the starting default. It gives a new main session broad file access and runs tools without an approval prompt. Saving a choice here changes only main sessions created afterward. A session that already exists, including one whose permission you set by hand, keeps that permission.',
+    "Fully allow is the starting default. It gives a new main session broad file access and runs tools without an approval prompt. A worker created from a main session inherits that main session's current permission, including its sandbox and approval policy. Saving a choice here changes only main sessions created afterward. A session that already exists, including one whose permission you set by hand, keeps that permission. A worker that was already created keeps the permission it inherited.",
   'permission.confirmDefaultFull':
     'New main sessions will start with full access. This is broad: files outside the workspace can be changed, and approval prompts are skipped.',
 } as const
@@ -41,7 +41,7 @@ const zh: Record<keyof typeof en, string> = {
   'permission.preset.auto': '自动审阅',
   'permission.defaultTitle': '新会话的默认权限',
   'permission.defaultHelp':
-    '一开始的默认是完全允许。新的主会话会得到很宽的文件访问，工具执行前不再询问。在这里保存的选择只作用于之后新建的主会话。已经存在的会话，包括你单独改过权限的会话，都保持原来的权限。',
+    '一开始的默认是完全允许。新的主会话会得到很宽的文件访问，工具执行前不再询问。从主会话创建的 Worker 会继承该主会话当时的权限，包括沙箱和审批。在这里保存的选择只作用于之后新建的主会话。已经存在的会话，包括你单独改过权限的会话，都保持原来的权限。已经创建的 Worker 保持创建时继承的权限。',
   'permission.confirmDefaultFull':
     '之后新建的主会话会从完全允许开始。这是很宽的权限：工作区以外的文件也可以改，并且不再弹出审批。',
 }

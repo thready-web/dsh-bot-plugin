@@ -37,7 +37,7 @@ These creates do not arm a pending id:
 - The same idempotency key returning the session already created.
 - A blank idle session reused for the same workspace.
 - `POST /sessions/mark` on a session that already existed.
-- A worker (`worker-…`) created for a ticket.
+- A worker (`worker-…`) created for a ticket. A worker does not use this default. It inherits its parent main session, below.
 
 ## Precedence
 
@@ -46,11 +46,44 @@ These creates do not arm a pending id:
 3. Changing the global default affects main sessions created after the change. It does not walk existing sessions.
 4. A session that was never pending is never rewritten, including one restored after a restart.
 
+## Workers inherit the parent main session
+
+A worker created from a main session copies that main session's **current effective preset** at dispatch time. The copy is both knobs in the preset bundle: sandbox mode and approval policy. It is not the instance default, and it is not a hardcoded `workspace-write`.
+
+| Parent at dispatch | Worker |
+| --- | --- |
+| `danger-full-access` (sandbox `danger-full-access`, approval `never`) | The same bundle |
+| `workspace-write` (sandbox `workspace-write`, approval `ask`) | The same bundle |
+| Another selectable catalog preset, including `read-only` and `auto` when that deployment lists it | That preset |
+
+`foundations_dispatch` is the production path. It creates `worker-<ticket>` through `agents.create` with the `foundations-files` tool preset (or `foundations-canvas` for a canvas briefing). The tool preset only mounts tools. The permission preset is separate.
+
+The host still pins its composition default on `agent/created` with `prepend: true`, before ordinary listeners. For a fresh agent that pin is the `permission` settings default, which this plugin leaves unset, so the pin is usually `workspace-write`. This plugin's own `agent/created` listener does not use `prepend`. It runs after that pin and calls `permissionPresets.set(worker, parentPreset)`. Listeners are serial and are awaited before `agents.create` resolves, so the worker is already on the parent bundle before its first turn. If that event could not see the session yet, the create path calls `set` once more after `agents.create` returns. A second successful write is not done: the intent is dropped after the first success.
+
+The parent preset is read when dispatch starts, before `agents.create`. Changing the main session later does **not** update a worker that already exists. A worker created after the change inherits the new preset. `resume`, `clear`, and `compact` do not apply the snapshot again. The snapshot is process memory. If the process dies after the agent exists and before `set`, the worker keeps the host pin, and a restart does not rewrite it.
+
+These do not inherit:
+
+- An unrelated agent, a blank-session reuse, or an idempotent replay of a main-session create.
+- A worker that is already running, including one restored after a restart.
+- A replay of the same dispatch idempotency key. That returns the existing ticket and does not create another worker.
+
+If the parent policy cannot be copied, the worker **keeps the host pin**. The instance default is not substituted, so a missing parent does not become Fully allow.
+
+| Situation | Result |
+| --- | --- |
+| Parent session is not live, or its current preset is empty | Host pin. Reason `missing`. |
+| `permissionPresets` is not composed | Host pin. Reason `unavailable`. |
+| Current preset is `custom` (knobs match no selectable preset; `set` rejects `custom`) | Host pin. Reason `custom`. |
+| Current preset is not in the live catalog | Host pin. Reason `invalid`. |
+| `set` throws for another reason | Host pin. The intent is dropped. |
+| `set` cannot see the worker yet (`NOT_FOUND` or `UNAVAILABLE`) | Intent stays until the retry after `agents.create`. |
+
 ## Host boundary
 
-`@deepseek-ai/dsh-permission-presets@0.2.2-rc.1` already stores a future-session default on the `permission` settings namespace (`defaultPreset`). Agent creation reads it and pins that preset onto every fresh Agent. That includes workers. This plugin does not call `settings.update` on that namespace and does not change the host package. Doing so would widen the worker sandbox, which this plugin keeps on the host `workspace-write` policy.
+`@deepseek-ai/dsh-permission-presets@0.2.2-rc.1` already stores a future-session default on the `permission` settings namespace (`defaultPreset`). Agent creation reads it and pins that preset onto every fresh Agent, including workers and unrelated agents. This plugin does not call `settings.update` on that namespace and does not change the host package.
 
-The Bot default is therefore plugin state plus the official per-session setter, scoped to new bot main sessions. Per-session mode ids, bundles, and enforcement stay in the host services.
+The main-session default is plugin state plus `permissionPresets.set`, scoped to new bot main sessions. Worker inheritance is the same setter, scoped to the worker id recorded for that dispatch. Per-session mode ids, bundles, and enforcement stay in the host services. The file drawer is unchanged.
 
 ## HTTP
 
@@ -65,4 +98,4 @@ Writes use the same request gate as the other workbench routes: the host connect
 
 ## Help copy
 
-The drawer states that Fully allow / 完全允许 is the starting default, that it is broad, and that a saved choice applies only to main sessions created afterward. Existing sessions, including ones with a hand-picked permission, stay as they are.
+The drawer states that Fully allow / 完全允许 is the starting default, that it is broad, and that a saved choice applies only to main sessions created afterward. Existing sessions, including ones with a hand-picked permission, stay as they are. A worker inherits the main session it is created from, and a worker that already exists does not follow a later change on that main session.

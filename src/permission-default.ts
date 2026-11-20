@@ -6,7 +6,8 @@
  * A new bot main session is applied later through `permissionPresets.set`,
  * the same sandbox-mode and approval-policy write the per-session control uses.
  * Sessions that already exist, and any explicit per-session choice, are left
- * alone. Workers are never added to the pending list.
+ * alone. Workers are never added to the pending list. A worker copies its
+ * parent main session at creation (`worker-permission.ts`), not this file.
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'

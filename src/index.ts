@@ -31,6 +31,7 @@ import { backlogCanvases, bindCanvasCards, createCardLog, publishCardLog, type C
 import { canvasToolDefinitions } from './canvas-tools.ts'
 import { forgetWorker, rememberWorker } from './worker-handles.ts'
 import { applyFreshMainPermission, permissionDefaultFile } from './permission-default.ts'
+import { applyWorkerPermission, dropWorkerPermission, rememberWorkerPermission } from './worker-permission.ts'
 
 export const name = 'session-foundations'
 
@@ -253,9 +254,34 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
     },
   )
 
-  ctx.on('agent/created', (payload: { agent?: { id?: string } } | null) => {
+  ctx.on('agent/created', (payload: { agent?: { id?: string }; source?: string } | null) => {
     const agent = payload?.agent
     pinMainReasoning(agent, id => engine.isBot(id))
+    if (typeof agent?.id === 'string') {
+      try {
+        const source = typeof payload?.source === 'string' && payload.source !== '' ? payload.source : 'startup'
+        const inherited = applyWorkerPermission(ctx, agent.id, source)
+        // `rejected` stays pending so the create path can retry once the session is visible.
+        if (
+          !inherited.applied &&
+          inherited.reason !== 'not-pending' &&
+          inherited.reason !== 'not-startup' &&
+          inherited.reason !== 'rejected'
+        ) {
+          ctx.logger?.warn?.(
+            'session-foundations: worker permission was not inherited session=%s reason=%s',
+            agent.id,
+            inherited.reason,
+          )
+        }
+      } catch (error) {
+        ctx.logger?.warn?.(
+          'session-foundations: worker permission inheritance failed session=%s %s',
+          agent.id,
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    }
     if (!agent?.id || !engine.isBot(agent.id)) return
     let session = null
     try {
@@ -483,6 +509,8 @@ function startWork(
       if (isFenced(spec.ownerSessionId) || isFenced(spec.sessionId)) {
         throw Object.assign(new Error('session is being deleted'), { code: 'DELETING' })
       }
+      // Snapshot before create. The host pin runs inside create, on agent/created.
+      rememberWorkerPermission(ctx, spec.sessionId, spec.ownerSessionId)
       let cwd = ''
       let model = null
       try {
@@ -508,9 +536,31 @@ function startWork(
         options.meta = { ...(options.meta ?? {}), agentPreset: preset }
         options.setup = workerFileSetup(ctx, preset)
       }
-      const handle = await ctx.agents.create(options)
-      rememberWorker(spec.sessionId, handle)
-      return spec.sessionId
+      try {
+        const handle = await ctx.agents.create(options)
+        rememberWorker(spec.sessionId, handle)
+        try {
+          const inherited = applyWorkerPermission(ctx, spec.sessionId, 'startup')
+          if (!inherited.applied && inherited.reason !== 'not-pending' && inherited.reason !== 'not-startup') {
+            ctx.logger?.warn?.(
+              'session-foundations: worker permission was not inherited session=%s parent=%s reason=%s',
+              spec.sessionId,
+              spec.ownerSessionId,
+              inherited.reason,
+            )
+          }
+        } catch (error) {
+          ctx.logger?.warn?.(
+            'session-foundations: worker permission inheritance failed session=%s %s',
+            spec.sessionId,
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+        return spec.sessionId
+      } catch (error) {
+        dropWorkerPermission(spec.sessionId)
+        throw error
+      }
     },
     recordCard: input => {
       cards.record(ctx, input)
