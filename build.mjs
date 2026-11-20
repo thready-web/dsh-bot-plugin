@@ -12,3 +12,8 @@ if (!existsSync(join(root, 'dist/index.js'))) {
   console.error('tsc did not write dist/index.js')
   process.exit(1)
 }
+const inspector = spawnSync(process.execPath, ['scripts/bundle-inspector.mjs'], {
+  cwd: root,
+  stdio: 'inherit',
+})
+if (inspector.status !== 0) process.exit(inspector.status ?? 1)

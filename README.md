@@ -162,7 +162,7 @@ A visible connected view reconciles once on entry and every 60 seconds. Unsuppor
 
 The authorization drawer loads the provider directory only on demand, with a per-App single-flight 30-second cache, no browser storage or cross-App cache. Local authorization lifecycle changes and mutations invalidate it. An open drawer revalidates every 30 seconds and on background resume: native provider registration has no complete event hook, so these changes are eventually reconciled rather than falsely treated as push-complete. Dynamic prompts/notices remain on the compact channel even when the drawer is closed.
 
-DSH loads `dist/`. Rebuild after changing `src/`. Until `npm --prefix ui run build` has run, `/dsh-bot/` is 404.
+DSH loads `dist/`. Rebuild after changing `src/`. The plugin build also writes `dist/canvas-inspector.js`; a published install reads that file and does not compile the inspector on startup. Until `npm --prefix ui run build` has run, `/dsh-bot/` is 404.
 
 Host integration needs Node `>= 24.9` and `DSH_BIN`:
 

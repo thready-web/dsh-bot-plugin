@@ -1,7 +1,5 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { buildSync } from 'esbuild'
-import { fileURLToPath } from 'node:url'
 import { composeInspect } from './canvas-compose.ts'
 import { asStoreFailure, toolError, type ToolPayload } from './errors.ts'
 import { CANVAS_MAX_JSON_BYTES, normalizeCanvasPath, type CanvasFileInput, type CanvasStore } from './canvas-store.ts'
@@ -367,21 +365,16 @@ function writeBody(res: ServerResponse, method: string, status: number, type: st
 
 function inspectorSource() {
   if (inspectorCode != null) return inspectorCode
-  // Same relative path from src/ (tests) and dist/ (built server): both sit next to ui/.
-  const entry = fileURLToPath(new URL('../ui/src/canvas-inspector.ts', import.meta.url))
-  if (!existsSync(entry)) throw new Error('canvas inspector source is missing')
-  const result = buildSync({
-    absWorkingDir: fileURLToPath(new URL('../ui/', import.meta.url)),
-    entryPoints: [entry],
-    bundle: true,
-    format: 'iife',
-    platform: 'browser',
-    target: 'es2022',
-    write: false,
-    minify: false,
-    logLevel: 'silent',
-  })
-  inspectorCode = result.outputFiles[0]?.text ?? ''
-  if (inspectorCode === '') throw new Error('inspector bundle was empty')
-  return inspectorCode
+  // dist/canvas-http.js reads the sibling bundle. Tests import src/ and use the same built file.
+  const candidates = [
+    new URL('./canvas-inspector.js', import.meta.url),
+    new URL('../dist/canvas-inspector.js', import.meta.url),
+  ]
+  for (const url of candidates) {
+    if (!existsSync(url)) continue
+    inspectorCode = readFileSync(url, 'utf8')
+    if (inspectorCode === '') throw new Error('inspector bundle was empty')
+    return inspectorCode
+  }
+  throw new Error('canvas inspector bundle is missing; run npm run build')
 }

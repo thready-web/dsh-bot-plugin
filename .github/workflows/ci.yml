@@ -43,6 +43,9 @@ jobs:
           npm run build
           npm run build --prefix ui
 
+      - name: Publish directory
+        run: npm run verify:publish
+
   host:
     runs-on: ubuntu-latest
     steps:

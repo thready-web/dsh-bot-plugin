@@ -1,8 +1,10 @@
+import { spawnSync } from 'node:child_process'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { parseCanvasMedia } from '../src/canvas-http.ts'
 import { createEngine } from '../src/engine.ts'
@@ -10,6 +12,13 @@ import { registerHttp } from '../src/http.ts'
 import { openStore } from '../src/store.ts'
 import { openPageLive } from '../src/work-http.ts'
 import { openCanvasStore } from '../src/canvas-store.ts'
+
+const bundled = spawnSync(
+  process.execPath,
+  [fileURLToPath(new URL('../scripts/bundle-inspector.mjs', import.meta.url))],
+  { stdio: 'inherit' },
+)
+if (bundled.status !== 0) throw new Error('canvas inspector bundle failed')
 
 const html = '<!doctype html><link rel="stylesheet" href="styles.css"><img src="hero.png" alt=""></html>'
 const css = 'body{color:#111}'
