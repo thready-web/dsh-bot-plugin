@@ -1,47 +1,7 @@
 /**
- * Cards, approvals and canvases keep the slot they first occupied.
- * A later message only appends; it does not pull an earlier item downward.
+ * Turns that produced only a failure or a retry keep their seq slot.
+ * Cards are themselves log events, so their block seq is the event seq.
  */
-
-export interface ApprovalSpot {
-  turn: number
-  callId?: string
-}
-
-export function blockKey(block: { type: string; segment?: { id: string }; turn?: number }): string {
-  if (block.type === 'user' && block.segment) return `user:${block.segment.id}`
-  if (block.type === 'turn' && typeof block.turn === 'number') return `turn:${block.turn}`
-  return 'start'
-}
-
-/** The one unanchored work card stays on the block where it first appeared. */
-export function resolveFloatingWorks(
-  shown: readonly { id: string }[],
-  anchored: ReadonlySet<string>,
-  pins: Map<string, string>,
-  here: string,
-): Map<string, string> {
-  const visible = new Map<string, string>()
-  for (const ticket of shown) {
-    const key = pins.get(ticket.id)
-    if (key) visible.set(ticket.id, key)
-  }
-  const first = shown[0]
-  if (first && !pins.has(first.id) && !anchored.has(first.id)) {
-    pins.set(first.id, here)
-    visible.set(first.id, here)
-  }
-  return visible
-}
-
-/**
- * The dispatch message already loaded for this canvas.
- * A canvas with no such message stays hidden. It is not parked on the latest block.
- */
-export function canvasMessageId(ticketId: string | null, anchors: ReadonlyMap<string, string>): string | null {
-  if (!ticketId) return null
-  return anchors.get(ticketId) ?? null
-}
 
 export interface SeqBlock {
   type: string
@@ -51,7 +11,8 @@ export interface SeqBlock {
 
 /** Latest session seq on a block. Empty turn blocks have none. */
 export function blockEndSeq(block: SeqBlock): number | null {
-  if (block.type === 'user') return typeof block.segment?.seq === 'number' ? block.segment.seq : null
+  if (block.type === 'user' || block.type === 'card')
+    return typeof block.segment?.seq === 'number' ? block.segment.seq : null
   if (block.type !== 'turn' || !block.segments) return null
   let max = -1
   for (const segment of block.segments) {
@@ -98,25 +59,4 @@ export function placeOrphanTurns<T extends SeqBlock>(
     next.splice(index, 0, orphan.block)
   }
   return next
-}
-
-/** An approval sticks to its tool call, or to the turn where it first appeared. */
-export function resolveApprovals(
-  approvals: readonly { requestId: string; callId?: string }[],
-  callTurn: ReadonlyMap<string, number>,
-  pins: Map<string, ApprovalSpot>,
-  latestTurn: number,
-): Map<string, ApprovalSpot> {
-  for (const approval of approvals) {
-    if (pins.has(approval.requestId)) continue
-    const matched = approval.callId ? callTurn.get(approval.callId) : undefined
-    if (matched != null) pins.set(approval.requestId, { turn: matched, callId: approval.callId })
-    else if (latestTurn >= 0) pins.set(approval.requestId, { turn: latestTurn })
-  }
-  const visible = new Map<string, ApprovalSpot>()
-  for (const approval of approvals) {
-    const spot = pins.get(approval.requestId)
-    if (spot) visible.set(approval.requestId, spot)
-  }
-  return visible
 }

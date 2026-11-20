@@ -290,15 +290,34 @@ export function openCanvasStore(file: string) {
   return store
 }
 
+export interface CanvasPublished {
+  canvasId: string
+  sessionId: string
+  revision: number
+  kind: 'snapshot' | 'delta'
+  title: string
+  ticketId: string | null
+}
+
 export class CanvasStore {
   db: SqlDatabase
   tails: Map<string, Promise<unknown>>
   notices: Map<string, CanvasNotice>
+  publishListeners: Set<(event: CanvasPublished) => void>
 
   constructor(db: SqlDatabase) {
     this.db = db
     this.tails = new Map()
     this.notices = new Map()
+    this.publishListeners = new Set()
+  }
+
+  /** Fired after a preview revision commits. A listener must not fail the publish. */
+  onPublished(listener: (event: CanvasPublished) => void) {
+    this.publishListeners.add(listener)
+    return () => {
+      this.publishListeners.delete(listener)
+    }
   }
 
   close() {
@@ -553,7 +572,8 @@ export class CanvasStore {
             .prepare('INSERT INTO canvas_ticket_publishes (ticket_id, canvas_id, revision) VALUES (?, ?, ?)')
             .run(ticketId, canvasId, published.revision)
         }
-        return published
+        const kind = preview == null ? 'snapshot' : 'delta'
+        return this.emitPublished(published, kind)
       } catch (error) {
         return asStoreFailure(error)
       }
@@ -614,7 +634,7 @@ export class CanvasStore {
   }) {
     return this.locked(input.canvasId, () => {
       try {
-        return this.publishLocked(input)
+        return this.emitPublished(this.publishLocked(input), input.kind)
       } catch (error) {
         return asStoreFailure(error)
       }
@@ -990,6 +1010,55 @@ export class CanvasStore {
          FROM canvases WHERE id = ?`,
       )
       .get(canvasId)
+  }
+
+  /** Current preview of each canvas. Older revisions are not replayed as extra cards. */
+  publishedPreviews(): CanvasPublished[] {
+    const rows = this.db
+      .prepare(
+        `SELECT c.id, c.session_id, c.title, c.ticket_id, r.revision, r.kind
+         FROM canvases c
+         JOIN canvas_revisions r ON r.canvas_id = c.id AND r.revision = c.preview_revision
+         WHERE c.preview_revision IS NOT NULL AND r.status != 'failed' AND r.kind IN ('snapshot', 'delta')`,
+      )
+      .all()
+    return rows.flatMap(row => {
+      const kind = row.kind === 'delta' ? 'delta' : row.kind === 'snapshot' ? 'snapshot' : null
+      if (!kind || typeof row.id !== 'string' || typeof row.revision !== 'number') return []
+      return [
+        {
+          canvasId: row.id,
+          sessionId: typeof row.session_id === 'string' ? row.session_id : '',
+          revision: row.revision,
+          kind,
+          title: typeof row.title === 'string' ? row.title : '',
+          ticketId: typeof row.ticket_id === 'string' ? row.ticket_id : null,
+        },
+      ]
+    })
+  }
+
+  emitPublished<T extends { ok?: boolean; revision?: number; canvas?: ReturnType<CanvasStore['canvasRow']> }>(
+    result: T,
+    kind: 'snapshot' | 'delta',
+  ): T {
+    if (result?.ok !== true || typeof result.revision !== 'number' || !result.canvas) return result
+    const event: CanvasPublished = {
+      canvasId: result.canvas.id,
+      sessionId: result.canvas.sessionId,
+      revision: result.revision,
+      kind,
+      title: result.canvas.title,
+      ticketId: result.canvas.ticketId,
+    }
+    for (const listener of this.publishListeners) {
+      try {
+        listener(event)
+      } catch {
+        /* the revision is already committed */
+      }
+    }
+    return result
   }
 
   canvasRow(canvasId: string) {

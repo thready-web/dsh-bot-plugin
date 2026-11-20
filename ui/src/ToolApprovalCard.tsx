@@ -10,7 +10,8 @@ export function ToolApprovalCard({ approval, sessionId }: { approval: ToolApprov
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [state, setState] = useState(approval.state)
-  const interactive = Boolean(sessionId) && state === 'open'
+  const shown = state === 'recorded' ? approval.state : state
+  const interactive = Boolean(sessionId) && shown === 'open'
   const reason =
     locale.startsWith('zh') && approval.displayReason?.zh
       ? approval.displayReason.zh
@@ -43,13 +44,13 @@ export function ToolApprovalCard({ approval, sessionId }: { approval: ToolApprov
   }
 
   const status =
-    state === 'allowed-once'
+    shown === 'allowed-once'
       ? t('approval.allowed')
-      : state === 'rejected'
+      : shown === 'rejected'
         ? t('approval.rejected')
-        : state === 'cancelled'
+        : shown === 'cancelled'
           ? t('approval.cancelled')
-          : state === 'unavailable'
+          : shown === 'unavailable'
             ? t('approval.failed')
             : null
 
@@ -57,7 +58,7 @@ export function ToolApprovalCard({ approval, sessionId }: { approval: ToolApprov
     <section
       className="user-question-card"
       data-kind="tool-approval"
-      data-state={state}
+      data-state={shown}
       data-request={approval.requestId}
       data-session={sessionId || undefined}
     >

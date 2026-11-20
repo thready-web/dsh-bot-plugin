@@ -66,6 +66,7 @@ import {
   statsLine,
 } from './chrome'
 import { Transcript } from './transcript'
+import { FOLLOW_GAP } from './scroll-follow'
 import { useScrollFollow } from './use-scroll-follow'
 
 function LatestButton({ label, onClick }: { label: string; onClick: () => void }) {
@@ -860,7 +861,9 @@ export function App() {
     if (!composer || !scroll) return
     const apply = () => {
       const fade = Number.parseFloat(getComputedStyle(composer).getPropertyValue('--composer-fade')) || 0
-      const next = composer.hidden ? 0 : Math.max(0, composer.offsetHeight - fade)
+      const clearance = composer.hidden ? 0 : Math.max(0, composer.offsetHeight - fade)
+      // Clearance hides the composer card. FOLLOW_GAP is the empty tail above it.
+      const next = clearance + FOLLOW_GAP
       const previous = Number.parseFloat(scroll.style.paddingBottom) || 0
       if (previous === next) return
       scroll.style.paddingBottom = `${next}px`

@@ -365,7 +365,9 @@ function assertJournalPositions(state: ThreadState, chat: boolean) {
       ? piece.segment.text
       : piece.type === 'question'
         ? piece.segment.callId
-        : piece.segments.map(s => (s.kind === 'tool' ? s.callId : s.text)),
+        : piece.type === 'card'
+          ? piece.segment.id
+          : piece.segments.map(s => (s.kind === 'tool' ? s.callId : s.text)),
   )
 }
 

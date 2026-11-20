@@ -430,6 +430,16 @@ function migrate(db: SqlDatabase) {
   db.exec(MIGRATION_V2)
   db.exec(MIGRATION_V4)
   allowSteerInput(db)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_log (
+      kind       TEXT NOT NULL,
+      key        TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      payload    TEXT NOT NULL,
+      seq        INTEGER,
+      PRIMARY KEY (kind, key)
+    )
+  `)
   const columns = db.prepare('PRAGMA table_info(session_bindings)').all()
   if (!columns.some(column => column.name === 'kind')) {
     db.exec(

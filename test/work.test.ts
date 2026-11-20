@@ -28,6 +28,7 @@ function boot(budget?: Partial<typeof DEFAULT_WORK_BUDGET>) {
   const dir = mkdtempSync(join(tmpdir(), 'sf-work-'))
   const logs: Array<{ level: string; message: string }> = []
   const trips: Array<{ sessionId: string; trip: any }> = []
+  const recorded: Array<{ key: string; sessionId: string; payload: { ticketId: string } }> = []
   const store = openStore(dir)
   const engine = createEngine(store)
   const world = createMockWorld()
@@ -52,6 +53,9 @@ function boot(budget?: Partial<typeof DEFAULT_WORK_BUDGET>) {
       }
     },
     log: (level, message) => logs.push({ level, message }),
+    recordCard: input => {
+      recorded.push({ key: input.key, sessionId: input.sessionId, payload: input.payload })
+    },
     onMainBudget: (sessionId, trip) => trips.push({ sessionId, trip }),
     ...(budget ? { budget } : {}),
   })
@@ -60,6 +64,7 @@ function boot(budget?: Partial<typeof DEFAULT_WORK_BUDGET>) {
   return {
     logs,
     trips,
+    recorded,
     dir,
     store,
     engine,
@@ -70,6 +75,26 @@ function boot(budget?: Partial<typeof DEFAULT_WORK_BUDGET>) {
     close: () => store.close(),
   }
 }
+
+test('a successful dispatch records a worker card on the owner session', async () => {
+  const ctx = boot()
+  try {
+    const denied = await ctx.work.dispatch('plain-a', { briefing: 'no' })
+    assert.equal(denied.ok, false)
+    assert.equal(ctx.recorded.length, 0)
+    const result = await dispatched(ctx)
+    assert.equal(result.ok, true)
+    assert.equal(ctx.recorded.length, 1)
+    assert.equal(ctx.recorded[0].sessionId, 'bot-a')
+    assert.equal(ctx.recorded[0].key, result.ticketId)
+    assert.equal(ctx.recorded[0].payload.ticketId, result.ticketId)
+    await dispatched(ctx)
+    assert.equal(ctx.recorded.length, 2)
+    assert.equal(ctx.recorded[1].key, result.ticketId)
+  } finally {
+    ctx.close()
+  }
+})
 
 async function dispatched(ctx: any, briefing = 'sort the attachments', key = 'job-1') {
   return ctx.work.dispatch('bot-a', { briefing, idempotencyKey: key, ownerSessionId: 'plain-a' })

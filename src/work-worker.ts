@@ -99,6 +99,15 @@ type WorkHostOptions = {
   now?: () => Date
   budget?: Partial<typeof DEFAULT_WORK_BUDGET>
   schedule?: (fn: () => void, ms: number) => () => void
+  /** Durable worker card on the owner session. Absent in tests that do not render cards. */
+  recordCard?: (input: {
+    kind: 'worker'
+    key: string
+    sessionId: string
+    payload: { ticketId: string; summary: string; status: string }
+  }) => void
+  /** Retry card records whose session was not entered yet. */
+  flushCards?: () => void
 }
 
 export type MainBudgetTrip = {
@@ -175,6 +184,7 @@ export function createWorkRuntime(
     noticeText: (nativeId: string) => noticeText(nativeId),
     mainHistory: (ownerSessionId: string) => readMainHistory(ownerSessionId),
   }
+  backlogCards()
 
   return {
     limits,
@@ -555,19 +565,34 @@ export function createWorkRuntime(
       return { created, start: decision === 'start' }
     })
     if (prepared.error) return prepared.error
-    if (prepared.replay) return publicDispatch(prepared.replay, { replayed: true })
+    if (prepared.replay) {
+      const view = publicDispatch(prepared.replay, { replayed: true })
+      noteWorker(owner, prepared.replay, typeof view.status === 'string' ? view.status : String(prepared.replay.status))
+      return view
+    }
     const ticket = prepared.created.ticket
     if (!prepared.start) {
-      return publicDispatch(book.ticket(ticket.id), {
+      const view = publicDispatch(book.ticket(ticket.id), {
         flush: 'pending',
         queued: true,
         childSessionId: null,
         nativeMessageId: null,
       })
+      noteWorker(owner, book.ticket(ticket.id) ?? ticket, typeof view.status === 'string' ? view.status : 'accepted')
+      return view
     }
     if (!resident) {
-      return { ...publicDispatch(ticket), flush: 'pending', resident: false, message: 'Only a resident host continues' }
+      const view = {
+        ...publicDispatch(ticket),
+        flush: 'pending',
+        resident: false,
+        message: 'Only a resident host continues',
+      }
+      noteWorker(owner, ticket, typeof view.status === 'string' ? view.status : 'accepted')
+      return view
     }
+    const fresh = book.ticket(ticket.id) ?? ticket
+    noteWorker(owner, fresh, String(fresh.status ?? 'accepted'))
     return startReserved(ticket)
   }
 
@@ -932,7 +957,29 @@ export function createWorkRuntime(
     }
   }
 
+  function noteWorker(owner: string, ticket: Record<string, any>, status: string) {
+    if (!options.recordCard || typeof ticket?.id !== 'string') return
+    const text = typeof ticket.briefing_hash === 'string' ? book.readBriefing(ticket.briefing_hash) : ''
+    const line = text.split('\n')[0]?.trim() ?? ''
+    options.recordCard({
+      kind: 'worker',
+      key: ticket.id,
+      sessionId: owner,
+      payload: { ticketId: ticket.id, summary: line.slice(0, 80) || ticket.id, status },
+    })
+  }
+
+  function backlogCards() {
+    if (!options.recordCard) return
+    const rows = store.db.prepare('SELECT id, owner_session_id, briefing_hash, status FROM work_tickets').all()
+    for (const row of rows) {
+      if (typeof row.owner_session_id !== 'string') continue
+      noteWorker(row.owner_session_id, row, typeof row.status === 'string' ? row.status : 'accepted')
+    }
+  }
+
   async function tick() {
+    options.flushCards?.()
     await reconcileInputs(book, deps)
     await reconcileNotices(book, deps)
     await renewLiveLeases()

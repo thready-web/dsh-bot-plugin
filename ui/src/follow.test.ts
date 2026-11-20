@@ -353,7 +353,9 @@ test('assistant text stays between the tool batches around it', () => {
         ? processHeading(piece.segments)
         : piece.type === 'question'
           ? piece.segment.name
-          : piece.segment.text,
+          : piece.type === 'text'
+            ? piece.segment.text
+            : piece.segment.id,
     ),
     [
       'Read files',
@@ -386,8 +388,40 @@ test('ask_user_question stays a first-class piece between surrounding activity',
         ? piece.segment.text
         : piece.type === 'question'
           ? piece.segment.name
-          : piece.segments.map(s => s.kind),
+          : piece.type === 'card'
+            ? piece.segment.id
+            : piece.segments.map(s => s.kind),
     ),
     [['tool', 'think'], 'ask_user_question', ['tool']],
+  )
+})
+
+test('a plugin record becomes a card segment at its seq', () => {
+  const state = reduce([
+    item({
+      type: 'event',
+      event: {
+        type: 'plugin:foundations/worker',
+        seq: 8,
+        data: { ticketId: 't1', summary: 'sort the notes', status: 'accepted' },
+      },
+    }),
+    item({
+      type: 'event',
+      event: {
+        type: 'plugin:foundations/canvas',
+        seq: 9,
+        data: { canvasId: 'cnv_abcdefghijklmnop', revision: 1, kind: 'snapshot', title: 'Poster', ticketId: 't1' },
+      },
+    }),
+  ])
+  assert.deepEqual(
+    state.segments.map(segment => segment.kind),
+    ['worker-card', 'canvas-card'],
+  )
+  const pieces = turnPieces(state.segments)
+  assert.deepEqual(
+    pieces.map(piece => (piece.type === 'card' ? piece.segment.id : piece.type)),
+    ['worker:t1', 'canvas:cnv_abcdefghijklmnop:1'],
   )
 })

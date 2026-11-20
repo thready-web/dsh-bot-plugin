@@ -20,6 +20,7 @@ import { dispatchLogRequest, probeConnection, registerLogRoutes } from './log/ro
 import { handleMemoryRoute } from './memory-catalog.ts'
 import { handleCanvasApi, serveCanvasInspect, serveCanvasMedia } from './canvas-http.ts'
 import { openCanvasStore, type CanvasStore } from './canvas-store.ts'
+import { bindCanvasCards } from './card-log.ts'
 
 /**
  * Local management routes. Model tools cannot confirm a persona or change revocation.
@@ -46,6 +47,7 @@ export function registerHttp(
   const storeDir = dataDir || (ctx.profileContext?.dir ? join(ctx.profileContext.dir, 'session-foundations') : '')
   const profileDir = ctx.profileContext?.dir || (storeDir !== '' ? dirname(storeDir) : '')
   const canvas: CanvasStore | null = storeDir === '' ? null : openCanvasStore(join(storeDir, 'canvas.sqlite'))
+  if (canvas && storeDir !== '') bindCanvasCards(canvas, ctx, storeDir)
   const logService = createLogSnapshotService(createLogSource(ctx))
   const logOnConnection = registerLogRoutes(ctx, logService)
   const persistence = ctx.sessionPersistence as { root?: unknown } | undefined

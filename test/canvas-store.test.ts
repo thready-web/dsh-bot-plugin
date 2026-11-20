@@ -25,6 +25,40 @@ function files(cssText = css): CanvasFileInput[] {
   ]
 }
 
+test('a committed publish notifies once with the owner session', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sf-canvas-publish-'))
+  const store = openCanvasStore(join(dir, 'canvas.sqlite'))
+  const published: Array<{ sessionId: string; revision: number; kind: string }> = []
+  store.onPublished(event => {
+    published.push({ sessionId: event.sessionId, revision: event.revision, kind: event.kind })
+  })
+  try {
+    const created = store.create({ sessionId: 'session-canvas', title: 'Poster' })
+    assert.equal(created.ok, true)
+    if (created.ok !== true) return
+    const denied = await store.publish({
+      canvasId: created.canvas.id,
+      kind: 'snapshot',
+      entry: 'index.html',
+      expectedFence: 0,
+      files: [{ path: 'index.html', type: 'text/html', bytes: Buffer.from('<script></script>') }],
+    })
+    assert.equal(denied.ok, false)
+    assert.equal(published.length, 0)
+    const first = await store.publish({
+      canvasId: created.canvas.id,
+      kind: 'snapshot',
+      entry: 'index.html',
+      expectedFence: 0,
+      files: files(),
+    })
+    assert.equal(first.ok, true)
+    assert.deepEqual(published, [{ sessionId: 'session-canvas', revision: 1, kind: 'snapshot' }])
+  } finally {
+    store.close()
+  }
+})
+
 test('canvas revisions keep a full manifest, fence writes, and retain the stable copy', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'sf-canvas-store-'))
   const store = openCanvasStore(join(dir, 'canvas.sqlite'))

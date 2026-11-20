@@ -7,5 +7,5 @@ export type ToolApprovalView = {
   callId?: string
   reason: string
   displayReason?: { en: string; [locale: string]: string }
-  state: 'open' | 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+  state: 'open' | 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable' | 'recorded'
 }

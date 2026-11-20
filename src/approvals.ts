@@ -81,7 +81,9 @@ function displayReasonOf(value: OfficialApprovalRequest['displayReason']) {
 
 export type ApprovalAnswerer = ReturnType<typeof createApprovalAnswerer>
 
-export function createApprovalAnswerer() {
+export function createApprovalAnswerer(
+  record?: (entry: { sessionId: string; requestId: string; toolName: string; reason: string; callId?: string }) => void,
+) {
   const pending = new Set<PendingApproval>()
   const settled: ApprovalSnapshot[] = []
   let nextId = 1
@@ -132,6 +134,13 @@ export function createApprovalAnswerer() {
       }
       entry.onAbort = onAbort
       pending.add(entry)
+      record?.({
+        sessionId,
+        requestId: entry.requestId,
+        toolName,
+        reason: textOf(request.reason),
+        ...(callId === '' ? {} : { callId }),
+      })
       if (request.signal?.aborted) {
         onAbort()
         return

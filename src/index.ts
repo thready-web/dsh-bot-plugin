@@ -27,6 +27,7 @@ import { CANVAS_WORKER_PRESET, ensureWorkerFilePreset, WORKER_FILE_PRESET, worke
 import { BUDGET_NOTICE_PREFIX, createWorkRuntime, type MainBudgetTrip } from './work-worker.ts'
 import { workToolDefinitions } from './work-tools.ts'
 import { openCanvasStore } from './canvas-store.ts'
+import { backlogCanvases, bindCanvasCards, createCardLog, publishCardLog, type CardLog } from './card-log.ts'
 import { canvasToolDefinitions } from './canvas-tools.ts'
 
 export const name = 'session-foundations'
@@ -61,7 +62,11 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
   const dataDir = config.dataDir ?? (ctx.profileContext?.dir ? join(ctx.profileContext.dir, 'session-foundations') : '')
   if (dataDir === '') throw new Error('session-foundations: pass dataDir or launch with dsh profileContext')
   const store = openStore(dataDir)
+  const cards = createCardLog(store.db)
+  publishCardLog(dataDir, cards)
   const canvas = openCanvasStore(join(dataDir, 'canvas.sqlite'))
+  bindCanvasCards(canvas, ctx, dataDir)
+  backlogCanvases(canvas, ctx, dataDir)
   const engine = createEngine(store)
   const recovery = engine.recover()
   const ownerFile = join(dataDir, 'owner.json')
@@ -73,6 +78,7 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
     } catch {
       /* already gone */
     }
+    publishCardLog(dataDir, null)
     try {
       store.close()
     } catch {
@@ -266,7 +272,7 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
 
   triggers = ctx.agents ? startTriggers(ctx, store, engine) : null
   work = ctx.agents
-    ? startWork(ctx, store, engine, config, sessionIds => {
+    ? startWork(ctx, store, engine, config, cards, sessionIds => {
         for (const sessionId of sessionIds) rendered.delete(sessionId)
       })
     : null
@@ -332,7 +338,19 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
     if (questionAnswererFor(store.root) === questions) publishQuestionAnswerer(store.root, null)
   })
 
-  const approvals = createApprovalAnswerer()
+  const approvals = createApprovalAnswerer(entry => {
+    cards.record(ctx, {
+      kind: 'approval',
+      key: entry.requestId,
+      sessionId: entry.sessionId,
+      payload: {
+        requestId: entry.requestId,
+        toolName: entry.toolName,
+        reason: entry.reason,
+        ...(entry.callId ? { callId: entry.callId } : {}),
+      },
+    })
+  })
   publishApprovalAnswerer(store.root, approvals)
   ctx.effect(() => approvals.listen(ctx))
   ctx.effect(() => () => {
@@ -402,6 +420,7 @@ function startWork(
   store: import('./store.ts').Store,
   engine: import('./engine.ts').Engine,
   config: FoundationsConfig,
+  cards: CardLog,
   onDrop: (sessionIds: readonly string[]) => void = () => {},
 ) {
   /** @type {Map<string, { dispose?: () => Promise<void> }>} */
@@ -483,6 +502,12 @@ function startWork(
       const handle = await ctx.agents.create(options)
       workerHandles.set(spec.sessionId, handle)
       return spec.sessionId
+    },
+    recordCard: input => {
+      cards.record(ctx, input)
+    },
+    flushCards: () => {
+      cards.flush(ctx)
     },
     push: (sessionId, messageId, text) => followupDurable(ctx, sessionId, messageId, text),
     steer: (sessionId, messageId, text) => steerDurable(ctx, sessionId, messageId, text),

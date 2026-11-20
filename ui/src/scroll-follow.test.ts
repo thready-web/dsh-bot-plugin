@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createFollowScroll, leaveBottom, noteScroll, pauseFollow } from './scroll-follow.ts'
+import { FOLLOW_GAP, createFollowScroll, leaveBottom, noteScroll, pauseFollow } from './scroll-follow.ts'
 
 const view = { clientHeight: 100 }
 
@@ -21,6 +21,18 @@ test('an upward scroll releases follow, and returning to the end resumes it', ()
   const back = noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 500 })
   assert.equal(back.following, true)
   assert.equal(back.detached, false)
+})
+
+test('scrolling down resumes follow once the tail blank is visible', () => {
+  const state = createFollowScroll()
+  noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 500 })
+  noteScroll(state, { ...view, scrollTop: 100, scrollHeight: 500 })
+  const hidden = noteScroll(state, { ...view, scrollTop: 400 - FOLLOW_GAP - 20, scrollHeight: 500 })
+  assert.equal(hidden.following, false)
+  assert.equal(hidden.detached, true)
+  const revealed = noteScroll(state, { ...view, scrollTop: 400 - FOLLOW_GAP, scrollHeight: 500 })
+  assert.equal(revealed.following, true)
+  assert.equal(revealed.detached, false)
 })
 
 test('a small upward nudge releases follow before the next token can pin again', () => {

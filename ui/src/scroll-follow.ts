@@ -1,6 +1,12 @@
 /** How close to the end still counts as the bottom, including sub-pixel clipping. */
 export const BOTTOM_SLOP = 8
 
+/**
+ * Empty tail under the last message, also the distance that resumes follow.
+ * Scrolling down until this gap is on screen means the reader has reached the live edge.
+ */
+export const FOLLOW_GAP = 56
+
 export type ScrollBox = {
   scrollHeight: number
   scrollTop: number
@@ -47,7 +53,9 @@ export function noteScroll(state: FollowScroll, box: ScrollBox): { following: bo
   const movedDown = state.lastTop != null && box.scrollTop > state.lastTop + 1
   // Height changes (stream tokens, images, the composer pad) are not the user leaving.
   if (!programmed && !heightChanged && movedUp) state.following = false
-  if (!state.following && !state.suppressRejoin && !programmed && !heightChanged && movedDown && gap <= BOTTOM_SLOP)
+  // Revealing the tail blank, on the way down, is the live edge. An upward nudge stays detached
+  // so the next token cannot pull the reader back.
+  if (!state.following && !state.suppressRejoin && !programmed && !heightChanged && movedDown && gap <= FOLLOW_GAP)
     state.following = true
   state.lastTop = box.scrollTop
   state.lastHeight = box.scrollHeight

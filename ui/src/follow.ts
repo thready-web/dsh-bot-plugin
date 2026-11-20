@@ -3,6 +3,7 @@ import { parseBotMail } from './bot-message.ts'
 import { isTicketNotice, parseBriefing } from './work.ts'
 import { isUserQuestionTool } from './user-question.ts'
 import {
+  type CardSegment,
   type LiveBlock,
   type RetryAttempt,
   type Segment,
@@ -123,6 +124,11 @@ export function collectEvents(node: unknown, out: SessionEvent[]): void {
   if (record.value && record.value !== node) collectEvents(record.value, out)
   if (Array.isArray(record.events)) collectEvents(record.events, out)
   if (Array.isArray(record.records)) collectEvents(record.records, out)
+}
+
+function segmentStep(item: Segment): number | undefined {
+  if (item.kind === 'think' || item.kind === 'tool' || item.kind === 'assistant') return item.step
+  return undefined
 }
 
 function sortSegments(segments: Segment[]): Segment[] {
@@ -283,6 +289,11 @@ export type TurnPiece =
   | { type: 'text'; segment: Extract<Segment, { kind: 'assistant' }> }
   | { type: 'activity'; id: string; segments: ActivitySegment[] }
   | { type: 'question'; segment: Extract<Segment, { kind: 'tool' }> }
+  | { type: 'card'; segment: CardSegment }
+
+export function isCardSegment(segment: Segment): segment is CardSegment {
+  return segment.kind === 'worker-card' || segment.kind === 'canvas-card' || segment.kind === 'approval-card'
+}
 
 /** Keep each assistant sentence where it was emitted, and bundle only the activity between sentences. */
 export function turnPieces(segments: readonly Segment[]): TurnPiece[] {
@@ -303,6 +314,9 @@ export function turnPieces(segments: readonly Segment[]): TurnPiece[] {
     if (segment.kind === 'assistant') {
       flush()
       pieces.push({ type: 'text', segment })
+    } else if (isCardSegment(segment)) {
+      flush()
+      pieces.push({ type: 'card', segment })
     } else if (segment.kind === 'tool' && isUserQuestionTool(segment.name)) {
       flush()
       pieces.push({ type: 'question', segment })
@@ -950,7 +964,7 @@ function clearStepLive(state: ThreadState, turn: number, step: number, settled =
         settled &&
         item.kind !== 'user' &&
         item.turn === turn &&
-        item.step === step &&
+        segmentStep(item) === step &&
         (item.kind === 'assistant' || item.kind === 'think')
       )
         return false
@@ -980,7 +994,7 @@ function freezeLive(state: ThreadState, turn: number, step: number): ThreadState
     streamAttempt: null,
     pendingAssistant: null,
     segments: state.segments.map(item => {
-      if (item.kind === 'user' || item.turn !== turn || item.step !== step) return item
+      if (item.kind === 'user' || item.turn !== turn || segmentStep(item) !== step) return item
       if (item.kind === 'think') return { ...item, running: false }
       if (item.kind === 'tool')
         return {
@@ -1001,7 +1015,7 @@ function modelStepSettled(state: ThreadState, turn: number, step: number): boole
       item =>
         item.kind !== 'user' &&
         item.turn === turn &&
-        item.step === step &&
+        segmentStep(item) === step &&
         (item.kind === 'tool'
           ? item.callReceived || item.resultReceived
           : item.kind === 'assistant'
@@ -1307,7 +1321,60 @@ export function applyLogEvent(state: ThreadState, event: SessionEvent): ThreadSt
   if (event.type === 'tool/result') {
     next = applyToolResult(next, event)
   }
+  const card = cardSegment(event)
+  if (card) next = { ...next, segments: putCard(next.segments, card) }
   return next
+}
+
+function cardSegment(event: SessionEvent): CardSegment | null {
+  const data = event.data ?? {}
+  const seq = typeof event.seq === 'number' ? event.seq : Number.MAX_SAFE_INTEGER
+  if (event.type === 'plugin:foundations/worker') {
+    const ticketId = typeof data.ticketId === 'string' ? data.ticketId : ''
+    if (ticketId === '') return null
+    return {
+      kind: 'worker-card',
+      id: `worker:${ticketId}`,
+      seq,
+      ticketId,
+      summary: typeof data.summary === 'string' && data.summary !== '' ? data.summary : ticketId,
+      status: typeof data.status === 'string' && data.status !== '' ? data.status : 'accepted',
+    }
+  }
+  if (event.type === 'plugin:foundations/canvas') {
+    const canvasId = typeof data.canvasId === 'string' ? data.canvasId : ''
+    const revision = typeof data.revision === 'number' ? data.revision : null
+    if (canvasId === '' || revision == null) return null
+    return {
+      kind: 'canvas-card',
+      id: `canvas:${canvasId}:${revision}`,
+      seq,
+      canvasId,
+      revision,
+      title: typeof data.title === 'string' ? data.title : '',
+      ticketId: typeof data.ticketId === 'string' ? data.ticketId : null,
+      previewKind: data.kind === 'delta' ? 'delta' : 'snapshot',
+    }
+  }
+  if (event.type === 'plugin:foundations/approval') {
+    const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+    const toolName = typeof data.toolName === 'string' ? data.toolName : ''
+    if (requestId === '' || toolName === '') return null
+    return {
+      kind: 'approval-card',
+      id: `approval:${requestId}`,
+      seq,
+      requestId,
+      toolName,
+      reason: typeof data.reason === 'string' ? data.reason : '',
+      ...(typeof data.callId === 'string' && data.callId !== '' ? { callId: data.callId } : {}),
+    }
+  }
+  return null
+}
+
+function putCard(segments: Segment[], card: CardSegment): Segment[] {
+  return sortSegments([...segments.filter(item => item.id !== card.id), card])
 }
 
 export function applyEphemeralFrame(state: ThreadState, frame: unknown): ThreadState {
@@ -1350,6 +1417,7 @@ export function previewOf(segments: Segment[]): string {
     const item = segments[index]
     if (!item) continue
     if (item.kind === 'user' && isTicketNotice(item.text)) continue
+    if (isCardSegment(item)) continue
     const mail = item.kind === 'user' ? parseBotMail(item.text) : null
     const briefing = item.kind === 'user' ? parseBriefing(item.text) : null
     const text = mail

@@ -63,7 +63,42 @@ export interface AssistantSegment {
   messageId?: string
 }
 
-export type Segment = UserSegment | ThinkSegment | ToolSegment | AssistantSegment
+export interface WorkerCardSegment {
+  kind: 'worker-card'
+  id: string
+  seq: number
+  turn?: number
+  ticketId: string
+  summary: string
+  status: string
+}
+
+export interface CanvasCardSegment {
+  kind: 'canvas-card'
+  id: string
+  seq: number
+  turn?: number
+  canvasId: string
+  revision: number
+  title: string
+  ticketId: string | null
+  previewKind: 'snapshot' | 'delta'
+}
+
+export interface ApprovalCardSegment {
+  kind: 'approval-card'
+  id: string
+  seq: number
+  turn?: number
+  requestId: string
+  toolName: string
+  reason: string
+  callId?: string
+}
+
+export type CardSegment = WorkerCardSegment | CanvasCardSegment | ApprovalCardSegment
+
+export type Segment = UserSegment | ThinkSegment | ToolSegment | AssistantSegment | CardSegment
 
 export interface TurnFailure {
   message: string
