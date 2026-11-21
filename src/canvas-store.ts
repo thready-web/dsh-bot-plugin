@@ -529,7 +529,13 @@ export class CanvasStore {
         )
         for (const file of staged) upsert.run(canvasId, file.path, file.type, file.bytes, updatedAt)
       })
-      return { ok: true as const, files: [...next.keys()].sort() }
+      return {
+        ok: true as const,
+        source: 'draft' as const,
+        files: [...next.entries()]
+          .sort((left, right) => left[0].localeCompare(right[0]))
+          .map(([path, bytes]) => ({ path, bytes })),
+      }
     })
   }
 
@@ -911,6 +917,39 @@ export class CanvasStore {
           item.text = Buffer.from(row.bytes as Uint8Array).toString('utf8')
         return item
       }),
+    }
+  }
+
+  /**
+   * The files a worker is editing. A draft replaces the published file at the
+   * same path, and a path that exists only in the draft is included.
+   */
+  workingListing(canvasId: string) {
+    const published = this.previewListing(canvasId)
+    if (published.ok === false) return published
+    const drafts = this.db
+      .prepare('SELECT path, media_type, bytes FROM canvas_drafts WHERE canvas_id = ? ORDER BY path ASC')
+      .all(canvasId)
+    const byPath = new Map<string, PreviewRead & { source: 'draft' | 'preview' }>()
+    for (const file of published.files) byPath.set(file.path, { ...file, source: 'preview' })
+    for (const row of drafts) {
+      const type = String(row.media_type)
+      const raw = Buffer.from(row.bytes as Uint8Array)
+      const item: PreviewRead & { source: 'draft' } = {
+        path: String(row.path),
+        type,
+        bytes: raw.length,
+        source: 'draft',
+      }
+      if (type === 'text/html' || type === 'text/css') item.text = raw.toString('utf8')
+      byPath.set(item.path, item)
+    }
+    const files = [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path))
+    return {
+      ok: true as const,
+      revision: published.revision,
+      source: files.some(file => file.source === 'draft') ? ('draft' as const) : ('preview' as const),
+      files,
     }
   }
 

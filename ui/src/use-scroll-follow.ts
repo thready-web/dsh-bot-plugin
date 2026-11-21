@@ -7,6 +7,7 @@ import {
   noteScroll,
   pauseFollow,
   smoothFollowTop,
+  snapGrowingThread,
   type FollowScroll,
 } from './scroll-follow'
 
@@ -84,6 +85,13 @@ export function useScrollFollow(resetKey: string) {
     if (Math.abs(node.scrollTop - top) <= 1) {
       stopChase()
       state.current.programmaticTop = null
+      publish(node)
+      return
+    }
+    if (snapGrowingThread(node.scrollTop, top)) {
+      stopChase()
+      state.current.programmaticTop = top
+      node.scrollTop = top
       publish(node)
       return
     }

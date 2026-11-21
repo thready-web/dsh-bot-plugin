@@ -75,7 +75,7 @@ export function canvasToolDefinitions(
     ),
     tool(
       'canvas_read',
-      'Read the current preview bound to this worker. HTML and CSS include text. Images and fonts return path, type, and bytes (the size only). Do not search the disk for cnv_ or a canvas store. This does not publish.',
+      'Read the files staged for this worker, with the published preview underneath. A draft replaces the published file at the same path. HTML and CSS include text. Images and fonts return path, type, and bytes. source is draft or preview. Do not search the disk for cnv_ or a canvas store. This does not publish.',
       {
         type: 'object',
         properties: {
@@ -85,19 +85,19 @@ export function canvasToolDefinitions(
       async (args, hostId) => {
         const canvasId = ownedCanvas(canvas, work, engine, hostId)
         if (typeof canvasId !== 'string') return canvasId
-        const listing = canvas.previewListing(canvasId)
+        const listing = canvas.workingListing(canvasId)
         if (listing.ok === false) return listing
         const path = args.path
         if (path == null || path === '') return listing
         if (typeof path !== 'string') return toolError('VALIDATION', 'path is not allowed.')
         const file = listing.files.find((item: { path: string }) => item.path === path)
-        if (!file) return toolError('NOT_FOUND', 'That file is not in the current preview.')
-        return { ok: true, canvasId, revision: listing.revision, files: [file] }
+        if (!file) return toolError('NOT_FOUND', 'That file is not staged or published.')
+        return { ok: true, canvasId, revision: listing.revision, source: file.source, files: [file] }
       },
     ),
     tool(
       'canvas_edit',
-      'Replace one exact span in an existing HTML or CSS file on this canvas. old must match once. Do not send the whole file. This stages the file and does not publish.',
+      'Replace one exact span in an existing HTML or CSS file on this canvas. old must match once. Do not send the whole file. The result lists each staged file with its byte size. canvas_read then returns the staged text. This stages the file and does not publish.',
       {
         type: 'object',
         properties: {
@@ -115,7 +115,7 @@ export function canvasToolDefinitions(
     ),
     tool(
       'canvas_write',
-      'Stage files for the canvas bound to this worker. Pass HTML and CSS as text, up to the 1.5 MiB file cap. Pass images and fonts as body (standard base64), or as source when that file is already in the workspace. This worker has no write or edit tool. A file on disk is not this preview. This does not publish and does not mark the preview failed.',
+      'Stage files for the canvas bound to this worker. Pass HTML and CSS as text, up to the 1.5 MiB file cap. Every file needs path and type. Pass images and fonts as body (standard base64), or as source when that file is already in the workspace. The result lists each staged file with its byte size. canvas_read then returns those staged bytes. This worker has no write or edit tool. A file on disk is not this preview. This does not publish and does not mark the preview failed.',
       {
         type: 'object',
         properties: {
@@ -317,7 +317,7 @@ function decodeFiles(input: unknown): ToolPayload | DecodedFile[] {
     if (!item || typeof item !== 'object') return toolError('VALIDATION', 'A canvas file is not allowed.')
     const record = item as Record<string, unknown>
     if (typeof record.path !== 'string' || typeof record.type !== 'string')
-      return toolError('VALIDATION', 'A canvas file is not allowed.')
+      return toolError('VALIDATION', 'Each file needs a path and a type.')
     if (record.type === 'text') return toolError('VALIDATION', 'type must be text/html or text/css.')
     const text = record.text
     const body = record.body

@@ -109,6 +109,22 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
       { agent: { id: 'worker-canvas' } },
     )
     assert.equal(staged.ok, true)
+    assert.equal(staged.source, 'draft')
+    assert.equal(
+      staged.files.find((file: { path: string }) => file.path === 'index.html').bytes,
+      Buffer.byteLength(html),
+    )
+    const bare = await write.execute(
+      { files: [{ path: 'index.html', text: html }] },
+      { agent: { id: 'worker-canvas' } },
+    )
+    assert.equal(bare.code, 'VALIDATION')
+    assert.match(String(bare.message), /Each file needs a path and a type/)
+    const stagedRead = await read.execute({ path: 'index.html' }, { agent: { id: 'worker-canvas' } })
+    assert.equal(stagedRead.ok, true)
+    assert.equal(stagedRead.source, 'draft')
+    assert.equal(stagedRead.revision, null)
+    assert.match(stagedRead.files[0].text, /<h1>Hi/)
     const huge = `<!doctype html><html><body>${'b'.repeat(Math.floor(1.5 * 1024 * 1024))}</body></html>`
     const over = await write.execute(
       { files: [{ path: 'index.html', type: 'text/html', text: huge }] },
@@ -165,6 +181,28 @@ test('canvas worker publishes a snapshot then a delta; the main bot cannot write
       { agent: { id: 'worker-delta' } },
     )
     assert.equal(edited.ok, true)
+    assert.equal(
+      edited.files.find((file: { path: string }) => file.path === 'app.css').bytes > Buffer.byteLength('black'),
+      true,
+    )
+    const editedRead = await read.execute({ path: 'app.css' }, { agent: { id: 'worker-delta' } })
+    assert.equal(editedRead.ok, true)
+    assert.equal(editedRead.source, 'draft')
+    assert.match(editedRead.files[0].text, /white/)
+    const probe = '.probe { color: red; }'
+    const probed = await write.execute(
+      { files: [{ path: 'probe.css', type: 'text/css', text: probe }] },
+      { agent: { id: 'worker-delta' } },
+    )
+    assert.equal(probed.ok, true)
+    const probeRead = await read.execute({ path: 'probe.css' }, { agent: { id: 'worker-delta' } })
+    assert.equal(probeRead.ok, true)
+    assert.equal(probeRead.source, 'draft')
+    assert.equal(probeRead.files[0].text, probe)
+    assert.equal(probeRead.files[0].bytes, Buffer.byteLength(probe))
+    const missingFile = await read.execute({ path: 'absent.css' }, { agent: { id: 'worker-delta' } })
+    assert.equal(missingFile.code, 'NOT_FOUND')
+    assert.match(String(missingFile.message), /not staged or published/)
     const shortened = await write.execute(
       { files: [{ path: 'index.html', type: 'text/html', text: '<p>x</p></html>' }] },
       { agent: { id: 'worker-delta' } },

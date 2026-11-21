@@ -1247,6 +1247,8 @@ button.chip {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
   padding: 8px 28px 12px;
@@ -1372,6 +1374,25 @@ button.chip {
   max-width: 100%;
   min-width: 0;
   margin: 0 auto;
+}
+/* Short threads sit on the composer. The column fills the scrollport and the
+   thread's top margin takes the leftover, so new lines rise instead of hanging
+   from the header. Once the thread is taller than the port, that margin is 0
+   and the scroller moves normally. */
+.scroll > .column {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+}
+.scroll > .column > .thread {
+  margin-top: auto;
+}
+.scroll > .column > .thread:has(> .empty-thread) {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin-top: 0;
 }
 .empty-thread {
   text-align: center;

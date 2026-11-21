@@ -766,6 +766,88 @@ test('result without a completed turn stays pending and does not become ready', 
   assert.equal(ctx.work.detail(result.ticketId)!.ticket.status, 'started')
   assert.equal(ctx.work.detail(result.ticketId)!.events[0].apply_status, 'pending_completion')
   assert.equal(ctx.work.detail(result.ticketId)!.events[0].text, 'not finished yet')
+  const early = await ctx.work.admit('bot-a')
+  assert.equal(early.admitted, false)
+  assert.equal(early.reason, 'empty')
+  assert.equal(ctx.work.detail(result.ticketId)!.notices.length, 0)
+  ctx.close()
+})
+
+test('an applied result is noticed in the same tick and can be published', async () => {
+  const ctx = boot()
+  const result = await dispatched(ctx)
+  const seen = ctx.world.seeUser(result.childSessionId, result.nativeMessageId, 1)
+  ctx.work.observeSession(result.childSessionId, seen)
+  const reported = field(
+    await ctx.work.report(result.childSessionId, { kind: 'result', text: 'the page is written' }),
+    'eventId',
+  )
+  assert.equal(reported.applyStatus, 'pending_completion')
+  ctx.world.endTurn(result.childSessionId, 1, 'completed')
+  await ctx.work.tick()
+  const detail = ctx.work.detail(result.ticketId)
+  assert.equal(detail!.ticket.status, 'ready')
+  assert.equal(detail!.events[0].apply_status, 'applied')
+  assert.equal(detail!.notices.length, 1)
+  assert.equal(detail!.notices[0].event_id, reported.eventId)
+  const published = await ctx.work.publish('bot-a', {
+    resultEventId: reported.eventId,
+    text: 'the page is written',
+  })
+  assert.equal(published.ok, true)
+  assert.equal(published.status, 'intent')
+  ctx.close()
+})
+
+test('a finished parent turn with no publish settles the ready ticket', async () => {
+  const ctx = boot()
+  const result = await dispatched(ctx)
+  const seen = ctx.world.seeUser(result.childSessionId, result.nativeMessageId, 1)
+  ctx.work.observeSession(result.childSessionId, seen)
+  const reported = field(
+    await ctx.work.report(result.childSessionId, { kind: 'result', text: 'swiss preview is ready' }),
+    'eventId',
+  )
+  ctx.world.endTurn(result.childSessionId, 1, 'completed')
+  await ctx.work.tick()
+  const notice = ctx.work.detail(result.ticketId)!.notices[0]
+  assert.equal(notice.observe_status, 'none')
+  ctx.work.observeSession('bot-a', ctx.world.seeUser('bot-a', notice.native_message_id, 1))
+  await ctx.work.tick()
+  assert.equal(ctx.work.detail(result.ticketId)!.ticket.status, 'ready')
+  ctx.work.observeSession('bot-a', ctx.world.endTurn('bot-a', 1, 'completed'))
+  await ctx.work.tick()
+  assert.equal(ctx.work.detail(result.ticketId)!.ticket.status, 'delivered')
+  const delivery = ctx.store.db
+    .prepare(`SELECT status, result_event_id FROM user_deliveries WHERE ticket_id = ?`)
+    .get(result.ticketId)
+  assert.equal(delivery.status, 'log_bound')
+  assert.equal(delivery.result_event_id, reported.eventId)
+  ctx.close()
+})
+
+test('an open publish intent is left for the assistant bind', async () => {
+  const ctx = boot()
+  const result = await dispatched(ctx)
+  const seen = ctx.world.seeUser(result.childSessionId, result.nativeMessageId, 1)
+  ctx.work.observeSession(result.childSessionId, seen)
+  const reported = field(
+    await ctx.work.report(result.childSessionId, { kind: 'result', text: 'still binding' }),
+    'eventId',
+  )
+  ctx.world.endTurn(result.childSessionId, 1, 'completed')
+  await ctx.work.tick()
+  const published = await ctx.work.publish('bot-a', { resultEventId: reported.eventId, text: 'still binding' })
+  assert.equal(published.status, 'intent')
+  const notice = ctx.work.detail(result.ticketId)!.notices[0]
+  ctx.work.observeSession('bot-a', ctx.world.seeUser('bot-a', notice.native_message_id, 1))
+  ctx.work.observeSession('bot-a', ctx.world.endTurn('bot-a', 1, 'completed'))
+  await ctx.work.tick()
+  assert.equal(ctx.work.detail(result.ticketId)!.ticket.status, 'ready')
+  assert.equal(
+    ctx.store.db.prepare(`SELECT status FROM user_deliveries WHERE publish_id = ?`).get(published.publishId).status,
+    'intent',
+  )
   ctx.close()
 })
 

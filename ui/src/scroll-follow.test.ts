@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  BOTTOM_SLOP,
   FOLLOW_GAP,
   createFollowScroll,
   leaveBottom,
   noteScroll,
   pauseFollow,
   smoothFollowTop,
+  snapGrowingThread,
 } from './scroll-follow.ts'
 
 const view = { clientHeight: 100 }
@@ -74,6 +76,13 @@ test('a paused reader stays put while later content arrives', () => {
   const grown = noteScroll(state, { ...view, scrollTop: 400, scrollHeight: 700 })
   assert.equal(grown.following, false)
   assert.equal(grown.detached, true)
+})
+
+test('a short thread that just overflowed snaps to the end instead of easing from the top', () => {
+  assert.equal(snapGrowingThread(0, 0), false)
+  assert.equal(snapGrowingThread(0, BOTTOM_SLOP), false)
+  assert.equal(snapGrowingThread(0, 400), true)
+  assert.equal(snapGrowingThread(120, 400), false)
 })
 
 test('leaveBottom releases a tall thread and ignores one that cannot scroll', () => {

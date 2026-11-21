@@ -69,6 +69,7 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
     abandonOpenDeliveries,
     setReview,
     bindDelivery,
+    settleAbandonedReady,
     summaries,
     detail,
     liveStamp,
@@ -1027,6 +1028,62 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
   }
 
   /**
+   * A ready result whose parent turn already finished, and that has no publish
+   * intent left to bind, will not be published by the model. Record the result
+   * as a bound delivery and close the ticket.
+   */
+  function settleAbandonedReady() {
+    const rows = db
+      .prepare(`
+      SELECT t.*, e.event_id AS result_event_id, e.payload_hash AS result_hash,
+             e.attempt_id AS result_attempt_id, e.fencing_token AS result_fencing_token,
+             e.briefing_revision AS result_briefing_revision
+      FROM work_tickets t
+      JOIN work_events e ON e.ticket_id = t.id
+        AND e.kind = 'result'
+        AND e.apply_status = 'applied'
+        AND e.briefing_revision = t.briefing_revision
+        AND e.attempt_id = t.active_attempt_id
+      JOIN work_notices n ON n.event_id = e.event_id AND n.ticket_id = t.id
+      WHERE t.status = 'ready'
+        AND t.review_status != 'rejected'
+        AND n.observe_status = 'completed'
+        AND NOT EXISTS (
+          SELECT 1 FROM user_deliveries d
+          WHERE d.ticket_id = t.id AND d.result_event_id = e.event_id
+        )
+    `)
+      .all()
+    /** @type {Array<Record<string, any>>} */
+    const closed = []
+    for (const item of rows) {
+      const text = readBriefing(item.result_hash)
+      if (text.trim() === '') continue
+      const delivery = insertDelivery({
+        ticketId: item.id,
+        eventId: item.result_event_id,
+        owner: item.owner_session_id,
+        attemptId: item.result_attempt_id,
+        fencingToken: item.result_fencing_token,
+        briefingRevision: item.result_briefing_revision,
+        text,
+        turn: null,
+      })
+      if (delivery.already) continue
+      db.prepare(`UPDATE user_deliveries SET status = 'log_bound' WHERE publish_id = ? AND status = 'intent'`).run(
+        delivery.row.publish_id,
+      )
+      db.prepare(`UPDATE work_tickets SET status = 'delivered', updated_at = ? WHERE id = ? AND status = 'ready'`).run(
+        iso(),
+        item.id,
+      )
+      const ticket = row('SELECT * FROM work_tickets WHERE id = ?', item.id)
+      if (ticket) closed.push(ticket)
+    }
+    return closed
+  }
+
+  /**
    * @param {string} owner
    */
   function visibleTickets(owner: string) {
@@ -1204,6 +1261,10 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
   }
 
   /**
+   * Result, failure, and question stay pending_completion until the worker
+   * turn ends. Notifying them earlier asks the parent to publish a result
+   * the publish gate still rejects. notice_id stays null until admission,
+   * so the applied row is still visible on the next query.
    * @param {string} owner
    */
   function eventsWithoutNotice(owner: string) {
@@ -1211,7 +1272,7 @@ export function createTicketBook(db: SqlDatabase, root: string, now: () => Date 
       .prepare(`
       SELECT e.* FROM work_events e
       JOIN work_tickets t ON t.id = e.ticket_id
-      WHERE t.owner_session_id = ? AND e.notice_id IS NULL AND e.apply_status != 'stale'
+      WHERE t.owner_session_id = ? AND e.notice_id IS NULL AND e.apply_status = 'applied'
       ORDER BY e.created_at
     `)
       .all(owner)

@@ -987,11 +987,15 @@ export function createWorkRuntime(
     await stopExpiredChildren(quiet)
     const expired = await store.write('work', () => book.expireQuiet())
     await stopExpiredChildren(expired)
+    // Apply a worker turn that already ended before waking the parent, so the
+    // notice carries an applied result the publish gate will accept.
+    for (const child of book.childIdsForReconcile()) await reconcileChild(child)
     for (const owner of book.ownerIds()) {
       if (engine.isBot(owner)) await admit(owner)
     }
-    for (const child of book.childIdsForReconcile()) await reconcileChild(child)
     for (const owner of book.ownerIdsForReconcile()) await reconcileOwner(owner)
+    const settled = await store.write('work', () => book.settleAbandonedReady())
+    for (const ticket of settled) noteWorker(ticket.owner_session_id, ticket, 'delivered')
     await promoteQueued()
   }
 

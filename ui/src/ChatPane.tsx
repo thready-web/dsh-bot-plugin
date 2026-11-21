@@ -104,8 +104,10 @@ export const ChatPane = forwardRef<
           aria-busy={busy || undefined}
         >
           <div className="column" ref={contentRef}>
-            {children}
-            {activity}
+            <div className="thread">
+              {children}
+              {activity}
+            </div>
           </div>
         </div>
         {rail?.(scrollRef)}

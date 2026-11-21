@@ -42,6 +42,15 @@ export function smoothFollowTop(current: number, target: number): number {
   return Math.min(target, current + Math.max(1, gap * FOLLOW_EASE))
 }
 
+/**
+ * A short thread is already fully visible at scrollTop 0, because the leftover
+ * space sits above it. The frame it grows past the port, jump to the live edge.
+ * Easing from 0 would flash the oldest line.
+ */
+export function snapGrowingThread(scrollTop: number, target: number): boolean {
+  return scrollTop <= 1 && target > BOTTOM_SLOP
+}
+
 /** Upward input. A thread that cannot move does not leave follow. */
 export function leaveBottom(state: FollowScroll, box: ScrollBox): boolean {
   if (box.scrollTop <= 1 && gapFromBottom(box) <= BOTTOM_SLOP) return false
