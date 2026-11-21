@@ -153,7 +153,7 @@ for (const chat of [true, false]) {
   test(`mounted actions preserve user state through streaming and completion (Bot=${chat})`, async () => {
     const h = harness()
     const groups = () => [...h.container.querySelectorAll('.activity-group')]
-    const button = () => groups()[0]!.querySelector('.activity-fold')!
+    const button = () => groups()[0]!.querySelector<HTMLButtonElement>('.activity-fold')!
     const expanded = () => button().getAttribute('aria-expanded')
     const click = () => h.act(() => button().click())
     const think = { kind: 'think', id: 'live:think:0', text: 'working', running: true, seq: 1, turn: 1, step: 1 }
@@ -216,7 +216,7 @@ for (const chat of [true, false]) {
 test('pending, connection and running status never auto-toggle an actions group', async () => {
   const h = harness()
   const group = () => h.container.querySelector('.activity-group')!
-  const fold = () => group().querySelector('.activity-fold')!
+  const fold = () => group().querySelector<HTMLButtonElement>('.activity-fold')!
   try {
     await h.group({ segments: [tool('one', 'succeeded'), tool('two', 'succeeded')], pending: false })
     assert.equal(group().getAttribute('data-open'), 'false')
