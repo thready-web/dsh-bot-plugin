@@ -8,6 +8,7 @@ import {
   noteScroll,
   pauseFollow,
   smoothFollowTop,
+  scrollPaddingForDock,
   snapGrowingThread,
 } from './scroll-follow.ts'
 
@@ -108,6 +109,13 @@ test('follow eases toward the live edge without stepping past it', () => {
   assert.ok(steps < 24)
   assert.equal(smoothFollowTop(400, 400), 400)
   assert.equal(smoothFollowTop(420, 400), 400)
+})
+
+test('a detached composer keeps the current pad, and a hidden one leaves only the tail gap', () => {
+  const dock = { offsetHeight: 192, hidden: false, isConnected: true }
+  assert.equal(scrollPaddingForDock(dock, 56), 192)
+  assert.equal(scrollPaddingForDock({ ...dock, isConnected: false, offsetHeight: 0 }, 56), null)
+  assert.equal(scrollPaddingForDock({ ...dock, hidden: true, offsetHeight: 0 }, 56), FOLLOW_GAP)
 })
 
 test('a cancelled smooth scroll arriving at the end does not resume follow', () => {

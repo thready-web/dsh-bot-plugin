@@ -10,6 +10,19 @@ export const FOLLOW_EASE = 0.35
  */
 export const FOLLOW_GAP = 56
 
+/**
+ * Padding that keeps the last line clear of the composer.
+ * A portal move detaches the dock and reports height 0; null means keep the current pad.
+ */
+export function scrollPaddingForDock(
+  dock: { offsetHeight: number; hidden: boolean; isConnected: boolean },
+  fade: number,
+): number | null {
+  if (!dock.isConnected) return null
+  const clearance = dock.hidden ? 0 : Math.max(0, dock.offsetHeight - fade)
+  return clearance + FOLLOW_GAP
+}
+
 export type ScrollBox = {
   scrollHeight: number
   scrollTop: number

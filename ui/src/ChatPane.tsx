@@ -12,7 +12,7 @@ import {
 import { createPortal } from 'react-dom'
 import { ArrowIcon, HistoryLoading, PlusIcon } from './chrome'
 import { useI18n } from './locale'
-import { FOLLOW_GAP } from './scroll-follow'
+import { scrollPaddingForDock } from './scroll-follow'
 import { useScrollFollow } from './use-scroll-follow'
 
 /**
@@ -72,8 +72,8 @@ export const ChatPane = forwardRef<
     if (!dock || !scroll) return
     const apply = () => {
       const fade = Number.parseFloat(getComputedStyle(dock).getPropertyValue('--composer-fade')) || 0
-      const clearance = dock.hidden ? 0 : Math.max(0, dock.offsetHeight - fade)
-      const next = clearance + FOLLOW_GAP
+      const next = scrollPaddingForDock(dock, fade)
+      if (next == null) return
       const previous = Number.parseFloat(scroll.style.paddingBottom) || 0
       if (previous === next) return
       scroll.style.paddingBottom = `${next}px`
@@ -82,9 +82,9 @@ export const ChatPane = forwardRef<
     apply()
     const observer = new ResizeObserver(apply)
     observer.observe(dock)
+    // Keep the pad across lift and session changes. Clearing it clamps the transcript, then the refill eases it back.
     return () => {
       observer.disconnect()
-      scroll.style.paddingBottom = ''
     }
   }, [scrollKey, composerHidden, composerLift, scrollRef, stickIfFollowing])
 
@@ -235,7 +235,8 @@ export function ChatComposer({
           </div>
         </div>
       </div>
-      {stats ? <p className="stats">{stats}</p> : null}
+      {/* An empty caption still holds its line, so a session swap cannot shrink the dock. */}
+      {stats != null ? <p className="stats">{stats}</p> : null}
     </form>
   )
 }

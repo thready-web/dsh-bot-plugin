@@ -260,7 +260,7 @@ export function CanvasPreview({
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    closeButton.current?.focus()
+    closeButton.current?.focus({ preventScroll: true })
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         if (selectingRef.current) {
@@ -286,20 +286,20 @@ export function CanvasPreview({
       const last = controls.at(-1)
       if (event.shiftKey && (document.activeElement === first || !dialog.current?.contains(document.activeElement))) {
         event.preventDefault()
-        last?.focus()
+        last?.focus({ preventScroll: true })
       } else if (
         !event.shiftKey &&
         (document.activeElement === last || !dialog.current?.contains(document.activeElement))
       ) {
         event.preventDefault()
-        first?.focus()
+        first?.focus({ preventScroll: true })
       }
     }
     document.addEventListener('keydown', onKey, true)
     return () => {
       document.removeEventListener('keydown', onKey, true)
       document.body.style.overflow = previousOverflow
-      if (previousFocus?.isConnected) previousFocus.focus()
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
     }
   }, [])
 
