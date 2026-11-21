@@ -3886,6 +3886,11 @@ button.chip {
   z-index: 90;
   bottom: 0;
 }
+/* The veil is white painted on the white transcript, and it never reaches opaque.
+   Over the canvas scrim that incomplete edge reads as a gray band above the card. */
+.composer-wrap.lifted::before {
+  content: none;
+}
 .canvas-chip-row {
   display: flex;
   flex-wrap: wrap;
