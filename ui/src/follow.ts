@@ -101,6 +101,13 @@ function stepKey(turn: number | undefined, step: number | undefined): string {
   return `${turn ?? ''}:${step ?? ''}`
 }
 
+/** One identity for a live block and the committed block that replaces it. */
+export function blockKey(id: string): string {
+  const live = /^live:(.+):(text|think|tool):(\d+)$/.exec(id)
+  if (!live) return id
+  return `${live[2]}:${live[1]}:${live[3]}`
+}
+
 export function frameEvents(frame: unknown): Array<Record<string, unknown>> {
   const found: SessionEvent[] = []
   collectEvents(frame, found)

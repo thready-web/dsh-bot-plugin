@@ -14,6 +14,7 @@ import { parseCanvasLink, preserveCanvasUrl } from './canvas-link'
 import { useCanvasPlace } from './CanvasPreview'
 import { ImagePreview } from './ImagePreview'
 import { useI18n } from './locale'
+import { useSmoothText } from './use-smooth-text'
 
 function CodeBlock({ text, language }: { text: string; language?: string }) {
   const [copied, setCopied] = useState(false)
@@ -189,6 +190,7 @@ export function MarkdownView({
   onOpenFile?: (path: string, line?: number) => void
   resolveImage?: (src: string) => string | undefined
 }) {
+  const revealed = useSmoothText(text, streaming)
   const context = useMemo(() => ({ streaming, onOpenFile, resolveImage }), [streaming, onOpenFile, resolveImage])
   return (
     <MarkdownContext.Provider value={context}>
@@ -198,7 +200,7 @@ export function MarkdownView({
           components={MARKDOWN_COMPONENTS}
           urlTransform={value => preserveCanvasUrl(value, defaultUrlTransform)}
         >
-          {streamingSource(text, streaming)}
+          {streamingSource(revealed, streaming)}
         </ReactMarkdown>
       </div>
     </MarkdownContext.Provider>

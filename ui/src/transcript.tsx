@@ -14,7 +14,7 @@ import {
 import { InboxLine } from './BotChatView'
 import { inboxSummary } from './bot-chat'
 import { parseBotMail } from './bot-message'
-import { isCardSegment, turnPieces } from './follow'
+import { blockKey, isCardSegment, turnPieces } from './follow'
 import { MarkdownView } from './MarkdownView'
 import { ActivityGroup } from './ProcessRow'
 import { UserQuestionCard } from './UserQuestionCard'
@@ -458,7 +458,7 @@ function TurnBlock({
             return (
               <div
                 data-segment={piece.segment.id}
-                key={piece.segment.id}
+                key={blockKey(piece.segment.id)}
                 className={piece.segment.streaming ? 'assistant streaming' : 'assistant'}
               >
                 <MarkdownView text={piece.segment.text} streaming={piece.segment.streaming} onOpenFile={onOpenFile} />

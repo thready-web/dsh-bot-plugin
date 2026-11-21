@@ -1552,6 +1552,29 @@ button.chip {
   margin: 8px 0 20px;
   min-width: 0;
 }
+.user-row,
+.assistant,
+.official-row:not(.activity-arguments),
+.work-card,
+.briefing-row,
+.canvas-card,
+.user-question-card,
+.mail-row,
+.inbox-line,
+.bot-out,
+.turn-failure,
+.work-refused,
+.work-note {
+  animation: block-in 0.28s ease-out both;
+}
+@keyframes block-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
 .live-status {
   margin: 8px 0 16px;
   font-size: 13px;
@@ -1608,6 +1631,21 @@ button.chip {
 @media (prefers-reduced-motion: reduce) {
   .coll-container {
     transition: none;
+  }
+  .user-row,
+  .assistant,
+  .official-row:not(.activity-arguments),
+  .work-card,
+  .briefing-row,
+  .canvas-card,
+  .user-question-card,
+  .mail-row,
+  .inbox-line,
+  .bot-out,
+  .turn-failure,
+  .work-refused,
+  .work-note {
+    animation: none;
   }
 }
 .turn-failure {

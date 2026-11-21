@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { FOLLOW_GAP, createFollowScroll, leaveBottom, noteScroll, pauseFollow } from './scroll-follow.ts'
+import {
+  FOLLOW_GAP,
+  createFollowScroll,
+  leaveBottom,
+  noteScroll,
+  pauseFollow,
+  smoothFollowTop,
+} from './scroll-follow.ts'
 
 const view = { clientHeight: 100 }
 
@@ -76,6 +83,22 @@ test('leaveBottom releases a tall thread and ignores one that cannot scroll', ()
   const short = createFollowScroll()
   assert.equal(leaveBottom(short, { ...view, scrollTop: 0, scrollHeight: 80 }), false)
   assert.equal(short.following, true)
+})
+
+test('follow eases toward the live edge without stepping past it', () => {
+  let top = smoothFollowTop(0, 400)
+  assert.ok(top > 0 && top < 400)
+  let steps = 1
+  while (top < 400 && steps < 40) {
+    const next = smoothFollowTop(top, 400)
+    assert.ok(next > top && next <= 400)
+    top = next
+    steps += 1
+  }
+  assert.equal(top, 400)
+  assert.ok(steps < 24)
+  assert.equal(smoothFollowTop(400, 400), 400)
+  assert.equal(smoothFollowTop(420, 400), 400)
 })
 
 test('a cancelled smooth scroll arriving at the end does not resume follow', () => {

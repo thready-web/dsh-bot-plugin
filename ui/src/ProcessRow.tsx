@@ -1,6 +1,6 @@
 import { useId, useState, type ReactNode } from 'react'
 import { Collapse } from './Collapse'
-import { fileChange, type ActivitySegment, type FileChange } from './follow'
+import { blockKey, fileChange, type ActivitySegment, type FileChange } from './follow'
 import {
   canvasEditCall,
   canvasReadCall,
@@ -17,8 +17,14 @@ import {
   type PresentedCall,
 } from './activity'
 import { useI18n } from './locale'
+import { useSmoothText } from './use-smooth-text'
 import type { WorkTicket } from './work'
 import { type ThinkSegment, type ToolSegment } from './types'
+
+function ThinkBody({ text, active }: { text: string; active: boolean }) {
+  const shown = useSmoothText(text, active)
+  return <div className="think-body">{shown}</div>
+}
 
 export function ThinkRow({ segment }: { segment: ThinkSegment }) {
   const [open, setOpen] = useState(false)
@@ -39,7 +45,7 @@ export function ThinkRow({ segment }: { segment: ThinkSegment }) {
         </span>
       </button>
       <Collapse open={open}>
-        <div className="think-body">{segment.text}</div>
+        <ThinkBody text={segment.text} active={segment.running} />
       </Collapse>
     </div>
   )
@@ -76,7 +82,7 @@ export function ActivityGroup({
     tools.length === 1 ? t('activity.toolCallOne') : t('activity.toolCalls', { count: String(tools.length) })
   const renderSegment = (segment: ActivitySegment) =>
     segment.kind === 'think' ? (
-      <ThinkRow key={segment.id} segment={segment} />
+      <ThinkRow key={blockKey(segment.id)} segment={segment} />
     ) : (
       <ToolCallRow key={segment.callId} segment={segment} cwd={cwd} tickets={tickets} stale={stale} />
     )

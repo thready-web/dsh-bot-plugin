@@ -1,6 +1,9 @@
 /** How close to the end still counts as the bottom, including sub-pixel clipping. */
 export const BOTTOM_SLOP = 8
 
+/** Share of the remaining distance to close on each frame while following. */
+export const FOLLOW_EASE = 0.35
+
 /**
  * Empty tail under the last message, also the distance that resumes follow.
  * Scrolling down until this gap is on screen means the reader has reached the live edge.
@@ -30,6 +33,13 @@ export function createFollowScroll(): FollowScroll {
 
 export function gapFromBottom(box: ScrollBox): number {
   return box.scrollHeight - box.scrollTop - box.clientHeight
+}
+
+/** Next offset while chasing the live edge. Never steps past the target. */
+export function smoothFollowTop(current: number, target: number): number {
+  const gap = target - current
+  if (gap <= 1) return target
+  return Math.min(target, current + Math.max(1, gap * FOLLOW_EASE))
 }
 
 /** Upward input. A thread that cannot move does not leave follow. */

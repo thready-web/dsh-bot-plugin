@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ingestFrame, isOpeningSnapshot, openingHistoryCut, processHeading, turnPieces } from './follow.ts'
+import { blockKey, ingestFrame, isOpeningSnapshot, openingHistoryCut, processHeading, turnPieces } from './follow.ts'
 import { emptyThread, type Segment, type ThreadState, type ToolSegment } from './types.ts'
 
 function reduce(frames: unknown[]): ThreadState {
@@ -18,6 +18,14 @@ function assistantText(state: ThreadState): string {
     .map(segment => segment.text)
     .join('')
 }
+
+test('a live block and the committed block share one appearance key', () => {
+  assert.equal(blockKey('live:1:2:text:0'), 'text:1:2:0')
+  assert.equal(blockKey('text:1:2:0'), 'text:1:2:0')
+  assert.equal(blockKey('live:1:2:think:0'), 'think:1:2:0')
+  assert.equal(blockKey('think:1:2:0'), 'think:1:2:0')
+  assert.equal(blockKey('user:1'), 'user:1')
+})
 
 test('the opening snapshot is the completed history page', () => {
   assert.equal(isOpeningSnapshot(item({ type: 'snapshot', records: [], hasMore: false })), true)

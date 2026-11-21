@@ -6,6 +6,7 @@ import {
   leaveBottom,
   noteScroll,
   pauseFollow,
+  smoothFollowTop,
   type FollowScroll,
 } from './scroll-follow'
 
@@ -26,15 +27,23 @@ function nestedCanScrollUp(container: HTMLElement, target: EventTarget | null): 
 }
 
 /**
- * Pin while the reader is at the end. Wheel, touch, keys, selection, and disclosures
- * release immediately so the next content growth cannot pull them back.
+ * Pin while the reader is at the end. Growth eases toward the live edge.
+ * Wheel, touch, keys, selection, and disclosures release immediately so the
+ * next content growth cannot pull them back.
  */
 export function useScrollFollow(resetKey: string) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const state = useRef<FollowScroll>(createFollowScroll())
   const smoothing = useRef(false)
+  const chasing = useRef(false)
+  const chaseFrame = useRef(0)
   const [detached, setDetached] = useState(false)
+
+  const stopChase = useCallback(() => {
+    chasing.current = false
+    cancelAnimationFrame(chaseFrame.current)
+  }, [])
 
   const publish = useCallback((node: HTMLElement | null) => {
     if (!node) {
@@ -45,46 +54,80 @@ export function useScrollFollow(resetKey: string) {
     setDetached(current => (current === away ? current : away))
   }, [])
 
+  const chase = useCallback(() => {
+    const node = scrollRef.current
+    if (!node || !chasing.current || !state.current.following) {
+      chasing.current = false
+      return
+    }
+    const top = maxOffset(node)
+    const next = smoothFollowTop(node.scrollTop, top)
+    if (next === node.scrollTop) {
+      chasing.current = false
+      state.current.programmaticTop = null
+      publish(node)
+      return
+    }
+    node.scrollTop = next
+    state.current.programmaticTop = node.scrollTop
+    chaseFrame.current = requestAnimationFrame(chase)
+  }, [publish])
+
   const stickIfFollowing = useCallback(() => {
     const node = scrollRef.current
     if (!node || !state.current.following) {
+      stopChase()
       publish(node)
       return
     }
     const top = maxOffset(node)
     if (Math.abs(node.scrollTop - top) <= 1) {
+      stopChase()
       state.current.programmaticTop = null
       publish(node)
       return
     }
-    state.current.programmaticTop = top
-    node.scrollTop = top
-    publish(node)
-  }, [publish])
-
-  const pin = useCallback((behavior: ScrollBehavior = 'auto') => {
-    const node = scrollRef.current
-    state.current.following = true
-    state.current.suppressRejoin = false
-    setDetached(false)
-    if (!node) return
-    const top = maxOffset(node)
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (behavior === 'smooth' && !reduce && node.scrollTop < top - 1) {
-      smoothing.current = true
-      state.current.programmaticTop = null
-      node.scrollTo({ top, behavior: 'smooth' })
+    if (reduce) {
+      stopChase()
+      state.current.programmaticTop = top
+      node.scrollTop = top
+      publish(node)
       return
     }
-    smoothing.current = false
-    state.current.programmaticTop = top
-    node.scrollTop = top
-  }, [])
+    if (chasing.current) return
+    chasing.current = true
+    chaseFrame.current = requestAnimationFrame(chase)
+  }, [publish, stopChase, chase])
+
+  const pin = useCallback(
+    (behavior: ScrollBehavior = 'auto') => {
+      const node = scrollRef.current
+      stopChase()
+      state.current.following = true
+      state.current.suppressRejoin = false
+      setDetached(false)
+      if (!node) return
+      const top = maxOffset(node)
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      if (behavior === 'smooth' && !reduce && node.scrollTop < top - 1) {
+        smoothing.current = true
+        state.current.programmaticTop = null
+        node.scrollTo({ top, behavior: 'smooth' })
+        return
+      }
+      smoothing.current = false
+      state.current.programmaticTop = top
+      node.scrollTop = top
+    },
+    [stopChase],
+  )
 
   useLayoutEffect(() => {
     const next = createFollowScroll()
     state.current = next
     smoothing.current = false
+    stopChase()
     setDetached(false)
     const node = scrollRef.current
     if (!node) return
@@ -93,7 +136,7 @@ export function useScrollFollow(resetKey: string) {
     next.lastTop = top
     next.lastHeight = node.scrollHeight
     node.scrollTop = top
-  }, [resetKey])
+  }, [resetKey, stopChase])
 
   useEffect(() => {
     const scroll = scrollRef.current
@@ -101,8 +144,10 @@ export function useScrollFollow(resetKey: string) {
     if (!scroll || !content) return
 
     const cancelSmooth = () => {
-      if (!smoothing.current) return
+      const active = smoothing.current || chasing.current
       smoothing.current = false
+      stopChase()
+      if (!active) return
       state.current.suppressRejoin = true
       requestAnimationFrame(() => {
         scroll.scrollTop = scroll.scrollTop
@@ -185,6 +230,7 @@ export function useScrollFollow(resetKey: string) {
     stickIfFollowing()
 
     return () => {
+      stopChase()
       observer.disconnect()
       scroll.removeEventListener('scroll', onScroll)
       scroll.removeEventListener('wheel', onWheel)
@@ -194,7 +240,7 @@ export function useScrollFollow(resetKey: string) {
       scroll.removeEventListener('pointerdown', onPointerDown)
       document.removeEventListener('selectionchange', onSelect)
     }
-  }, [resetKey, publish, stickIfFollowing])
+  }, [resetKey, publish, stickIfFollowing, stopChase])
 
   return { scrollRef, contentRef, detached, pin, stickIfFollowing }
 }
