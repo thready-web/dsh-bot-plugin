@@ -26,6 +26,7 @@ import type {
   CardSegment,
   RetryAttempt,
   Segment,
+  ToolSegment,
   TurnFailure,
   WorkerCardSegment,
 } from './types'
@@ -60,6 +61,8 @@ export function Transcript({
   approvals = [],
   questionWaits,
   onCompose,
+  onOpenTool,
+  selectedCallId = null,
 }: {
   sessionId?: string
   segments: Segment[]
@@ -82,6 +85,8 @@ export function Transcript({
   approvals?: ToolApprovalView[]
   questionWaits?: Record<string, { remainingMs?: number; waitState?: UserQuestionWait }>
   onCompose?: (text: string) => void
+  onOpenTool?: (segment: ToolSegment | null) => void
+  selectedCallId?: string | null
 }) {
   const blocks: Array<
     | { type: 'user'; segment: Segment & { kind: 'user' } }
@@ -175,6 +180,8 @@ export function Transcript({
               approvals={approvals}
               questionWaits={questionWaits}
               onCompose={onCompose}
+              onOpenTool={onOpenTool}
+              selectedCallId={selectedCallId}
             />
           )}
         </Fragment>
@@ -420,6 +427,8 @@ function TurnBlock({
   approvals = [],
   questionWaits,
   onCompose,
+  onOpenTool,
+  selectedCallId = null,
 }: {
   sessionId?: string
   block: { type: 'turn'; turn: number; seconds?: number; segments: Segment[] }
@@ -443,6 +452,8 @@ function TurnBlock({
   approvals?: ToolApprovalView[]
   questionWaits?: Record<string, { remainingMs?: number; waitState?: UserQuestionWait }>
   onCompose?: (text: string) => void
+  onOpenTool?: (segment: ToolSegment | null) => void
+  selectedCallId?: string | null
 }) {
   const { t } = useI18n()
   const pieces = turnPieces(block.segments)
@@ -502,6 +513,8 @@ function TurnBlock({
                 cwd={cwd}
                 tickets={[...byId.values()]}
                 connectionPhase={connectionPhase}
+                onOpenTool={onOpenTool}
+                selectedCallId={selectedCallId}
               />
               {tools
                 .filter(segment => isBudgetRefusal(segment))

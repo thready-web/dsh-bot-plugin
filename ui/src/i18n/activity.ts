@@ -49,9 +49,12 @@ const en = {
   'activity.cwdSessionDefault': 'Session default directory (not execution confirmation)',
   'activity.callRecorded': 'Call recorded',
   'activity.callWait': 'Call wait',
-  'activity.fullArgs': 'Full arguments',
-  'activity.toolResult': 'Tool result',
   'activity.emptyResult': '(empty result)',
+  'activity.toolDetail': 'Tool call',
+  'activity.close': 'Close tool call',
+  'activity.copy': 'Copy',
+  'activity.copied': 'Copied',
+  'activity.removedFiles': 'Remove',
 } as const
 
 const zh: Record<keyof typeof en, string> = {
@@ -103,9 +106,12 @@ const zh: Record<keyof typeof en, string> = {
   'activity.cwdSessionDefault': '会话默认目录（非执行确认）',
   'activity.callRecorded': '调用记录时间',
   'activity.callWait': '调用等待耗时',
-  'activity.fullArgs': '完整参数',
-  'activity.toolResult': '工具返回',
   'activity.emptyResult': '（空结果）',
+  'activity.toolDetail': '工具调用',
+  'activity.close': '关闭工具详情',
+  'activity.copy': '复制',
+  'activity.copied': '已复制',
+  'activity.removedFiles': '移除',
 }
 
 export const activity = { en, zh }

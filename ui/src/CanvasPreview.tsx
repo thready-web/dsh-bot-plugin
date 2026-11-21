@@ -52,6 +52,21 @@ export function useCanvasPlace() {
   return useContext(CanvasPlaceContext)
 }
 
+/** Preview and tests can open the canvas modal without the session canvas list. */
+export function CanvasPlaceProvider({
+  open,
+  children,
+}: {
+  open: (id: string, location?: CanvasLocation) => void
+  children: ReactNode
+}) {
+  const value = useMemo(
+    () => ({ byTicket: new Map<string, CanvasSummary>(), loose: [] as CanvasSummary[], open }),
+    [open],
+  )
+  return <CanvasPlaceContext.Provider value={value}>{children}</CanvasPlaceContext.Provider>
+}
+
 export interface RevisionSummary {
   revision: number
   kind: string
@@ -692,6 +707,7 @@ export function CanvasScope({
   const [items, setItems] = useState<CanvasSummary[]>([])
   const [listError, setListError] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
+  const [direct, setDirect] = useState<CanvasSummary | null>(null)
   const openIdRef = useRef<string | null>(null)
   openIdRef.current = openId
   const [paint, setPaint] = useState(false)
@@ -712,7 +728,8 @@ export function CanvasScope({
     setSeenDismiss(dismiss)
     if (dismiss > 0) setOpenId(null)
   }
-  const open = items.find(item => item.id === openId) ?? null
+  const listed = items.find(item => item.id === openId) ?? null
+  const open = listed ?? (direct?.id === openId ? direct : null)
   const requested = openTarget && openTarget.id === openId && openTarget.revision != null ? openTarget.revision : null
   const followRevision = requested ?? open?.previewRevision ?? open?.stableRevision ?? null
   const showRef = useRef<(canvasId: string, revision: number) => Promise<void>>(async () => {})
@@ -728,6 +745,7 @@ export function CanvasScope({
 
   useEffect(() => {
     setOpenId(null)
+    setDirect(null)
     setItems([])
     setListError(false)
   }, [sessionId])
@@ -848,6 +866,13 @@ export function CanvasScope({
           revision: location?.revision ?? null,
           page: location?.page ?? null,
           anchor: location?.anchor ?? null,
+        })
+        setDirect({
+          id,
+          title: '',
+          ticketId: null,
+          previewRevision: location?.revision ?? null,
+          stableRevision: null,
         })
         setOpenId(id)
       },

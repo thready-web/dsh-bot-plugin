@@ -17,8 +17,9 @@ const compiled = await build({
       import { ToolApprovalCard } from './ui/src/ToolApprovalCard.tsx'
       import { SettingsDrawer } from './ui/src/SettingsPanels.tsx'
       import { ToolCallRow, ToolCallRowView, ActivityGroup, ActivityDisclosure } from './ui/src/ProcessRow.tsx'
+      import { ToolCallDetail } from './ui/src/ToolCallDetail.tsx'
       import { Collapse } from './ui/src/Collapse.tsx'
-      export const renderExpandedTool = props => renderToStaticMarkup(<ToolCallRowView open={true} argsOpen={true} onToggle={() => {}} onArgsToggle={() => {}} {...props} />)
+      export const renderExpandedTool = props => renderToStaticMarkup(<ToolCallDetail {...props} />)
       export const exerciseDisclosure = props => {
         const element = ActivityDisclosure(props)
         const [button, panel] = React.Children.toArray(element.props.children)
@@ -142,8 +143,9 @@ test('SSR: description and command coexist; full multiline args, cwd, result and
       status: 'background',
     }),
   })
-  for (const text of ['Scaffold tea project', 'printf a\nprintf b', '/tmp/tea', 'Full arguments', 'Tool result'])
+  for (const text of ['Scaffold tea project', 'printf a\nprintf b', 'workdir', '/tmp/tea', 'token=hiddenSecret'])
     assert.ok(html.includes(text), text)
+  assert.ok(!html.includes('Full arguments') && !html.includes('完整参数'))
   assert.ok(html.includes('hiddenSecret'))
 })
 
@@ -162,7 +164,127 @@ test('SSR: todo rows show real items, not todo_write duplicated as its own summa
   assert.ok(html.includes('Update plan'))
   assert.ok(html.includes('Scaffold tea') && html.includes('Run tests'))
   assert.ok(html.includes('1/2'))
+  assert.ok(html.includes('todo-check') && html.includes('data-state="completed"') && html.includes('data-state="in_progress"'))
+  assert.ok(!html.includes('>completed<') && !html.includes('>in_progress<'))
   assert.ok(!html.includes('todo_write · todo_write'))
+})
+
+test('SSR: canvas publish opens a canvas card and tool errors show the message', () => {
+  const html = renderExpandedTool!({
+    segment: tool('pub', {
+      name: 'canvas_publish',
+      args: '{}',
+      result: JSON.stringify({
+        ok: true,
+        canvasId: 'cnv_W-Sffn2ItdLPqO4a',
+        revision: 2,
+        canvas: { id: 'cnv_W-Sffn2ItdLPqO4a', title: '咖啡卡片', previewRevision: 2 },
+      }),
+      resultReceived: true,
+      status: 'succeeded',
+    }),
+  })
+  assert.ok(html.includes('aria-haspopup="dialog"'))
+  assert.ok(html.includes('canvas_publish') && html.includes('咖啡卡片'))
+  assert.ok(!html.includes('canvas-card') && !html.includes('Version 2'))
+  assert.ok(!html.includes('retryable') && !html.includes('"ok"'))
+  const failed = renderExpandedTool!({
+    segment: tool('pub-fail', {
+      name: 'canvas_publish',
+      args: '{}',
+      result: JSON.stringify({
+        ok: false,
+        code: 'VALIDATION',
+        message: 'This ticket already published.',
+        retryable: false,
+      }),
+      resultReceived: true,
+      status: 'failed',
+      error: true,
+      errorCode: 'VALIDATION',
+    }),
+  })
+  assert.ok(failed.includes('This ticket already published.') && failed.includes('VALIDATION'))
+  assert.ok(!failed.includes('retryable') && !failed.includes('canvas-card'))
+  assert.ok(failed.includes('data-state="failed"'))
+  const edit = renderExpandedTool!({
+    segment: tool('edit-fail', {
+      name: 'edit',
+      args: JSON.stringify({ file_path: 'ui/src/styles.css', old_string: 'a', new_string: 'b' }),
+      result: 'The string to replace was not found in the file.',
+      resultReceived: true,
+      status: 'failed',
+      error: true,
+    }),
+  })
+  assert.ok(edit.includes('The string to replace was not found in the file.'))
+  assert.ok(!edit.includes('"ok"'))
+})
+
+test('SSR: long foundation titles sit above the result', () => {
+  const summary = '重试第 2 次：修 cnv_NqBtFAtkla1eOgC 里所有模块重叠的 bug，沿用上一轮已完成的诊断，不需要重新排查'
+  const history = 'NO NEW WORK NEEDED — the fix was already applied.'
+  const html = renderExpandedTool!({
+    segment: tool('history', {
+      name: 'foundations_worker_history',
+      args: JSON.stringify({ ticketId: 'tkt', maxChars: 4000 }),
+      result: JSON.stringify({ ok: true, ticketId: 'tkt', text: history }),
+      resultReceived: true,
+      status: 'succeeded',
+    }),
+    tickets: [
+      {
+        id: 'tkt',
+        revision: 2,
+        status: 'started',
+        childSessionId: 'worker',
+        startedAt: null,
+        summary,
+        events: [],
+      },
+    ],
+  })
+  const prose = html.indexOf('tool-detail-prose')
+  const body = html.indexOf(history)
+  assert.ok(prose >= 0 && body > prose)
+  assert.ok(html.includes(summary))
+  assert.ok(!html.includes('tool-detail-title'))
+  const remembered = renderExpandedTool!({
+    segment: tool('remember', {
+      name: 'foundations_remember',
+      args: JSON.stringify({ target: 'fact', content: '咖啡卡片的图形应保持在大约原来的一半宽。', idempotencyKey: 'remember-cup' }),
+      result: '{"ok":true,"id":3}',
+      resultReceived: true,
+      status: 'succeeded',
+    }),
+  })
+  assert.ok(remembered.includes('tool-detail-prose') && remembered.includes('大约原来的一半宽'))
+  assert.ok(!remembered.includes('tool-detail-title'))
+})
+
+test('SSR: JSON tool results render as fields instead of a raw object', () => {
+  const html = renderExpandedTool!({
+    segment: tool('supply', {
+      name: 'foundations_supply',
+      args: JSON.stringify({ ticketId: 'tkt', text: '图形再小一点', expectedRevision: 2 }),
+      result: '{"ok":true,"revision":3}',
+      resultReceived: true,
+      status: 'succeeded',
+    }),
+  })
+  assert.ok(html.includes('>revision<') && html.includes('>3<'))
+  assert.ok(!html.includes('"ok"') && !html.includes('"revision"'))
+  const grant = renderExpandedTool!({
+    segment: tool('grant', {
+      name: 'foundations_grant',
+      args: JSON.stringify({ ticketId: 'tkt', wallMs: 600000, maxTokens: 40000 }),
+      result: '{"ok":true,"granted":{"wallMs":600000,"maxTokens":40000}}',
+      resultReceived: true,
+      status: 'succeeded',
+    }),
+  })
+  assert.ok(grant.includes('>granted<') && grant.includes('>wallMs<') && grant.includes('>600000<'))
+  assert.ok(!grant.includes('"wallMs"'))
 })
 
 test('SSR: sync uncertainty stays separate; empty turn only has one compact composer status', () => {
@@ -527,8 +649,9 @@ test('SSR: every tool defaults closed with a title-only summary, including activ
       }),
     })
     assert.match(html, /^<div\b[^>]*class="official-row tool-activity"/)
-    assert.match(html, /aria-expanded="false"/, `${status} must not open automatically`)
-    assert.ok(!html.includes('activity-detail') && !html.includes('<details'))
+    assert.match(html, /aria-haspopup="dialog"/, `${status} opens in the drawer`)
+    assert.match(html, /aria-pressed="false"/, `${status} must not open automatically`)
+    assert.ok(!html.includes('activity-detail') && !html.includes('tool-detail') && !html.includes('<details'))
     const summary = /<button\b[^>]*>([\s\S]*?)<\/button>/.exec(html)?.[1] ?? ''
     assert.ok(summary.includes('Build tea project after TS migration'))
     for (const detail of [
@@ -592,7 +715,7 @@ test('SSR: successful activity omits Completed; exceptions remain visible and fa
   assert.ok(summary.includes('Run command') && !summary.includes('VERY_LONG_COMMAND') && !summary.includes('doNotShow'))
 })
 
-test('SSR/CSS: expanded-only command/args/output stay complete and wrap without nested scrollbars', () => {
+test('SSR/CSS: drawer detail keeps command and output complete and wraps without nested scrollbars', () => {
   const command = `printf one\nprintf ${'very-long-argument'.repeat(60)}\nTOKEN=hiddenValue`
   const output = `first line\n${'long-output'.repeat(100)}\nlast line`
   const html = renderExpandedTool!({
@@ -603,18 +726,17 @@ test('SSR/CSS: expanded-only command/args/output stay complete and wrap without 
       status: 'succeeded',
     }),
   })
-  const summaryEnd = html.indexOf('</button>')
-  const detailStart = html.indexOf('<div class="activity-detail">')
-  assert.ok(summaryEnd < detailStart && detailStart < html.indexOf('printf one'))
+  assert.ok(html.includes('tool-detail-card'))
   assert.ok(html.includes('printf one\nprintf very-long-argument'))
+  assert.ok(html.includes(`/${'deep-directory/'.repeat(40)}`))
   assert.ok(html.includes(output) && html.includes('last line'))
   assert.ok(html.includes('hiddenValue'))
-  assert.ok(
-    (html.match(/aria-label="Copy"/g) ?? []).length >= 3,
-    'command, arguments and result keep copy controls inside details',
-  )
+  const commandAt = html.indexOf('printf one')
+  const outputAt = html.indexOf('first line')
+  assert.ok(commandAt >= 0 && outputAt > commandAt)
+  assert.equal((html.match(/aria-label="Copy"/g) ?? []).length, 1, 'the command card keeps its copy control')
   const css = readFileSync(new URL('../ui/src/styles.css', import.meta.url), 'utf8')
-  const pre = /\.activity-detail pre\s*\{([^}]+)\}/.exec(css)?.[1] ?? ''
+  const pre = /\.tool-detail-body pre\s*\{([^}]+)\}/.exec(css)?.[1] ?? ''
   for (const rule of [
     'white-space: pre-wrap',
     'overflow-wrap: anywhere',
@@ -630,7 +752,7 @@ test('SSR/CSS: expanded-only command/args/output stay complete and wrap without 
   )
   assert.match(
     css,
-    /\.tool-activity \.diff-body\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*overflow: visible/,
+    /\.tool-detail-card \.diff-body\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*overflow: visible/,
   )
   assert.match(
     css,
@@ -638,12 +760,12 @@ test('SSR/CSS: expanded-only command/args/output stay complete and wrap without 
   )
 })
 
-test('SSR: tool disclosures use the shared animated Collapse, not native details', () => {
+test('SSR: a tool row opens a drawer instead of an inline disclosure', () => {
   const html = renderTool!({ segment: tool('animated') })
   assert.ok(!html.includes('<details') && !html.includes('<summary'))
-  assert.match(html, /<button[^>]*type="button"[^>]*aria-expanded="false"[^>]*aria-controls="[^"]+"/)
-  assert.match(html, /class="coll-container"/)
-  assert.ok(!html.includes('activity-command'))
+  assert.match(html, /<button[^>]*type="button"[^>]*aria-haspopup="dialog"[^>]*aria-pressed="false"/)
+  assert.ok(!html.includes('coll-container'))
+  assert.ok(!html.includes('activity-command') && !html.includes('tool-detail'))
 })
 
 test('controlled disclosures: tool and arguments toggle independently, stop bubbling and retain accessible controls', () => {
@@ -688,25 +810,24 @@ test('controlled disclosures: tool and arguments toggle independently, stop bubb
   assert.equal(argsOpen, false)
 })
 
-test('SSR: arguments have their own animated fold; streamed detail growth is unconstrained and never forces default rows open', () => {
+test('SSR: arguments are fields on the card; streamed output is unconstrained and rows stay closed', () => {
   const segment = tool('independent', {
-    args: '{"command":"printf ok","description":"Audit","extra":"ARGS_ONLY_MARKER"}',
+    args: '{"command":"printf ok","description":"Audit","workdir":"/tmp/tea","extra":"ARGS_ONLY_MARKER"}',
   })
-  const outerOnly = renderExpandedTool!({ segment, argsOpen: false })
-  assert.ok(outerOnly.includes('printf ok') && outerOnly.includes('Full arguments'))
-  assert.ok(!outerOnly.includes('ARGS_ONLY_MARKER'))
-  assert.equal((outerOnly.match(/class="coll-container expand"/g) ?? []).length, 1)
-  const both = renderExpandedTool!({ segment, argsOpen: true })
-  assert.ok(both.includes('ARGS_ONLY_MARKER'))
-  assert.equal((both.match(/class="coll-container expand"/g) ?? []).length, 2)
-  assert.ok(!both.includes('<details') && !both.includes('<summary'))
+  const html = renderExpandedTool!({ segment })
+  assert.ok(html.includes('printf ok') && html.includes('workdir') && html.includes('/tmp/tea'))
+  assert.ok(!html.includes('Full arguments') && !html.includes('ARGS_ONLY_MARKER'))
+  assert.equal((html.match(/class="coll-container expand"/g) ?? []).length, 0)
+  assert.ok(!html.includes('<details') && !html.includes('<summary'))
   const longer = renderExpandedTool!({
     segment: { ...segment, resultReceived: true, result: 'LONG_OUTPUT'.repeat(500) },
   })
   assert.ok(longer.includes('LONG_OUTPUT'.repeat(500)), 'growing results must not be truncated')
   const source = readFileSync(new URL('../ui/src/ProcessRow.tsx', import.meta.url), 'utf8')
   assert.match(source, /const \[open, setOpen\] = useState\(false\)/)
-  assert.match(source, /const \[argsOpen, setArgsOpen\] = useState\(false\)/)
+  assert.ok(!source.includes('activity-detail'), 'tool rows no longer expand in place')
+  const detail = readFileSync(new URL('../ui/src/ToolCallDetail.tsx', import.meta.url), 'utf8')
+  assert.ok(!detail.includes('argsLocal') && !detail.includes('activity.fullArgs'))
   const css = readFileSync(new URL('../ui/src/styles.css', import.meta.url), 'utf8')
   assert.ok(!css.includes('.tool-activity[open]'), 'native-details state selectors must be removed')
   for (const match of css.matchAll(/\.activity-detail\s*\{([^}]+)\}/g))

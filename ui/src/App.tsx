@@ -25,6 +25,7 @@ import { ImageFailureScope } from './ImageFailureScope'
 import { CurrentActivity } from './CurrentActivity'
 import { currentActivity } from './current-activity'
 import { MemoryPanel } from './MemoryPanel'
+import { ToolCallDrawer } from './ToolCallDrawer'
 import { CanvasScope } from './CanvasPreview'
 import { formatCanvasTarget, type CanvasChip } from './canvas-target'
 import { AuthorizationPanel, CuaPanel, PermissionPanel } from './SettingsPanels'
@@ -201,6 +202,7 @@ export function App() {
   const authorizationRevision = useRef<unknown>(undefined)
   const interactionSync = useRef<ReturnType<typeof createInteractionSync> | null>(null)
   const [filePreview, setFilePreview] = useState<{ path: string; line?: number; token: number } | null>(null)
+  const [toolCallId, setToolCallId] = useState<string | null>(null)
   const [canvasPulse, setCanvasPulse] = useState(0)
   const [filesOpen, setFilesOpen] = useState(false)
   const [archived, setArchived] = useState<ReadonlySet<string>>(() => new Set())
@@ -325,6 +327,11 @@ export function App() {
     syncStatus?.fraction != null ? { loaded: Math.round(syncStatus.fraction * 1000), total: 1000 } : null
   const chunkBusy = syncStatus?.phase === 'syncing' && syncStatus.fraction != null
   const conversation = useMemo(() => mainSegments(thread.segments), [thread.segments])
+  const toolSegment = useMemo(() => {
+    if (!toolCallId) return null
+    const found = thread.segments.find(item => item.kind === 'tool' && item.callId === toolCallId)
+    return found?.kind === 'tool' ? found : null
+  }, [thread.segments, toolCallId])
   const marks = useMemo(() => railMarks(conversation), [conversation])
   const title = sessionId
     ? sessionName({
@@ -341,6 +348,7 @@ export function App() {
     setMenuOpen(false)
     setFilesOpen(false)
     setFilePreview(null)
+    setToolCallId(null)
     setTask(null)
     setReason('')
     setSetupNote('')
@@ -356,6 +364,7 @@ export function App() {
     setMenuOpen(false)
     setFilesOpen(false)
     setFilePreview(null)
+    setToolCallId(null)
     setTask(null)
     setReason('')
     setSetupNote('')
@@ -368,6 +377,7 @@ export function App() {
     setMenuOpen(false)
     setFilesOpen(false)
     setFilePreview(null)
+    setToolCallId(null)
     const state = history.state as { kind?: string } | null
     if (state?.kind === 'worker') {
       history.back()
@@ -606,6 +616,7 @@ export function App() {
       setMenuOpen(false)
       setFilesOpen(false)
       setFilePreview(null)
+      setToolCallId(null)
       setTask(null)
       setReason('')
       setSetupNote('')
@@ -1234,100 +1245,106 @@ export function App() {
         composerLift={canvasOpen}
         header={
           <>
-        <header className="chat-head">
-          {botChat ? (
-            <button type="button" className="bot-chat-back" onClick={() => setBotChat(false)}>
-              {t('nav.back')}
-            </button>
-          ) : isWorkerSession(sessionId) ? (
-            <button type="button" className="back" onClick={leaveWorker}>
-              {t('nav.back')}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="back"
-              onClick={() => {
-                setFilesOpen(false)
-                setFilePreview(null)
-                setSessionId('')
-              }}
-            >
-              {t('nav.sessions')}
-            </button>
-          )}
-          {sessionId && bots.has(sessionId) ? (
-            <span className="bot-badge">
-              BOT
-              <BotDot
-                signal={signalFor({ sessionId, running: items.find(item => item.sessionId === sessionId)?.running })}
-              />
-            </span>
-          ) : null}
-          <h1>{botChat ? t('nav.botMessages') : title}</h1>
-          {!botChat && workPreview(works, workNow, t) ? (
-            <span className="work-chip">{workPreview(works, workNow, t)}</span>
-          ) : null}
-          {sessionId && !botChat ? (
-            <button
-              type="button"
-              className="files-open"
-              aria-pressed={settings === 'memory'}
-              onClick={() => {
-                if (settings === 'memory') {
-                  setSettings(null)
-                  return
-                }
-                setFilesOpen(false)
-                setFilePreview(null)
-                setSettings('memory')
-              }}
-            >
-              {t('memory.open')}
-            </button>
-          ) : null}
-          {sessionId && !botChat ? (
-            <button
-              type="button"
-              className="files-open"
-              aria-pressed={filesOpen}
-              onClick={() => {
-                if (filesOpen) {
+            <header className="chat-head">
+              {botChat ? (
+                <button type="button" className="bot-chat-back" onClick={() => setBotChat(false)}>
+                  {t('nav.back')}
+                </button>
+              ) : isWorkerSession(sessionId) ? (
+                <button type="button" className="back" onClick={leaveWorker}>
+                  {t('nav.back')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="back"
+                  onClick={() => {
+                    setFilesOpen(false)
+                    setFilePreview(null)
+                    setToolCallId(null)
+                    setSessionId('')
+                  }}
+                >
+                  {t('nav.sessions')}
+                </button>
+              )}
+              {sessionId && bots.has(sessionId) ? (
+                <span className="bot-badge">
+                  BOT
+                  <BotDot
+                    signal={signalFor({
+                      sessionId,
+                      running: items.find(item => item.sessionId === sessionId)?.running,
+                    })}
+                  />
+                </span>
+              ) : null}
+              <h1>{botChat ? t('nav.botMessages') : title}</h1>
+              {!botChat && workPreview(works, workNow, t) ? (
+                <span className="work-chip">{workPreview(works, workNow, t)}</span>
+              ) : null}
+              {sessionId && !botChat ? (
+                <button
+                  type="button"
+                  className="files-open"
+                  aria-pressed={settings === 'memory'}
+                  onClick={() => {
+                    if (settings === 'memory') {
+                      setSettings(null)
+                      return
+                    }
+                    setFilesOpen(false)
+                    setFilePreview(null)
+                    setToolCallId(null)
+                    setSettings('memory')
+                  }}
+                >
+                  {t('memory.open')}
+                </button>
+              ) : null}
+              {sessionId && !botChat ? (
+                <button
+                  type="button"
+                  className="files-open"
+                  aria-pressed={filesOpen}
+                  onClick={() => {
+                    if (filesOpen) {
+                      setFilesOpen(false)
+                      setFilePreview(null)
+                      return
+                    }
+                    setSettings(current => (current === 'memory' ? null : current))
+                    setToolCallId(null)
+                    setFilesOpen(true)
+                  }}
+                >
+                  {t('files.open')}
+                </button>
+              ) : null}
+              <a href={nativeHref}>{t('nav.official')}</a>
+            </header>
+            {isWorkerSession(sessionId) && !botChat ? (
+              <nav className="work-crumb" aria-label={t('nav.where')}>
+                <button type="button" onClick={leaveWorker}>
+                  {(workerOwner && botLabel(workerOwner)) || t('nav.mainSession')}
+                </button>
+                <span aria-hidden="true">/</span>
+                <span>{t('nav.worker')}</span>
+              </nav>
+            ) : null}
+            {sessionId && !botChat ? (
+              <button
+                type="button"
+                className="basis"
+                onClick={() => {
                   setFilesOpen(false)
                   setFilePreview(null)
-                  return
-                }
-                setSettings(current => (current === 'memory' ? null : current))
-                setFilesOpen(true)
-              }}
-            >
-              {t('files.open')}
-            </button>
-          ) : null}
-          <a href={nativeHref}>{t('nav.official')}</a>
-        </header>
-        {isWorkerSession(sessionId) && !botChat ? (
-          <nav className="work-crumb" aria-label={t('nav.where')}>
-            <button type="button" onClick={leaveWorker}>
-              {(workerOwner && botLabel(workerOwner)) || t('nav.mainSession')}
-            </button>
-            <span aria-hidden="true">/</span>
-            <span>{t('nav.worker')}</span>
-          </nav>
-        ) : null}
-        {sessionId && !botChat ? (
-          <button
-            type="button"
-            className="basis"
-            onClick={() => {
-              setFilesOpen(false)
-              setFilePreview(null)
-              setSettings('memory')
-            }}
-          >
-            {basis || t('memory.open')}
-          </button>
-        ) : null}
+                  setSettings('memory')
+                }}
+              >
+                {basis || t('memory.open')}
+              </button>
+            ) : null}
           </>
         }
         rail={
@@ -1360,91 +1377,91 @@ export function App() {
             }}
             chips={
               <>
-              {canvasMentions.length > 0 ? (
-                <div className="canvas-chip-row">
-                  {canvasMentions.map(chip => (
-                    <span key={`${chip.canvasId}:${chip.revision}:${chip.path}`} className="canvas-chip">
-                      <span className="canvas-chip-text">{chip.label}</span>
-                      <button
-                        type="button"
-                        aria-label={t('canvas.removeMention')}
-                        onClick={() =>
-                          setCanvasMentions(prev =>
-                            prev.filter(
-                              item =>
-                                !(
-                                  item.canvasId === chip.canvasId &&
-                                  item.revision === chip.revision &&
-                                  item.path === chip.path
-                                ),
-                            ),
-                          )
-                        }
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
+                {canvasMentions.length > 0 ? (
+                  <div className="canvas-chip-row">
+                    {canvasMentions.map(chip => (
+                      <span key={`${chip.canvasId}:${chip.revision}:${chip.path}`} className="canvas-chip">
+                        <span className="canvas-chip-text">{chip.label}</span>
+                        <button
+                          type="button"
+                          aria-label={t('canvas.removeMention')}
+                          onClick={() =>
+                            setCanvasMentions(prev =>
+                              prev.filter(
+                                item =>
+                                  !(
+                                    item.canvasId === chip.canvasId &&
+                                    item.revision === chip.revision &&
+                                    item.path === chip.path
+                                  ),
+                              ),
+                            )
+                          }
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </>
             }
             mentions={
               <>
-              {mentionOpen ? (
-                <div className="mention-menu" role="listbox" aria-label={t('composer.mention')}>
-                  {mentionChoices.length === 0 ? (
-                    <p className="mention-empty">{t('composer.noBot')}</p>
-                  ) : (
-                    mentionChoices.map((item, index) => (
-                      <button
-                        key={item.sessionId}
-                        type="button"
-                        role="option"
-                        aria-selected={index === mentionActive}
-                        className={index === mentionActive ? 'active' : ''}
-                        onMouseDown={event => {
-                          event.preventDefault()
-                          chooseMention(item)
-                        }}
-                      >
-                        <span className="bot-badge">BOT</span>
-                        <span className="mention-name">{item.label}</span>
-                      </button>
-                    ))
-                  )}
-                </div>
-              ) : null}
+                {mentionOpen ? (
+                  <div className="mention-menu" role="listbox" aria-label={t('composer.mention')}>
+                    {mentionChoices.length === 0 ? (
+                      <p className="mention-empty">{t('composer.noBot')}</p>
+                    ) : (
+                      mentionChoices.map((item, index) => (
+                        <button
+                          key={item.sessionId}
+                          type="button"
+                          role="option"
+                          aria-selected={index === mentionActive}
+                          className={index === mentionActive ? 'active' : ''}
+                          onMouseDown={event => {
+                            event.preventDefault()
+                            chooseMention(item)
+                          }}
+                        >
+                          <span className="bot-badge">BOT</span>
+                          <span className="mention-name">{item.label}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                ) : null}
               </>
             }
             textareaRef={draftRef}
             value={draft}
             placeholder={
               sessionId
-                    ? currentActivity({
-                        segments: thread.segments,
-                        drafting: thread.drafting,
-                        currentTurn: thread.turn,
-                        tickets: works,
-                        pendingApprovals: approvals,
-                        t,
-                      })?.text === t('question.waiting') ||
-                      currentActivity({
-                        segments: thread.segments,
-                        drafting: thread.drafting,
-                        currentTurn: thread.turn,
-                        tickets: works,
-                        pendingApprovals: approvals,
-                        t,
-                      })?.text === t('approval.waiting')
-                      ? t('question.waiting')
-                      : (workPlaceholder(works, t) ??
-                        (isBotSession && turnLive
-                          ? t('composer.interrupt')
-                          : bots.has(sessionId)
-                            ? t('composer.mentionHint')
-                            : t('composer.task')))
-                    : t('composer.pick')
+                ? currentActivity({
+                    segments: thread.segments,
+                    drafting: thread.drafting,
+                    currentTurn: thread.turn,
+                    tickets: works,
+                    pendingApprovals: approvals,
+                    t,
+                  })?.text === t('question.waiting') ||
+                  currentActivity({
+                    segments: thread.segments,
+                    drafting: thread.drafting,
+                    currentTurn: thread.turn,
+                    tickets: works,
+                    pendingApprovals: approvals,
+                    t,
+                  })?.text === t('approval.waiting')
+                  ? t('question.waiting')
+                  : (workPlaceholder(works, t) ??
+                    (isBotSession && turnLive
+                      ? t('composer.interrupt')
+                      : bots.has(sessionId)
+                        ? t('composer.mentionHint')
+                        : t('composer.task')))
+                : t('composer.pick')
             }
             disabled={!sessionId}
             onChange={(value, cursor) => {
@@ -1453,34 +1470,34 @@ export function App() {
             }}
             onSelect={cursor => setCursor(cursor)}
             onKeyDown={event => {
-                  if (event.nativeEvent.isComposing) return
-                  if (mentionOpen && mentionChoices.length > 0) {
-                    if (event.key === 'ArrowDown') {
-                      event.preventDefault()
-                      setMentionIndex(index => (index + 1) % mentionChoices.length)
-                      return
-                    }
-                    if (event.key === 'ArrowUp') {
-                      event.preventDefault()
-                      setMentionIndex(index => (index - 1 + mentionChoices.length) % mentionChoices.length)
-                      return
-                    }
-                    if (event.key === 'Enter' || event.key === 'Tab') {
-                      event.preventDefault()
-                      const target = mentionChoices[mentionActive]
-                      if (target) chooseMention(target)
-                      return
-                    }
-                    if (event.key === 'Escape') {
-                      event.preventDefault()
-                      setMentionClosed(mentionKey)
-                      return
-                    }
-                  }
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault()
-                    void send()
-                  }
+              if (event.nativeEvent.isComposing) return
+              if (mentionOpen && mentionChoices.length > 0) {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault()
+                  setMentionIndex(index => (index + 1) % mentionChoices.length)
+                  return
+                }
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault()
+                  setMentionIndex(index => (index - 1 + mentionChoices.length) % mentionChoices.length)
+                  return
+                }
+                if (event.key === 'Enter' || event.key === 'Tab') {
+                  event.preventDefault()
+                  const target = mentionChoices[mentionActive]
+                  if (target) chooseMention(target)
+                  return
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setMentionClosed(mentionKey)
+                  return
+                }
+              }
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                void send()
+              }
             }}
             toolsRef={menuRef}
             addDisabled={!sessionId}
@@ -1488,71 +1505,72 @@ export function App() {
             onAdd={() => setMenuOpen(open => !open)}
             addMenu={
               menuOpen ? (
-                    <div className="plus-menu" role="menu">
-                      <button type="button" role="menuitem" onClick={() => insertSlash()}>
-                        {t('composer.command')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuOpen(false)
-                          setFilesOpen(false)
-                          setFilePreview(null)
-                          setSettings('memory')
-                        }}
-                      >
-                        {t('memory.open')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuOpen(false)
-                          setSettings('permission')
-                        }}
-                      >
-                        {t('permission.open')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuOpen(false)
-                          setSettings('authorization')
-                        }}
-                      >
-                        {t('auth.open')}
-                      </button>
-                      {cuaAvailable ? (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={() => {
-                            setMenuOpen(false)
-                            setSettings('cua')
-                          }}
-                        >
-                          {t('cua.open')}
-                        </button>
-                      ) : null}
-                      <p className="plus-note">{t('composer.filesLater')}</p>
-                    </div>
+                <div className="plus-menu" role="menu">
+                  <button type="button" role="menuitem" onClick={() => insertSlash()}>
+                    {t('composer.command')}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      setFilesOpen(false)
+                      setFilePreview(null)
+                      setToolCallId(null)
+                      setSettings('memory')
+                    }}
+                  >
+                    {t('memory.open')}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      setSettings('permission')
+                    }}
+                  >
+                    {t('permission.open')}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      setSettings('authorization')
+                    }}
+                  >
+                    {t('auth.open')}
+                  </button>
+                  {cuaAvailable ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        setSettings('cua')
+                      }}
+                    >
+                      {t('cua.open')}
+                    </button>
+                  ) : null}
+                  <p className="plus-note">{t('composer.filesLater')}</p>
+                </div>
               ) : null
             }
             permission={
               <>
-                  {thread.preset ? (
-                    <button
-                      type="button"
-                      className="chip"
-                      aria-label={presetLabel(thread.preset, t)}
-                      title={presetLabel(thread.preset, t)}
-                      onClick={() => setSettings('permission')}
-                    >
-                      <PermissionIcon preset={thread.preset} />
-                    </button>
-                  ) : null}
+                {thread.preset ? (
+                  <button
+                    type="button"
+                    className="chip"
+                    aria-label={presetLabel(thread.preset, t)}
+                    title={presetLabel(thread.preset, t)}
+                    onClick={() => setSettings('permission')}
+                  >
+                    <PermissionIcon preset={thread.preset} />
+                  </button>
+                ) : null}
               </>
             }
             model={thread.model}
@@ -1566,79 +1584,93 @@ export function App() {
           />
         }
       >
-              {!sessionId ? <p className="empty-thread">{t('nav.pick')}</p> : null}
-              {sessionId &&
-              !historyLoading &&
-              !chunkBusy &&
-              !botChat &&
-              conversation.length === 0 &&
-              works.length === 0 ? (
-                <p className="empty-thread">{t('nav.empty')}</p>
-              ) : null}
-              <ImageFailureScope key={sessionId}>
-                <CanvasScope
-                  sessionId={!botChat && !historyLoading && sessionId ? sessionId : ''}
-                  pulse={canvasPulse}
-                  tickets={works}
-                  onActive={setCanvasOpen}
-                  dismiss={canvasDismiss}
-                  onMention={chip =>
-                    setCanvasMentions(prev => {
-                      const rest = prev.filter(
-                        item =>
-                          !(
-                            item.canvasId === chip.canvasId &&
-                            item.revision === chip.revision &&
-                            item.path === chip.path
-                          ),
-                      )
-                      return [...rest, chip].slice(-8)
-                    })
+        {!sessionId ? <p className="empty-thread">{t('nav.pick')}</p> : null}
+        {sessionId && !historyLoading && !chunkBusy && !botChat && conversation.length === 0 && works.length === 0 ? (
+          <p className="empty-thread">{t('nav.empty')}</p>
+        ) : null}
+        <ImageFailureScope key={sessionId}>
+          <CanvasScope
+            sessionId={!botChat && !historyLoading && sessionId ? sessionId : ''}
+            pulse={canvasPulse}
+            tickets={works}
+            onActive={setCanvasOpen}
+            dismiss={canvasDismiss}
+            onMention={chip =>
+              setCanvasMentions(prev => {
+                const rest = prev.filter(
+                  item =>
+                    !(item.canvasId === chip.canvasId && item.revision === chip.revision && item.path === chip.path),
+                )
+                return [...rest, chip].slice(-8)
+              })
+            }
+          >
+            {historyLoading ? null : botChat ? (
+              <BotChatView
+                items={exchange}
+                botLabel={botLabel}
+                onOpenFile={(path, line) => {
+                  setSettings(current => (current === 'memory' ? null : current))
+                  setToolCallId(null)
+                  setFilePreview({ path, line, token: Date.now() })
+                  setFilesOpen(true)
+                }}
+              />
+            ) : (
+              <Transcript
+                sessionId={sessionId}
+                cwd={items.find(s => s.sessionId === sessionId)?.cwd}
+                connectionPhase={syncStatus?.phase}
+                segments={conversation}
+                approvals={approvals}
+                questionWaits={questionWaits}
+                onCompose={text => placeDraft(text, text.length)}
+                completed={thread.completed}
+                failures={thread.failures}
+                retries={thread.retries}
+                turnEnds={thread.turnEnds}
+                tickets={works}
+                now={workNow}
+                canRetry={Boolean(sessionId) && execution.ready && !turnLive}
+                onRetry={text => {
+                  void submit(text)
+                }}
+                onSupply={supplyWork}
+                onOpenSession={openWorkerSession}
+                onOpenFile={(path, line) => {
+                  setSettings(current => (current === 'memory' ? null : current))
+                  setToolCallId(null)
+                  setFilePreview({ path, line, token: Date.now() })
+                  setFilesOpen(true)
+                }}
+                onOpenTool={segment => {
+                  if (!segment || segment.callId === toolCallId) {
+                    setToolCallId(null)
+                    return
                   }
-                >
-                  {historyLoading ? null : botChat ? (
-                    <BotChatView
-                      items={exchange}
-                      botLabel={botLabel}
-                      onOpenFile={(path, line) => {
-                        setSettings(current => (current === 'memory' ? null : current))
-                        setFilePreview({ path, line, token: Date.now() })
-                        setFilesOpen(true)
-                      }}
-                    />
-                  ) : (
-                    <Transcript
-                      sessionId={sessionId}
-                      cwd={items.find(s => s.sessionId === sessionId)?.cwd}
-                      connectionPhase={syncStatus?.phase}
-                      segments={conversation}
-                      approvals={approvals}
-                      questionWaits={questionWaits}
-                      onCompose={text => placeDraft(text, text.length)}
-                      completed={thread.completed}
-                      failures={thread.failures}
-                      retries={thread.retries}
-                      turnEnds={thread.turnEnds}
-                      tickets={works}
-                      now={workNow}
-                      canRetry={Boolean(sessionId) && execution.ready && !turnLive}
-                      onRetry={text => {
-                        void submit(text)
-                      }}
-                      onSupply={supplyWork}
-                      onOpenSession={openWorkerSession}
-                      onOpenFile={(path, line) => {
-                        setSettings(current => (current === 'memory' ? null : current))
-                        setFilePreview({ path, line, token: Date.now() })
-                        setFilesOpen(true)
-                      }}
-                      onOpenInbox={() => setBotChat(true)}
-                      botLabel={botLabel}
-                      chat={isBotSession}
-                    />
-                  )}
-                </CanvasScope>
-              </ImageFailureScope>
+                  setFilesOpen(false)
+                  setFilePreview(null)
+                  setSettings(current => (current === 'memory' ? null : current))
+                  setToolCallId(segment.callId)
+                }}
+                selectedCallId={toolCallId}
+                onOpenInbox={() => setBotChat(true)}
+                botLabel={botLabel}
+                chat={isBotSession}
+              />
+            )}
+            {sessionId && !botChat ? (
+              <ToolCallDrawer
+                open={toolSegment != null}
+                segment={toolSegment}
+                cwd={items.find(item => item.sessionId === sessionId)?.cwd}
+                tickets={works}
+                stale={syncStatus != null && syncStatus.phase !== 'live'}
+                onClose={() => setToolCallId(null)}
+              />
+            ) : null}
+          </CanvasScope>
+        </ImageFailureScope>
       </ChatPane>
       {settings === 'permission' && sessionId ? (
         <PermissionPanel
