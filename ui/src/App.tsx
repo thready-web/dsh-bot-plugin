@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from './api'
 import { readDeleteEvents, type DeleteEvent } from './delete-job'
@@ -15,6 +15,7 @@ import {
   workPreview,
   type WorkTicket,
 } from './work'
+import { ChatComposer, ChatPane, type ChatPaneHandle } from './ChatPane'
 import { FileBrowser } from './FileBrowser'
 import { NewSessionSheet, useSessionBasis } from './NewSession'
 import { BotChatView } from './BotChatView'
@@ -54,28 +55,8 @@ import {
   type ThreadState,
   type UsageBody,
 } from './types'
-import {
-  ArrowIcon,
-  BotDot,
-  HistoryLoading,
-  PermissionIcon,
-  PlusIcon,
-  SearchIcon,
-  Status,
-  hostText,
-  statsLine,
-} from './chrome'
+import { BotDot, PermissionIcon, PlusIcon, SearchIcon, Status, hostText, statsLine } from './chrome'
 import { Transcript } from './transcript'
-import { FOLLOW_GAP } from './scroll-follow'
-import { useScrollFollow } from './use-scroll-follow'
-
-function LatestButton({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button type="button" className="jump-latest" aria-label={label} onClick={onClick}>
-      <ArrowIcon />
-    </button>
-  )
-}
 
 function hashSession(): string {
   const parts = location.hash.replace(/^#\/?/, '').split('/')
@@ -308,10 +289,7 @@ export function App() {
   useEffect(() => {
     void api('/cua').then(response => setCuaAvailable(response.body.available === true))
   }, [])
-  const { scrollRef, contentRef, detached, pin, stickIfFollowing } = useScrollFollow(
-    `${botChat ? 'bot' : 'main'}:${sessionId}`,
-  )
-  const composerRef = useRef<HTMLDivElement>(null)
+  const chatRef = useRef<ChatPaneHandle>(null)
   const draftRef = useRef<HTMLTextAreaElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const sessionMenuRef = useRef<HTMLDivElement>(null)
@@ -855,29 +833,6 @@ export function App() {
     setBotChat(false)
   }, [sessionId])
 
-  useLayoutEffect(() => {
-    const composer = composerRef.current
-    const scroll = scrollRef.current
-    if (!composer || !scroll) return
-    const apply = () => {
-      const fade = Number.parseFloat(getComputedStyle(composer).getPropertyValue('--composer-fade')) || 0
-      const clearance = composer.hidden ? 0 : Math.max(0, composer.offsetHeight - fade)
-      // Clearance hides the composer card. FOLLOW_GAP is the empty tail above it.
-      const next = clearance + FOLLOW_GAP
-      const previous = Number.parseFloat(scroll.style.paddingBottom) || 0
-      if (previous === next) return
-      scroll.style.paddingBottom = `${next}px`
-      stickIfFollowing()
-    }
-    apply()
-    const observer = new ResizeObserver(apply)
-    observer.observe(composer)
-    return () => {
-      observer.disconnect()
-      scroll.style.paddingBottom = ''
-    }
-  }, [botChat, canvasOpen, scrollRef, stickIfFollowing])
-
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return items.filter(item => {
@@ -1115,7 +1070,7 @@ export function App() {
     const turnLive = task?.status === 'accepted' && thread.drafting
     const tickets = loadedWorkSession === sessionId ? works : []
     if (!sessionId || !text || !execution.ready || composerLocked(turnLive, tickets, bots.has(sessionId))) return false
-    pin()
+    chatRef.current?.pin()
     const wasLive = thread.drafting
     setDraft('')
     setReason('')
@@ -1269,7 +1224,16 @@ export function App() {
           </button>
         </div>
       </aside>
-      <section className="chat">
+      <ChatPane
+        ref={chatRef}
+        scrollKey={`${botChat ? 'bot' : 'main'}:${sessionId}`}
+        busy={historyLoading || chunkBusy}
+        progress={chunkProgress}
+        jumpInBody={botChat}
+        composerHidden={botChat}
+        composerLift={canvasOpen}
+        header={
+          <>
         <header className="chat-head">
           {botChat ? (
             <button type="button" className="bot-chat-back" onClick={() => setBotChat(false)}>
@@ -1364,11 +1328,244 @@ export function App() {
             {basis || t('memory.open')}
           </button>
         ) : null}
-        <div className="chat-body">
-          <HistoryLoading active={historyLoading || chunkBusy} progress={chunkProgress} />
-          {detached && botChat ? <LatestButton label={t('scroll.latest')} onClick={() => pin('smooth')} /> : null}
-          <div className="scroll" ref={scrollRef} aria-busy={historyLoading || chunkBusy || undefined}>
-            <div className="column" ref={contentRef}>
+          </>
+        }
+        rail={
+          botChat || historyLoading
+            ? undefined
+            : root => (
+                <TurnRail
+                  root={root}
+                  marks={marks}
+                  busyId={thread.drafting && thread.turn != null ? `turn:${thread.turn}` : undefined}
+                />
+              )
+        }
+        composer={
+          <ChatComposer
+            onSubmit={() => {
+              void send()
+            }}
+            activity={
+              sessionId && !historyLoading ? (
+                <CurrentActivity
+                  segments={thread.segments}
+                  drafting={thread.drafting}
+                  currentTurn={thread.turn}
+                  tickets={works}
+                  connectionPhase={syncStatus?.phase}
+                  pendingApprovals={approvals}
+                />
+              ) : null
+            }
+            chips={
+              <>
+              {canvasMentions.length > 0 ? (
+                <div className="canvas-chip-row">
+                  {canvasMentions.map(chip => (
+                    <span key={`${chip.canvasId}:${chip.revision}:${chip.path}`} className="canvas-chip">
+                      <span className="canvas-chip-text">{chip.label}</span>
+                      <button
+                        type="button"
+                        aria-label={t('canvas.removeMention')}
+                        onClick={() =>
+                          setCanvasMentions(prev =>
+                            prev.filter(
+                              item =>
+                                !(
+                                  item.canvasId === chip.canvasId &&
+                                  item.revision === chip.revision &&
+                                  item.path === chip.path
+                                ),
+                            ),
+                          )
+                        }
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              </>
+            }
+            mentions={
+              <>
+              {mentionOpen ? (
+                <div className="mention-menu" role="listbox" aria-label={t('composer.mention')}>
+                  {mentionChoices.length === 0 ? (
+                    <p className="mention-empty">{t('composer.noBot')}</p>
+                  ) : (
+                    mentionChoices.map((item, index) => (
+                      <button
+                        key={item.sessionId}
+                        type="button"
+                        role="option"
+                        aria-selected={index === mentionActive}
+                        className={index === mentionActive ? 'active' : ''}
+                        onMouseDown={event => {
+                          event.preventDefault()
+                          chooseMention(item)
+                        }}
+                      >
+                        <span className="bot-badge">BOT</span>
+                        <span className="mention-name">{item.label}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : null}
+              </>
+            }
+            textareaRef={draftRef}
+            value={draft}
+            placeholder={
+              sessionId
+                    ? currentActivity({
+                        segments: thread.segments,
+                        drafting: thread.drafting,
+                        currentTurn: thread.turn,
+                        tickets: works,
+                        pendingApprovals: approvals,
+                        t,
+                      })?.text === t('question.waiting') ||
+                      currentActivity({
+                        segments: thread.segments,
+                        drafting: thread.drafting,
+                        currentTurn: thread.turn,
+                        tickets: works,
+                        pendingApprovals: approvals,
+                        t,
+                      })?.text === t('approval.waiting')
+                      ? t('question.waiting')
+                      : (workPlaceholder(works, t) ??
+                        (isBotSession && turnLive
+                          ? t('composer.interrupt')
+                          : bots.has(sessionId)
+                            ? t('composer.mentionHint')
+                            : t('composer.task')))
+                    : t('composer.pick')
+            }
+            disabled={!sessionId}
+            onChange={(value, cursor) => {
+              setDraft(value)
+              setCursor(cursor)
+            }}
+            onSelect={cursor => setCursor(cursor)}
+            onKeyDown={event => {
+                  if (event.nativeEvent.isComposing) return
+                  if (mentionOpen && mentionChoices.length > 0) {
+                    if (event.key === 'ArrowDown') {
+                      event.preventDefault()
+                      setMentionIndex(index => (index + 1) % mentionChoices.length)
+                      return
+                    }
+                    if (event.key === 'ArrowUp') {
+                      event.preventDefault()
+                      setMentionIndex(index => (index - 1 + mentionChoices.length) % mentionChoices.length)
+                      return
+                    }
+                    if (event.key === 'Enter' || event.key === 'Tab') {
+                      event.preventDefault()
+                      const target = mentionChoices[mentionActive]
+                      if (target) chooseMention(target)
+                      return
+                    }
+                    if (event.key === 'Escape') {
+                      event.preventDefault()
+                      setMentionClosed(mentionKey)
+                      return
+                    }
+                  }
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    void send()
+                  }
+            }}
+            toolsRef={menuRef}
+            addDisabled={!sessionId}
+            addExpanded={menuOpen}
+            onAdd={() => setMenuOpen(open => !open)}
+            addMenu={
+              menuOpen ? (
+                    <div className="plus-menu" role="menu">
+                      <button type="button" role="menuitem" onClick={() => insertSlash()}>
+                        {t('composer.command')}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false)
+                          setFilesOpen(false)
+                          setFilePreview(null)
+                          setSettings('memory')
+                        }}
+                      >
+                        {t('memory.open')}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false)
+                          setSettings('permission')
+                        }}
+                      >
+                        {t('permission.open')}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false)
+                          setSettings('authorization')
+                        }}
+                      >
+                        {t('auth.open')}
+                      </button>
+                      {cuaAvailable ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setMenuOpen(false)
+                            setSettings('cua')
+                          }}
+                        >
+                          {t('cua.open')}
+                        </button>
+                      ) : null}
+                      <p className="plus-note">{t('composer.filesLater')}</p>
+                    </div>
+              ) : null
+            }
+            permission={
+              <>
+                  {thread.preset ? (
+                    <button
+                      type="button"
+                      className="chip"
+                      aria-label={presetLabel(thread.preset, t)}
+                      title={presetLabel(thread.preset, t)}
+                      onClick={() => setSettings('permission')}
+                    >
+                      <PermissionIcon preset={thread.preset} />
+                    </button>
+                  ) : null}
+              </>
+            }
+            model={thread.model}
+            showStop={turnLive}
+            onStop={() => {
+              void cancel()
+            }}
+            showSend={!locked}
+            sendDisabled={!canSend}
+            stats={reason || (!execution.ready ? hostText(execution.reason, execution.reason, t) : statsLine(thread))}
+          />
+        }
+      >
               {!sessionId ? <p className="empty-thread">{t('nav.pick')}</p> : null}
               {sessionId &&
               !historyLoading &&
@@ -1442,260 +1639,7 @@ export function App() {
                   )}
                 </CanvasScope>
               </ImageFailureScope>
-            </div>
-          </div>
-          {botChat || historyLoading ? null : (
-            <TurnRail
-              root={scrollRef}
-              marks={marks}
-              busyId={thread.drafting && thread.turn != null ? `turn:${thread.turn}` : undefined}
-            />
-          )}
-        </div>
-        <ComposerDock ref={composerRef} lift={canvasOpen} hidden={botChat}>
-          {detached ? <LatestButton label={t('scroll.latest')} onClick={() => pin('smooth')} /> : null}
-          <form
-            className="column"
-            onSubmit={event => {
-              event.preventDefault()
-              void send()
-            }}
-          >
-            {sessionId && !historyLoading ? (
-              <CurrentActivity
-                segments={thread.segments}
-                drafting={thread.drafting}
-                currentTurn={thread.turn}
-                tickets={works}
-                connectionPhase={syncStatus?.phase}
-                pendingApprovals={approvals}
-              />
-            ) : null}
-            <div className="card">
-              {canvasMentions.length > 0 ? (
-                <div className="canvas-chip-row">
-                  {canvasMentions.map(chip => (
-                    <span key={`${chip.canvasId}:${chip.revision}:${chip.path}`} className="canvas-chip">
-                      <span className="canvas-chip-text">{chip.label}</span>
-                      <button
-                        type="button"
-                        aria-label={t('canvas.removeMention')}
-                        onClick={() =>
-                          setCanvasMentions(prev =>
-                            prev.filter(
-                              item =>
-                                !(
-                                  item.canvasId === chip.canvasId &&
-                                  item.revision === chip.revision &&
-                                  item.path === chip.path
-                                ),
-                            ),
-                          )
-                        }
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              {mentionOpen ? (
-                <div className="mention-menu" role="listbox" aria-label={t('composer.mention')}>
-                  {mentionChoices.length === 0 ? (
-                    <p className="mention-empty">{t('composer.noBot')}</p>
-                  ) : (
-                    mentionChoices.map((item, index) => (
-                      <button
-                        key={item.sessionId}
-                        type="button"
-                        role="option"
-                        aria-selected={index === mentionActive}
-                        className={index === mentionActive ? 'active' : ''}
-                        onMouseDown={event => {
-                          event.preventDefault()
-                          chooseMention(item)
-                        }}
-                      >
-                        <span className="bot-badge">BOT</span>
-                        <span className="mention-name">{item.label}</span>
-                      </button>
-                    ))
-                  )}
-                </div>
-              ) : null}
-              <textarea
-                ref={draftRef}
-                value={draft}
-                rows={1}
-                placeholder={
-                  sessionId
-                    ? currentActivity({
-                        segments: thread.segments,
-                        drafting: thread.drafting,
-                        currentTurn: thread.turn,
-                        tickets: works,
-                        pendingApprovals: approvals,
-                        t,
-                      })?.text === t('question.waiting') ||
-                      currentActivity({
-                        segments: thread.segments,
-                        drafting: thread.drafting,
-                        currentTurn: thread.turn,
-                        tickets: works,
-                        pendingApprovals: approvals,
-                        t,
-                      })?.text === t('approval.waiting')
-                      ? t('question.waiting')
-                      : (workPlaceholder(works, t) ??
-                        (isBotSession && turnLive
-                          ? t('composer.interrupt')
-                          : bots.has(sessionId)
-                            ? t('composer.mentionHint')
-                            : t('composer.task')))
-                    : t('composer.pick')
-                }
-                disabled={!sessionId}
-                onChange={event => {
-                  setDraft(event.target.value)
-                  setCursor(event.target.selectionStart ?? event.target.value.length)
-                }}
-                onSelect={event => setCursor(event.currentTarget.selectionStart ?? 0)}
-                onKeyDown={event => {
-                  if (event.nativeEvent.isComposing) return
-                  if (mentionOpen && mentionChoices.length > 0) {
-                    if (event.key === 'ArrowDown') {
-                      event.preventDefault()
-                      setMentionIndex(index => (index + 1) % mentionChoices.length)
-                      return
-                    }
-                    if (event.key === 'ArrowUp') {
-                      event.preventDefault()
-                      setMentionIndex(index => (index - 1 + mentionChoices.length) % mentionChoices.length)
-                      return
-                    }
-                    if (event.key === 'Enter' || event.key === 'Tab') {
-                      event.preventDefault()
-                      const target = mentionChoices[mentionActive]
-                      if (target) chooseMention(target)
-                      return
-                    }
-                    if (event.key === 'Escape') {
-                      event.preventDefault()
-                      setMentionClosed(mentionKey)
-                      return
-                    }
-                  }
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault()
-                    void send()
-                  }
-                }}
-              />
-              <div className="card-row">
-                <div className="tools" ref={menuRef}>
-                  <button
-                    type="button"
-                    className="add"
-                    aria-label={t('composer.add')}
-                    aria-haspopup="menu"
-                    aria-expanded={menuOpen}
-                    disabled={!sessionId}
-                    onClick={() => setMenuOpen(open => !open)}
-                  >
-                    <PlusIcon />
-                  </button>
-                  {menuOpen ? (
-                    <div className="plus-menu" role="menu">
-                      <button type="button" role="menuitem" onClick={() => insertSlash()}>
-                        {t('composer.command')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuOpen(false)
-                          setFilesOpen(false)
-                          setFilePreview(null)
-                          setSettings('memory')
-                        }}
-                      >
-                        {t('memory.open')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuOpen(false)
-                          setSettings('permission')
-                        }}
-                      >
-                        {t('permission.open')}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuOpen(false)
-                          setSettings('authorization')
-                        }}
-                      >
-                        {t('auth.open')}
-                      </button>
-                      {cuaAvailable ? (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={() => {
-                            setMenuOpen(false)
-                            setSettings('cua')
-                          }}
-                        >
-                          {t('cua.open')}
-                        </button>
-                      ) : null}
-                      <p className="plus-note">{t('composer.filesLater')}</p>
-                    </div>
-                  ) : null}
-                  {thread.preset ? (
-                    <button
-                      type="button"
-                      className="chip"
-                      aria-label={presetLabel(thread.preset, t)}
-                      title={presetLabel(thread.preset, t)}
-                      onClick={() => setSettings('permission')}
-                    >
-                      <PermissionIcon preset={thread.preset} />
-                    </button>
-                  ) : null}
-                </div>
-                <div className="trailing">
-                  {thread.model ? <span className="model">{thread.model}</span> : null}
-                  {turnLive ? (
-                    <button
-                      type="button"
-                      className="stop"
-                      aria-label={t('composer.cancel')}
-                      onClick={() => {
-                        void cancel()
-                      }}
-                    >
-                      <span className="stop-icon" />
-                    </button>
-                  ) : null}
-                  {locked ? null : (
-                    <button type="submit" className="send" aria-label={t('composer.send')} disabled={!canSend}>
-                      <ArrowIcon />
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-            <p className="stats">
-              {reason || (!execution.ready ? hostText(execution.reason, execution.reason, t) : statsLine(thread))}
-            </p>
-          </form>
-        </ComposerDock>
-      </section>
+      </ChatPane>
       {settings === 'permission' && sessionId ? (
         <PermissionPanel
           sessionId={sessionId}
@@ -1786,32 +1730,3 @@ export function App() {
     </div>
   )
 }
-
-const ComposerDock = forwardRef<HTMLDivElement, { lift: boolean; hidden: boolean; children: ReactNode }>(
-  function ComposerDock({ lift, hidden, children }, ref) {
-    const [box, setBox] = useState<{ left: number; width: number } | null>(null)
-    useLayoutEffect(() => {
-      if (!lift) return
-      const chat = document.querySelector('section.chat')
-      const place = () => {
-        const rect = chat?.getBoundingClientRect()
-        if (!rect) return
-        setBox({ left: rect.left, width: rect.width })
-      }
-      place()
-      window.addEventListener('resize', place)
-      return () => window.removeEventListener('resize', place)
-    }, [lift])
-    const node = (
-      <div
-        ref={ref}
-        className={lift ? 'composer-wrap lifted' : 'composer-wrap'}
-        hidden={hidden}
-        style={lift && box ? { left: box.left, width: box.width, right: 'auto' } : undefined}
-      >
-        {children}
-      </div>
-    )
-    return lift && box ? createPortal(node, document.body) : node
-  },
-)

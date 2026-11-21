@@ -902,7 +902,7 @@ function streamingSeq(state: ThreadState, floor: number): number {
   return seq + 0.5
 }
 
-function expandStream(stream: unknown): Array<{ time: number; chunk: Record<string, unknown> }> {
+export function expandStream(stream: unknown): Array<{ time: number; chunk: Record<string, unknown> }> {
   if (!Array.isArray(stream)) return []
   const out: Array<{ time: number; chunk: Record<string, unknown> }> = []
   for (const candidate of stream) {
