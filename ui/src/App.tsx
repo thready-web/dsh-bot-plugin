@@ -17,7 +17,7 @@ import {
 } from './work'
 import { ChatComposer, ChatPane, type ChatPaneHandle } from './ChatPane'
 import { FileBrowser } from './FileBrowser'
-import { NewSessionSheet, useSessionBasis } from './NewSession'
+import { NewSessionSheet } from './NewSession'
 import { BotChatView } from './BotChatView'
 import { TurnRail } from './TurnRail'
 import { createInteractionSync, createAuthorizationCatalog } from './interaction-sync'
@@ -57,7 +57,13 @@ import {
   type UsageBody,
 } from './types'
 import { BotDot, PermissionIcon, PlusIcon, SearchIcon, Status, hostText, statsLine } from './chrome'
+import { PresenceMark } from './presence/PresenceMark'
+import { faceGlyph, focusStatus, presenceForRow, presenceFromThread, stampFor, viewFor } from './presence/source'
+import type { SettledStamp } from '@tobs/bot-presence'
 import { Transcript } from './transcript'
+
+/** Look toward the row label. A full turn, so the face answers the item and not only the icon. */
+const ROW_LOOK = { x: 1, y: 0 }
 
 function hashSession(): string {
   const parts = location.hash.replace(/^#\/?/, '').split('/')
@@ -67,6 +73,13 @@ function hashSession(): string {
     if (key === 's' && value) return decodeURIComponent(value)
   }
   return ''
+}
+
+/** Owner stored with the worker history entry, so the shared face does not wait on the ticket fetch. */
+function rememberedOwner(session: string): string {
+  if (!isWorkerSession(session)) return ''
+  const state = history.state as { kind?: string; owner?: unknown } | null
+  return state?.kind === 'worker' && typeof state.owner === 'string' ? state.owner : ''
 }
 
 function dropStored(key: string, current: Record<string, string>, id: string) {
@@ -210,15 +223,14 @@ export function App() {
   const [setupOpen, setSetupOpen] = useState(false)
   const [botChat, setBotChat] = useState(false)
   const [setupNote, setSetupNote] = useState('')
-  const [basisRevision, setBasisRevision] = useState(0)
   const [bots, setBots] = useState<ReadonlySet<string>>(() => new Set())
   const [botNames, setBotNames] = useState<Record<string, string>>({})
   const [workCards, setWorkCards] = useState<Record<string, WorkTicket[]>>({})
   const [workReady, setWorkReady] = useState(false)
   const [remoteStatus, setRemoteStatus] = useState<Record<string, string[]>>({})
   const [workNow, setWorkNow] = useState(() => Date.now())
-  const [workerOwner, setWorkerOwner] = useState('')
-  const basis = useSessionBasis(sessionId, basisRevision)
+  const [workerOwner, setWorkerOwner] = useState(() => rememberedOwner(hashSession()))
+  const [awakeId, setAwakeId] = useState('')
 
   useEffect(() => {
     setApprovals([])
@@ -358,7 +370,8 @@ export function App() {
 
   function openWorkerSession(id: string) {
     if (!id || id === sessionId) return
-    const owner = sessionId
+    const owner = isWorkerSession(sessionId) ? workerOwner || sessionId : sessionId
+    setWorkerOwner(owner)
     setBotChat(false)
     setSessionId(id)
     setMenuOpen(false)
@@ -620,7 +633,10 @@ export function App() {
       setTask(null)
       setReason('')
       setSetupNote('')
-      setSessionId(hashSession())
+      const next = hashSession()
+      const owner = rememberedOwner(next)
+      if (owner) setWorkerOwner(owner)
+      setSessionId(next)
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
@@ -1047,7 +1063,6 @@ export function App() {
     setItems(acceptSessions(value?.value?.items))
     selectSession(id)
     setSetupNote(note)
-    setBasisRevision(current => current + 1)
   }
 
   function placeDraft(text: string, nextCursor: number) {
@@ -1154,6 +1169,21 @@ export function App() {
   const locked = composerLocked(turnLive, workTickets, isBotSession) || deleteLocked
   const canSend = Boolean(sessionId) && execution.ready && draft.trim() !== '' && !locked
 
+  const settledRef = useRef<SettledStamp | null>(null)
+  const openStatuses =
+    sessionId && loadedWorkSession === sessionId ? works.map(item => item.status) : (remoteStatus[sessionId] ?? [])
+  const openSource = presenceFromThread(sessionId, thread, approvals, focusStatus(openStatuses))
+  settledRef.current = sessionId ? stampFor(settledRef.current, sessionId, openSource, workNow) : null
+  const openSettled = settledRef.current?.at
+  const openView = viewFor(openSettled != null ? { ...openSource, settledAt: openSettled } : openSource, workNow)
+  const faceSessionId = isWorkerSession(sessionId) ? workerOwner : sessionId
+  // The thread is cleared as soon as the session id changes, before the next log arrives.
+  // Keep the pose already on screen until that log is the one for this session.
+  const faceReady = sessionId !== '' && historySession === sessionId
+  const faceStateRef = useRef(openView.state)
+  if (faceReady) faceStateRef.current = openView.state
+  const headerState = faceReady ? openView.state : faceStateRef.current
+
   function signalFor(item: { sessionId: string; running?: boolean }): 'run' | 'wait' | null {
     if (!bots.has(item.sessionId)) return null
     const live = item.running === true || (item.sessionId === sessionId && (turnLive || thread.drafting))
@@ -1168,20 +1198,17 @@ export function App() {
     <div className={sessionId ? 'shell in-chat' : 'shell'}>
       <aside className="side">
         <div className="side-top">
-          <strong className="brand">{t('app.title')}</strong>
-          <span className="side-actions">
-            <button
-              type="button"
-              className="icon-btn"
-              aria-label={t('session.search')}
-              onClick={() => setSearching(value => !value)}
-            >
-              <SearchIcon />
-            </button>
-            <button type="button" className="icon-btn" aria-label={t('new.title')} onClick={() => setSetupOpen(true)}>
-              <PlusIcon />
-            </button>
-          </span>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label={t('session.search')}
+            onClick={() => setSearching(value => !value)}
+          >
+            <SearchIcon />
+          </button>
+          <button type="button" className="icon-btn" aria-label={t('new.title')} onClick={() => setSetupOpen(true)}>
+            <PlusIcon />
+          </button>
         </div>
         {searching ? (
           <input
@@ -1199,16 +1226,32 @@ export function App() {
           ) : null}
           {conversations.map(item => {
             const name = sessionName(item)
+            const face =
+              item.sessionId === sessionId
+                ? openView
+                : viewFor(
+                    presenceForRow(item.sessionId, item.running === true, remoteStatus[item.sessionId] ?? []),
+                    workNow,
+                  )
             return (
               <li key={item.sessionId} onContextMenu={event => openSessionMenu(event, item.sessionId)}>
                 <button
                   type="button"
                   className={item.sessionId === sessionId ? 'session selected' : 'session'}
                   title={item.cwd || item.sessionId}
+                  onPointerEnter={() => setAwakeId(item.sessionId)}
+                  onPointerLeave={() => setAwakeId(current => (current === item.sessionId ? '' : current))}
                   onClick={() => selectSession(item.sessionId)}
                 >
-                  <span className={bots.has(item.sessionId) ? 'mark bot-mark' : 'mark'}>
-                    {bots.has(item.sessionId) ? 'BOT' : Array.from(name)[0]}
+                  <span className="session-face">
+                    <PresenceMark
+                      sessionId={item.sessionId}
+                      state={face.state}
+                      still={awakeId !== item.sessionId}
+                      grace
+                      lookAt={awakeId === item.sessionId ? ROW_LOOK : null}
+                      size={36}
+                    />
                     <BotDot signal={signalFor(item)} />
                   </span>
                   <span className="copy">
@@ -1227,8 +1270,8 @@ export function App() {
         {statusOpen ? <Status health={health} usage={usage} execution={execution} model={thread.model} /> : null}
         <div className="me-row">
           <button type="button" className="me" onClick={() => setStatusOpen(value => !value)}>
-            <span className="mark me-mark">{t('local.mark')}</span>
-            <span>{health?.primary?.reachable === false ? t('local.down') : t('local.here')}</span>
+            <span className="mark me-mark">{faceGlyph(t('local.mark'))}</span>
+            <span className="me-name">{health?.primary?.reachable === false ? t('local.down') : t('local.here')}</span>
           </button>
           <button type="button" className="lang-switch" onClick={() => setLocale(locale === 'en' ? 'zh' : 'en')}>
             {t('lang.switch')}
@@ -1268,83 +1311,73 @@ export function App() {
                   {t('nav.sessions')}
                 </button>
               )}
-              {sessionId && bots.has(sessionId) ? (
-                <span className="bot-badge">
-                  BOT
-                  <BotDot
-                    signal={signalFor({
-                      sessionId,
-                      running: items.find(item => item.sessionId === sessionId)?.running,
-                    })}
+              <span className="chat-identity">
+                {faceSessionId && !botChat ? (
+                  <PresenceMark
+                    sessionId={faceSessionId}
+                    state={headerState}
+                    still={false}
+                    size={32}
+                    label={title}
                   />
-                </span>
-              ) : null}
-              <h1>{botChat ? t('nav.botMessages') : title}</h1>
-              {!botChat && workPreview(works, workNow, t) ? (
-                <span className="work-chip">{workPreview(works, workNow, t)}</span>
-              ) : null}
-              {sessionId && !botChat ? (
-                <button
-                  type="button"
-                  className="files-open"
-                  aria-pressed={settings === 'memory'}
-                  onClick={() => {
-                    if (settings === 'memory') {
-                      setSettings(null)
-                      return
-                    }
-                    setFilesOpen(false)
-                    setFilePreview(null)
-                    setToolCallId(null)
-                    setSettings('memory')
-                  }}
-                >
-                  {t('memory.open')}
-                </button>
-              ) : null}
-              {sessionId && !botChat ? (
-                <button
-                  type="button"
-                  className="files-open"
-                  aria-pressed={filesOpen}
-                  onClick={() => {
-                    if (filesOpen) {
+                ) : null}
+                {isWorkerSession(sessionId) && !botChat ? (
+                  <nav className="work-crumb" aria-label={t('nav.where')}>
+                    <button type="button" onClick={leaveWorker}>
+                      {(workerOwner && botLabel(workerOwner)) || t('nav.mainSession')}
+                    </button>
+                    <span aria-hidden="true">/</span>
+                    <h1>{t('nav.worker')}</h1>
+                  </nav>
+                ) : (
+                  <h1>{botChat ? t('nav.botMessages') : title}</h1>
+                )}
+              </span>
+              <span className="chat-actions">
+                {!botChat && workPreview(works, workNow, t) ? (
+                  <span className="work-chip">{workPreview(works, workNow, t)}</span>
+                ) : null}
+                {sessionId && !botChat ? (
+                  <button
+                    type="button"
+                    className="files-open"
+                    aria-pressed={settings === 'memory'}
+                    onClick={() => {
+                      if (settings === 'memory') {
+                        setSettings(null)
+                        return
+                      }
                       setFilesOpen(false)
                       setFilePreview(null)
-                      return
-                    }
-                    setSettings(current => (current === 'memory' ? null : current))
-                    setToolCallId(null)
-                    setFilesOpen(true)
-                  }}
-                >
-                  {t('files.open')}
-                </button>
-              ) : null}
-              <a href={nativeHref}>{t('nav.official')}</a>
+                      setToolCallId(null)
+                      setSettings('memory')
+                    }}
+                  >
+                    {t('memory.open')}
+                  </button>
+                ) : null}
+                {sessionId && !botChat ? (
+                  <button
+                    type="button"
+                    className="files-open"
+                    aria-pressed={filesOpen}
+                    onClick={() => {
+                      if (filesOpen) {
+                        setFilesOpen(false)
+                        setFilePreview(null)
+                        return
+                      }
+                      setSettings(current => (current === 'memory' ? null : current))
+                      setToolCallId(null)
+                      setFilesOpen(true)
+                    }}
+                  >
+                    {t('files.open')}
+                  </button>
+                ) : null}
+                <a href={nativeHref}>{t('nav.official')}</a>
+              </span>
             </header>
-            {isWorkerSession(sessionId) && !botChat ? (
-              <nav className="work-crumb" aria-label={t('nav.where')}>
-                <button type="button" onClick={leaveWorker}>
-                  {(workerOwner && botLabel(workerOwner)) || t('nav.mainSession')}
-                </button>
-                <span aria-hidden="true">/</span>
-                <span>{t('nav.worker')}</span>
-              </nav>
-            ) : null}
-            {sessionId && !botChat ? (
-              <button
-                type="button"
-                className="basis"
-                onClick={() => {
-                  setFilesOpen(false)
-                  setFilePreview(null)
-                  setSettings('memory')
-                }}
-              >
-                {basis || t('memory.open')}
-              </button>
-            ) : null}
           </>
         }
         rail={
@@ -1367,6 +1400,8 @@ export function App() {
               tickets={works}
               connectionPhase={syncStatus?.phase}
               pendingApprovals={approvals}
+              sessionId={faceSessionId || sessionId}
+              presence={openView.state}
             />
           ) : null
         }
@@ -1425,7 +1460,12 @@ export function App() {
                             chooseMention(item)
                           }}
                         >
-                          <span className="bot-badge">BOT</span>
+                          <PresenceMark
+                            sessionId={item.sessionId}
+                            state="idle"
+                            still
+                            size={22}
+                          />
                           <span className="mention-name">{item.label}</span>
                         </button>
                       ))
@@ -1458,8 +1498,8 @@ export function App() {
                   : (workPlaceholder(works, t) ??
                     (isBotSession && turnLive
                       ? t('composer.interrupt')
-                      : bots.has(sessionId)
-                        ? t('composer.mentionHint')
+                      : title
+                        ? t('composer.messageName', { name: title })
                         : t('composer.task')))
                 : t('composer.pick')
             }
@@ -1619,6 +1659,7 @@ export function App() {
             ) : (
               <Transcript
                 sessionId={sessionId}
+                faceSessionId={faceSessionId}
                 cwd={items.find(s => s.sessionId === sessionId)?.cwd}
                 connectionPhase={syncStatus?.phase}
                 segments={conversation}
@@ -1677,7 +1718,6 @@ export function App() {
           sessionId={sessionId}
           current={thread.preset}
           onClose={() => setSettings(null)}
-          onChanged={() => setBasisRevision(current => current + 1)}
         />
       ) : null}
       {settings === 'authorization' || (authPending && settings == null) ? (

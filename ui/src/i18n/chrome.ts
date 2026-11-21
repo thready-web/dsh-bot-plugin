@@ -72,6 +72,8 @@ const en = {
   'health.usageMissing': 'The usage plugin is not installed.',
   'health.usageUpstream': 'The usage upstream is unavailable.',
   'health.sessionUnreadable': 'Could not tell whether the session is still running.',
+  'day.today': 'Today {time}',
+  'day.yesterday': 'Yesterday {time}',
 } as const
 
 const zh: Record<keyof typeof en, string> = {
@@ -146,6 +148,8 @@ const zh: Record<keyof typeof en, string> = {
   'health.usageMissing': '用量插件未接入',
   'health.usageUpstream': '用量上游不可用',
   'health.sessionUnreadable': '无法读取会话是否仍在运行',
+  'day.today': '今天 {time}',
+  'day.yesterday': '昨天 {time}',
 }
 
 export const chrome = { en, zh }

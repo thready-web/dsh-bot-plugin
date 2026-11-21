@@ -1,4 +1,5 @@
 import { Fragment, useState } from 'react'
+import type { Copy } from './i18n/index.ts'
 import { useI18n } from './locale'
 import { CanvasCard, useCanvasPlace, type CanvasSummary } from './CanvasPreview'
 import { splitCanvasMessage } from './canvas-target'
@@ -39,6 +40,25 @@ function clock(time: number | undefined, locale: string): string {
   return date.toLocaleTimeString(locale === 'zh' ? 'zh-CN' : 'en', { hour: '2-digit', minute: '2-digit' })
 }
 
+function dayKey(time: number | undefined): string {
+  if (!time) return ''
+  const date = new Date(time)
+  if (Number.isNaN(date.getTime())) return ''
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+}
+
+function dayText(time: number, locale: string, t: Copy): string {
+  const date = new Date(time)
+  const stamp = clock(time, locale)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (dayKey(time) === dayKey(today.getTime())) return t('day.today', { time: stamp })
+  if (dayKey(time) === dayKey(yesterday.getTime())) return t('day.yesterday', { time: stamp })
+  const when = date.toLocaleDateString(locale === 'zh' ? 'zh-CN' : 'en', { month: 'short', day: 'numeric' })
+  return `${when} ${stamp}`
+}
+
 export function Transcript({
   sessionId,
   segments,
@@ -63,8 +83,11 @@ export function Transcript({
   onCompose,
   onOpenTool,
   selectedCallId = null,
+  faceSessionId,
 }: {
   sessionId?: string
+  /** Avatar identity. A worker passes its main session so the face stays the parent's. */
+  faceSessionId?: string
   segments: Segment[]
   completed: Record<number, number>
   failures: Record<number, TurnFailure>
@@ -140,52 +163,68 @@ export function Transcript({
   const byId = new Map(tickets.map(ticket => [ticket.id, ticket]))
   const latestTurn = blocks.reduce((max, block) => (block.type === 'turn' ? Math.max(max, block.turn) : max), -1)
   const open = backgroundOpen(tickets)
+  const { locale, t } = useI18n()
+  let lastDay = ''
   return (
     <>
-      {blocks.map((block, index) => (
-        <Fragment key={block.type === 'turn' ? `${sessionId}:turn-${block.turn}` : block.segment.id}>
-          {block.type === 'user' ? (
-            <UserBlock segment={block.segment} botLabel={botLabel} onOpenInbox={onOpenInbox} onOpenFile={onOpenFile} />
-          ) : block.type === 'card' ? (
-            <CardView
-              segment={block.segment}
-              sessionId={sessionId}
-              byId={byId}
-              now={now}
-              onSupply={onSupply}
-              onOpenSession={onOpenSession}
-              approvals={approvals}
-            />
-          ) : (
-            <TurnBlock
-              sessionId={sessionId}
-              cwd={cwd}
-              connectionPhase={connectionPhase}
-              block={block}
-              index={index}
-              blocks={blocks}
-              failures={failures}
-              retries={retries}
-              turnEnds={turnEnds}
-              latestTurn={latestTurn}
-              background={open}
-              byId={byId}
-              now={now}
-              canRetry={canRetry}
-              onRetry={onRetry}
-              onSupply={onSupply}
-              onOpenSession={onOpenSession}
-              onOpenFile={onOpenFile}
-              chat={chat}
-              approvals={approvals}
-              questionWaits={questionWaits}
-              onCompose={onCompose}
-              onOpenTool={onOpenTool}
-              selectedCallId={selectedCallId}
-            />
-          )}
-        </Fragment>
-      ))}
+      {blocks.map((block, index) => {
+        const stampTime = block.type === 'user' ? block.segment.time : undefined
+        const key = dayKey(stampTime)
+        const showDay = Boolean(key && key !== lastDay && stampTime)
+        if (key) lastDay = key
+        return (
+          <Fragment key={block.type === 'turn' ? `${sessionId}:turn-${block.turn}` : block.segment.id}>
+            {showDay && stampTime ? <p className="day-stamp">{dayText(stampTime, locale, t)}</p> : null}
+            {block.type === 'user' ? (
+              <UserBlock
+                segment={block.segment}
+                botLabel={botLabel}
+                onOpenInbox={onOpenInbox}
+                onOpenFile={onOpenFile}
+              />
+            ) : block.type === 'card' ? (
+              <CardView
+                segment={block.segment}
+                sessionId={sessionId}
+                faceSessionId={faceSessionId || sessionId}
+                byId={byId}
+                now={now}
+                onSupply={onSupply}
+                onOpenSession={onOpenSession}
+                approvals={approvals}
+              />
+            ) : (
+              <TurnBlock
+                sessionId={sessionId}
+                cwd={cwd}
+                connectionPhase={connectionPhase}
+                block={block}
+                index={index}
+                blocks={blocks}
+                failures={failures}
+                retries={retries}
+                turnEnds={turnEnds}
+                latestTurn={latestTurn}
+                background={open}
+                byId={byId}
+                now={now}
+                canRetry={canRetry}
+                onRetry={onRetry}
+                onSupply={onSupply}
+                onOpenSession={onOpenSession}
+                onOpenFile={onOpenFile}
+                chat={chat}
+                approvals={approvals}
+                questionWaits={questionWaits}
+                onCompose={onCompose}
+                onOpenTool={onOpenTool}
+                selectedCallId={selectedCallId}
+                faceSessionId={faceSessionId || sessionId}
+              />
+            )}
+          </Fragment>
+        )
+      })}
     </>
   )
 }
@@ -193,6 +232,7 @@ export function Transcript({
 function CardView({
   segment,
   sessionId,
+  faceSessionId,
   byId,
   now,
   onSupply,
@@ -201,6 +241,7 @@ function CardView({
 }: {
   segment: CardSegment
   sessionId?: string
+  faceSessionId?: string
   byId: Map<string, WorkTicket>
   now: number
   onSupply: (ticketId: string, text: string) => Promise<string>
@@ -209,7 +250,15 @@ function CardView({
 }) {
   const canvasPlace = useCanvasPlace()
   if (segment.kind === 'worker-card') {
-    return <WorkCard ticket={workerTicket(segment, byId)} now={now} onSupply={onSupply} onOpen={onOpenSession} />
+    return (
+      <WorkCard
+        ticket={workerTicket(segment, byId)}
+        now={now}
+        onSupply={onSupply}
+        onOpen={onOpenSession}
+        ownerSessionId={faceSessionId}
+      />
+    )
   }
   if (segment.kind === 'canvas-card') {
     return <CanvasCard item={canvasSummary(segment)} onOpen={() => canvasPlace.open(segment.canvasId)} />
@@ -429,8 +478,10 @@ function TurnBlock({
   onCompose,
   onOpenTool,
   selectedCallId = null,
+  faceSessionId,
 }: {
   sessionId?: string
+  faceSessionId?: string
   block: { type: 'turn'; turn: number; seconds?: number; segments: Segment[] }
   index: number
   blocks: Array<{ type: string; segment?: { text?: string; turn?: number }; turn?: number }>
@@ -495,6 +546,7 @@ function TurnBlock({
                 key={piece.segment.id}
                 segment={piece.segment}
                 sessionId={sessionId}
+                faceSessionId={faceSessionId}
                 byId={byId}
                 now={now}
                 onSupply={onSupply}

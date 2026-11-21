@@ -13,7 +13,12 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@tobs/bot-presence": ["../../../packages/bot-presence/src/index.ts"],
+      "@tobs/bot-presence/engine": ["../../../packages/bot-presence/src/engine.ts"]
+    }
   },
   "include": ["src"]
 }

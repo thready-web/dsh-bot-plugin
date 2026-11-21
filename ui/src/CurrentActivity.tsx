@@ -1,9 +1,15 @@
+import type { PresenceState } from '@tobs/bot-presence'
 import { useEffect, useState } from 'react'
 import { currentActivity, type CurrentActivityInput } from './current-activity'
 import { useI18n } from './locale'
+import { PresenceMark } from './presence/PresenceMark'
 
 /** Status for the latest chat line. The detailed event timeline stays in its original order. */
-export function CurrentActivity(props: Omit<CurrentActivityInput, 't'>) {
+export function CurrentActivity({
+  sessionId = '',
+  presence = 'thinking',
+  ...props
+}: Omit<CurrentActivityInput, 't'> & { sessionId?: string; presence?: PresenceState }) {
   const { t } = useI18n()
   const summary = currentActivity({ ...props, t })
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden')
@@ -22,10 +28,14 @@ export function CurrentActivity(props: Omit<CurrentActivityInput, 't'>) {
       aria-atomic="true"
       data-moving={summary.moving && visible ? 'true' : 'false'}
     >
-      <span className="chat-status-mark" aria-hidden="true">
-        <span />
-        <span />
-      </span>
+      {sessionId ? (
+        <PresenceMark sessionId={sessionId} state={presence} still={!(summary.moving && visible)} size={28} />
+      ) : (
+        <span className="chat-status-mark" aria-hidden="true">
+          <span />
+          <span />
+        </span>
+      )}
       <span className="chat-status-text" title={summary.text}>
         {summary.text}
       </span>

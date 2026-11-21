@@ -11,21 +11,23 @@
   --dsw-radius-xl: 20px;
   --dsw-radius-panel: 28px;
   --bg: #fff;
-  --sidebar: #f9fafb;
+  --sidebar: #f5f5f7;
   --ink: rgb(15, 17, 21);
   --secondary: rgb(97, 102, 107);
   --tertiary: rgb(129, 133, 140);
   --caption: rgb(173, 178, 184);
   --hover: rgba(38, 49, 72, 0.06);
-  --selected: rgb(235, 238, 242);
+  --selected: #ececef;
   --bubble: rgb(237, 243, 254);
+  --user: #e23d8a;
+  --assistant: #f3f3f5;
   --line: rgba(0, 0, 0, 0.1);
   --line-strong: rgba(0, 0, 0, 0.12);
   --code-bg: #f9fafb;
   --inline-code: #f5f5f5;
   --link: rgb(65, 118, 230);
-  --send: rgb(65, 118, 230);
-  --send-hover: rgb(122, 170, 255);
+  --send: #e23d8a;
+  --send-hover: #c41e72;
   --selector: #f9fafb;
   --shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 4px 16px rgba(0, 0, 0, 0.03), 0 0 24px rgba(0, 0, 0, 0.03);
   font-family: var(--dsw-font-family);
@@ -142,7 +144,7 @@ html.files-resizing {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 6px 12px;
+  padding: 2px 4px 10px;
 }
 .brand {
   font-size: 15px;
@@ -154,8 +156,8 @@ html.files-resizing {
 }
 .icon-btn,
 .add {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border: 0;
   border-radius: 999px;
   display: grid;
@@ -196,6 +198,9 @@ html.files-resizing {
   overflow: auto;
   flex: 1;
 }
+.sessions > li + li {
+  margin-top: 6px;
+}
 .sessions .empty {
   color: var(--tertiary);
   font-size: 13px;
@@ -203,14 +208,14 @@ html.files-resizing {
 }
 .session {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
   width: 100%;
   text-align: left;
   border: 0;
   background: transparent;
-  border-radius: 10px;
-  padding: 8px;
+  border-radius: 12px;
+  padding: 8px 10px;
 }
 .session:hover {
   background: var(--hover);
@@ -411,12 +416,14 @@ html.files-resizing {
   text-overflow: ellipsis;
 }
 .name {
-  font-size: 14px;
-  font-weight: 560;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
 }
 .preview {
   color: var(--tertiary);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 18px;
   margin-top: 1px;
 }
 .preview:empty::before {
@@ -426,6 +433,50 @@ html.files-resizing {
   display: flex;
   align-items: center;
   gap: 4px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+.me-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+}
+.session-face {
+  position: relative;
+  flex: none;
+}
+.session-face .bot-dot {
+  right: -1px;
+  bottom: -1px;
+}
+.presence {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.presence-host {
+  position: absolute;
+  inset: 2px;
+  display: grid;
+  place-items: center;
+}
+.presence-host svg,
+.presence-host canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.presence-live {
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+.presence-live[data-ready='true'] {
+  opacity: 1;
 }
 .me {
   display: flex;
@@ -596,10 +647,41 @@ html.files-resizing {
   max-width: 100%;
   margin: 0;
   font-size: 14px;
-  font-weight: 560;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.chat-head:has(.chat-identity) > .back,
+.chat-head:has(.chat-identity) > .bot-chat-back {
+  margin-right: 4px;
+}
+.chat-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+  margin-right: auto;
+  padding: 3px 14px 3px 3px;
+  border-radius: 999px;
+  background: var(--assistant);
+}
+.chat-identity .work-crumb h1 {
+  font-size: 14px;
+  font-weight: 600;
+}
+.chat-head .chat-identity h1 {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  min-width: 0;
 }
 .basis {
   margin: 0;
@@ -626,24 +708,30 @@ button.basis:focus-visible {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  max-width: 100%;
   margin: 0;
-  padding: 0 22px 8px;
+  padding: 0;
   color: var(--tertiary);
   font-size: 13px;
   line-height: 20px;
 }
 .work-crumb button {
-  flex: none;
-  max-width: 46%;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 12rem;
   border: 0;
   background: transparent;
   padding: 0;
-  color: var(--link);
+  color: var(--secondary);
   font-size: 13px;
   line-height: 20px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.work-crumb button:hover,
+.work-crumb button:focus-visible {
+  color: var(--ink);
 }
 .work-crumb > span:last-child {
   min-width: 0;
@@ -870,6 +958,13 @@ button.basis:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+.work-face {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
 }
 .work-card h3 {
   margin: 0;
@@ -1476,13 +1571,25 @@ button.chip {
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
-  background: var(--bubble);
-  border-radius: var(--dsw-radius-xl);
+  background: var(--user);
+  color: #fff;
+  border-radius: 18px;
   padding: 10px 16px;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 22px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.user-bubble a {
+  color: #fff;
+  text-decoration: underline;
+}
+.day-stamp {
+  margin: 10px 0 14px;
+  text-align: center;
+  color: var(--tertiary);
+  font-size: 12px;
+  line-height: 18px;
 }
 .user-row time {
   color: var(--caption);
@@ -1570,8 +1677,16 @@ button.chip {
   font: 11px / 18px var(--ds-font-family-code);
 }
 .assistant {
-  margin: 8px 0 20px;
+  width: fit-content;
+  max-width: min(640px, 92%);
+  margin: 8px 0 16px;
   min-width: 0;
+  padding: 8px 14px;
+  border-radius: 18px;
+  background: var(--assistant);
+}
+.assistant .code-block {
+  background: #fff;
 }
 .user-row,
 .assistant,
@@ -1674,16 +1789,21 @@ button.chip {
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
-  margin: 4px 0 16px;
+  max-width: min(525px, 86%);
+  margin: 4px 0 16px auto;
+  padding: 12px 16px;
+  border-radius: 18px;
+  background: var(--user);
+  color: #fff;
 }
 .turn-failed-label {
   margin: 0;
-  color: #d1242f;
+  color: #fff;
   font-size: 14px;
   line-height: 24px;
 }
 .retry-row {
-  color: var(--tertiary);
+  color: rgba(255, 255, 255, 0.92);
   font-size: 13px;
   line-height: 20px;
 }
@@ -1699,7 +1819,7 @@ button.chip {
   align-items: baseline;
   gap: 8px;
   margin: 0;
-  color: #d1242f;
+  color: #fff;
   font-size: 14px;
   line-height: 22px;
 }
@@ -1707,7 +1827,7 @@ button.chip {
   font-weight: 600;
 }
 .turn-error code {
-  color: var(--tertiary);
+  color: rgba(255, 255, 255, 0.82);
   font-size: 12px;
 }
 .retry-turn {
@@ -2277,6 +2397,41 @@ button.chip {
   border-radius: var(--dsw-radius-panel);
   background: white;
   box-shadow: var(--shadow);
+}
+/* An empty composer sits on one line, the same shape as the Grok field.
+   A permission chip keeps the second row so it cannot collide with the model name. */
+.card:not(:has(.chip)) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0 2px;
+  padding: 6px 8px 6px 4px;
+}
+.card:not(:has(.chip)) > :not(textarea):not(.card-row) {
+  grid-column: 1 / -1;
+}
+.card:not(:has(.chip)) textarea {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  min-height: 36px;
+  max-height: 160px;
+  padding: 6px 4px;
+}
+.card:not(:has(.chip)) .card-row {
+  display: contents;
+}
+.card:not(:has(.chip)) .tools,
+.card:not(:has(.chip)) .trailing {
+  align-self: center;
+}
+.card:not(:has(.chip)) .tools {
+  grid-column: 1;
+  grid-row: 1;
+}
+.card:not(:has(.chip)) .trailing {
+  grid-column: 3;
+  grid-row: 1;
 }
 .mention-menu {
   position: absolute;
@@ -4255,7 +4410,9 @@ button.tool-detail-head-row {
   white-space: nowrap;
 }
 .user-bubble .canvas-chip {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  border-color: transparent;
 }
 .canvas-chip button {
   border: 0;

@@ -1,5 +1,7 @@
+import { derivePresence } from '@tobs/bot-presence'
 import { useState } from 'react'
 import { Collapse } from './Collapse'
+import { PresenceMark } from './presence/PresenceMark'
 import { useI18n } from './locale'
 import { MarkdownView } from './MarkdownView'
 import { questionView, ticketFacts, workLabel, type WorkBriefing, type WorkTicket } from './work'
@@ -9,11 +11,14 @@ export function WorkCard({
   now,
   onSupply,
   onOpen,
+  ownerSessionId,
 }: {
   ticket: WorkTicket
   now: number
   onSupply: (ticketId: string, text: string) => Promise<string>
   onOpen: (sessionId: string) => void
+  /** The main session whose face this worker wears. */
+  ownerSessionId?: string
 }) {
   const { t } = useI18n()
   const [draft, setDraft] = useState('')
@@ -21,10 +26,15 @@ export function WorkCard({
   const [sending, setSending] = useState(false)
   const question = questionView(ticket)
   const live = ticket.status === 'started' || ticket.status === 'needs_user'
+  const faceId = ownerSessionId || ticket.childSessionId || ticket.id
+  const face = derivePresence({ sessionId: faceId, ticket: { status: ticket.status } })
   return (
     <article className="work-card">
       <header>
-        <h3>{ticket.summary}</h3>
+        <span className="work-face">
+          <PresenceMark sessionId={faceId} state={face.state} still size={28} />
+          <h3>{ticket.summary}</h3>
+        </span>
         {ticket.status === 'ready' ? null : (
           <span className={live ? 'work-status live' : 'work-status'}>{workLabel(ticket.status, t)}</span>
         )}
