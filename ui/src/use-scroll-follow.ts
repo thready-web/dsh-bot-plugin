@@ -159,7 +159,7 @@ export function useScrollFollow(resetKey: string) {
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target
       if (!(target instanceof Element)) return
-      if (!target.closest('button.official-title, summary')) return
+      if (!target.closest('button.official-title, button.activity-fold, summary')) return
       pause()
     }
 

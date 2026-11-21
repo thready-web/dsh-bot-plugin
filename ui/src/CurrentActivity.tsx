@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { currentActivity, type CurrentActivityInput } from './current-activity'
 import { useI18n } from './locale'
 
-/** Compact composer status; the detailed event timeline stays in its original order. */
+/** Status for the latest chat line. The detailed event timeline stays in its original order. */
 export function CurrentActivity(props: Omit<CurrentActivityInput, 't'>) {
   const { t } = useI18n()
   const summary = currentActivity({ ...props, t })
@@ -16,16 +16,17 @@ export function CurrentActivity(props: Omit<CurrentActivityInput, 't'>) {
   if (!summary) return null
   return (
     <div
-      className="composer-activity"
+      className="chat-status"
       role="status"
       aria-live="polite"
       aria-atomic="true"
       data-moving={summary.moving && visible ? 'true' : 'false'}
     >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M3 4h10M3 8h10M3 12h6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </svg>
-      <span className="composer-activity-text" title={summary.text}>
+      <span className="chat-status-mark" aria-hidden="true">
+        <span />
+        <span />
+      </span>
+      <span className="chat-status-text" title={summary.text}>
         {summary.text}
       </span>
     </div>

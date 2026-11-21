@@ -22,6 +22,10 @@ export interface ThinkSegment {
   id: string
   text: string
   running: boolean
+  /** Wall time of the first reasoning chunk, used to measure a finished thought. */
+  startedAt?: number
+  /** Finished reasoning length in whole seconds. */
+  seconds?: number
   seq: number
   turn?: number
   step?: number

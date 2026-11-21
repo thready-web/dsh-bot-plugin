@@ -201,6 +201,29 @@ test('reasoning deltas stay on the open step instead of waiting for the message'
   const think = state.segments.find(segment => segment.kind === 'think')
   assert.equal(think?.kind === 'think' ? think.text : '', 'First thought')
   assert.equal(think?.kind === 'think' ? think.running : false, true)
+  assert.equal(think?.kind === 'think' ? think.startedAt : undefined, 1)
+})
+
+test('a finished thought keeps its length in whole seconds', () => {
+  const state = reduce([
+    item({
+      type: 'event',
+      event: {
+        type: 'assistant/message',
+        seq: 4,
+        time: 5_000,
+        data: {
+          turn: 1,
+          step: 1,
+          stream: [{ type: 'reasoning-chunks', time0: 1_000, index: 0, dt: [2_000], texts: ['Plan', ' more'] }],
+          message: { content: [{ type: 'reasoning', text: 'Plan more' }] },
+        },
+      },
+    }),
+  ])
+  const think = state.segments.find(segment => segment.kind === 'think')
+  assert.equal(think?.kind === 'think' ? think.running : true, false)
+  assert.equal(think?.kind === 'think' ? think.seconds : undefined, 2)
 })
 
 test('a timed-out turn keeps the retry chain and the terminal failure', () => {

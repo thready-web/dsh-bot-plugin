@@ -30,7 +30,13 @@ export function ThinkRow({ segment }: { segment: ThinkSegment }) {
           <ThinkIcon />
           <Chevron />
         </span>
-        <span className="official-label">{segment.running ? t('activity.thinking') : t('activity.reasoning')}</span>
+        <span className="official-label">
+          {segment.running
+            ? t('activity.thinkNow')
+            : segment.seconds != null
+              ? t('activity.thoughtSeconds', { seconds: String(segment.seconds) })
+              : t('activity.thought')}
+        </span>
       </button>
       <Collapse open={open}>
         <div className="think-body">{segment.text}</div>
@@ -59,56 +65,87 @@ export function ActivityGroup({
     segments.some(segment => segment.kind === 'think' && segment.running) ||
     states.some(state => OPEN_TOOL_STATES.has(state))
   const active = pending || running
-  const counts = [
-    [t('activity.count.active'), states.filter(state => OPEN_TOOL_STATES.has(state)).length],
-    [t('activity.count.failed'), states.filter(state => state === 'failed').length],
-    [t('activity.count.cancelled'), states.filter(state => state === 'cancelled').length],
-    [t('activity.count.unknown'), states.filter(state => state === 'unknown').length],
-  ]
-    .filter(([, count]) => Number(count) > 0)
-    .map(([label, count]) => `${label} ${count}`)
-    .join(' · ')
-  // Running state chooses only the initial view; later events never toggle it.
-  const [open, setOpen] = useState(() => active)
   const stale = connectionPhase != null && connectionPhase !== 'live'
+  const tools = segments.filter(segment => segment.kind === 'tool')
+  // One tool call is the row itself. A folder exists only for two or more, and starts closed.
+  const fold = tools.length > 1
+  const [open, setOpen] = useState(false)
+  const latestTool = tools[tools.length - 1]
+  const latestToolLive = latestTool != null && OPEN_TOOL_STATES.has(toolStatus(latestTool, tickets))
+  const toolCallLabel =
+    tools.length === 1 ? t('activity.toolCallOne') : t('activity.toolCalls', { count: String(tools.length) })
+  const renderSegment = (segment: ActivitySegment) =>
+    segment.kind === 'think' ? (
+      <ThinkRow key={segment.id} segment={segment} />
+    ) : (
+      <ToolCallRow key={segment.callId} segment={segment} cwd={cwd} tickets={tickets} stale={stale} />
+    )
+  const note = pending && !running ? <p className="activity-note">{t('activity.generating')}</p> : null
   return (
     <section
-      className={open ? 'activity-group open' : 'activity-group'}
+      className={fold && open ? 'activity-group open' : 'activity-group'}
       aria-label={t('activity.title')}
       data-state={active ? 'running' : 'settled'}
+      data-fold={fold ? 'true' : 'false'}
+      data-open={fold && open ? 'true' : 'false'}
       data-activity-start={segments[0]?.id}
     >
-      <button type="button" className="official-title" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-        <span className="official-leading">
-          <ToolIcon />
-          <Chevron />
-        </span>
-        <span className="official-label">
-          {segments.length === 1
-            ? t('activity.titleOne')
-            : t('activity.titleWithCount', { count: String(segments.length) })}
-        </span>
-        {counts ? <span className="activity-status">{counts}</span> : null}
-        {stale ? (
-          <span className="activity-status">
-            {['restoring', 'connecting', 'syncing'].includes(connectionPhase ?? '')
-              ? t('activity.resyncing')
-              : t('activity.connectionLastKnown')}
-          </span>
-        ) : null}
-      </button>
-      <Collapse open={open}>
-        <div className="activity-body">
-          {pending && !running ? <p className="activity-note">{t('activity.generating')}</p> : null}
-          {segments.map(segment =>
-            segment.kind === 'think' ? (
-              <ThinkRow key={segment.id} segment={segment} />
-            ) : (
-              <ToolCallRow key={segment.callId} segment={segment} cwd={cwd} tickets={tickets} stale={stale} />
-            ),
+      {fold ? (
+        <>
+          <Collapse open={open}>
+            <div className="activity-earlier">{segments.map(renderSegment)}</div>
+          </Collapse>
+          {open ? (
+            <button
+              type="button"
+              className="activity-fold activity-collapse"
+              aria-expanded={true}
+              aria-label={toolCallLabel}
+              onClick={() => setOpen(false)}
+            >
+              <Chevron />
+            </button>
+          ) : latestToolLive && latestTool ? (
+            <div
+              className="activity-latest"
+              onClickCapture={event => {
+                const target = event.target as { closest?: (selector: string) => unknown } | null
+                if (typeof target?.closest === 'function' && target.closest('.activity-fold')) return
+                event.stopPropagation()
+                setOpen(true)
+              }}
+            >
+              <button
+                type="button"
+                className="activity-fold"
+                aria-expanded={false}
+                aria-label={toolCallLabel}
+                onClick={() => setOpen(true)}
+              >
+                <Chevron />
+              </button>
+              {renderSegment(latestTool)}
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="activity-fold activity-calls"
+              aria-expanded={false}
+              aria-label={toolCallLabel}
+              onClick={() => setOpen(true)}
+            >
+              <Chevron />
+              <span>{toolCallLabel}</span>
+            </button>
           )}
-        </div>
-      </Collapse>
+          {open ? note : null}
+        </>
+      ) : (
+        <>
+          {segments.map(renderSegment)}
+          {note}
+        </>
+      )}
     </section>
   )
 }

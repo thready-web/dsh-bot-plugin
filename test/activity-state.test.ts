@@ -153,18 +153,17 @@ for (const chat of [true, false]) {
   test(`mounted actions preserve user state through streaming and completion (Bot=${chat})`, async () => {
     const h = harness()
     const groups = () => [...h.container.querySelectorAll('.activity-group')]
-    const button = () => groups()[0]!.querySelector('button')!
+    const button = () => groups()[0]!.querySelector('.activity-fold')!
     const expanded = () => button().getAttribute('aria-expanded')
     const click = () => h.act(() => button().click())
     const think = { kind: 'think', id: 'live:think:0', text: 'working', running: true, seq: 1, turn: 1, step: 1 }
     try {
-      await h.render({ ...base, chat, segments: [think, tool('one')] })
-      assert.equal(expanded(), 'true')
+      await h.render({ ...base, chat, segments: [think, tool('one'), tool('two')] })
+      assert.equal(groups()[0]!.getAttribute('data-fold'), 'true')
+      assert.equal(expanded(), 'false', 'a folder starts collapsed')
       const original = groups()[0]
-      await click()
-      assert.equal(expanded(), 'false')
       await h.render({ ...base, chat, segments: [{ ...think, text: 'working more' }, tool('one'), tool('two')] })
-      assert.equal(expanded(), 'false', 'streaming and new actions must not reopen')
+      assert.equal(expanded(), 'false', 'streaming and new actions must not open a folded group')
       await h.render({
         ...base,
         chat,
@@ -194,6 +193,8 @@ for (const chat of [true, false]) {
       })
       assert.equal(expanded(), 'true', 'new separate activity must not close the selected group')
       assert.equal(groups().length, 2, 'text must remain between the two activity runs')
+      assert.equal(groups()[1]!.getAttribute('data-fold'), 'false')
+      assert.equal(groups()[1]!.querySelector('.activity-fold'), null)
       assert.ok(h.container.textContent!.includes('between actions'))
       await h.render({
         ...base,
@@ -214,15 +215,22 @@ for (const chat of [true, false]) {
 
 test('pending, connection and running status never auto-toggle an actions group', async () => {
   const h = harness()
-  const expanded = () => h.container.querySelector('button')!.getAttribute('aria-expanded')
+  const group = () => h.container.querySelector('.activity-group')!
+  const fold = () => group().querySelector('.activity-fold')!
   try {
-    await h.group({ segments: [tool('one', 'succeeded')], pending: false })
-    assert.equal(expanded(), 'false')
-    await h.group({ segments: [tool('one')], pending: true, connectionPhase: 'syncing' })
-    assert.equal(expanded(), 'false')
-    await h.act(() => h.container.querySelector('button')!.click())
-    await h.group({ segments: [tool('one', 'succeeded')], pending: false, connectionPhase: 'live' })
-    assert.equal(expanded(), 'true')
+    await h.group({ segments: [tool('one', 'succeeded'), tool('two', 'succeeded')], pending: false })
+    assert.equal(group().getAttribute('data-open'), 'false')
+    assert.equal(fold().getAttribute('aria-expanded'), 'false')
+    assert.equal(group().querySelectorAll('.tool-activity').length, 0)
+    assert.match(group().textContent ?? '', /2 tool calls/)
+    await h.group({ segments: [tool('one'), tool('two')], pending: true, connectionPhase: 'syncing' })
+    assert.equal(group().getAttribute('data-open'), 'false')
+    assert.equal(group().querySelectorAll('.tool-activity').length, 1)
+    assert.doesNotMatch(group().textContent ?? '', /tool calls/)
+    await h.act(() => fold().click())
+    await h.group({ segments: [tool('one', 'succeeded'), tool('two', 'succeeded')], pending: false, connectionPhase: 'live' })
+    assert.equal(group().getAttribute('data-open'), 'true')
+    assert.equal(group().querySelectorAll('.tool-activity').length, 2)
   } finally {
     await h.close()
   }

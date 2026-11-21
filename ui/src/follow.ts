@@ -7,6 +7,7 @@ import {
   type LiveBlock,
   type RetryAttempt,
   type Segment,
+  type ThinkSegment,
   type ThreadState,
   type ToolSegment,
   type TurnFailure,
@@ -577,11 +578,15 @@ function projectLive(
   for (const block of blocks) {
     const part = seq + block.index / 100
     if (block.kind === 'reasoning' && block.text.trim()) {
+      const id = `${prefix}think:${block.index}`
+      const previous = prior.find((item): item is ThinkSegment => item.kind === 'think' && item.id === id)
       added.push({
         kind: 'think',
-        id: `${prefix}think:${block.index}`,
+        id,
         text: block.text,
         running: true,
+        startedAt: previous?.startedAt,
+        seconds: previous?.seconds,
         seq: part,
         turn,
         step,
@@ -714,13 +719,56 @@ function applyLive(state: ThreadState, event: SessionEvent): ThreadState {
   const blocks = applyChunk(previous.blocks, chunk as Record<string, unknown>)
   const live = { ...state.live, [key]: { seq: previous.seq || event.seq || 0, blocks } }
   const seq = previous.seq || event.seq || 0
+  const projected = projectLive({ ...state, live }, key, blocks, seq, turn, step)
   return {
     ...state,
     live,
     drafting: true,
     turn: turn ?? state.turn,
-    segments: projectLive({ ...state, live }, key, blocks, seq, turn, step),
+    segments: stampThinkStart(projected, key, event),
   }
+}
+
+function stampThinkStart(segments: Segment[], key: string, event: SessionEvent): Segment[] {
+  const chunk = event.data?.chunk
+  if (!chunk || typeof chunk !== 'object' || event.time == null) return segments
+  const record = chunk as Record<string, unknown>
+  const type = typeof record.type === 'string' ? record.type : ''
+  const reasoning =
+    type === 'reasoning-delta' ||
+    type === 'reasoning-chunks' ||
+    (type === 'block-start' && record.blockType === 'reasoning')
+  if (!reasoning) return segments
+  const id = `live:${key}:think:${numberOf(record.index) ?? 0}`
+  return segments.map(item =>
+    item.kind === 'think' && item.id === id && item.startedAt == null ? { ...item, startedAt: event.time } : item,
+  )
+}
+
+function wholeSeconds(ms: number): number {
+  if (!Number.isFinite(ms) || ms < 0) return 1
+  return Math.max(1, Math.round(ms / 1000))
+}
+
+function streamSpanSeconds(stream: unknown, index: number): number | undefined {
+  const times = expandStream(stream)
+    .filter(item => {
+      const type = item.chunk.type
+      return (type === 'reasoning-delta' || type === 'reasoning-chunks') && (numberOf(item.chunk.index) ?? 0) === index
+    })
+    .map(item => item.time)
+  if (times.length === 0) return undefined
+  return wholeSeconds(Math.max(...times) - Math.min(...times))
+}
+
+function thoughtSeconds(state: ThreadState, event: SessionEvent, key: string, index: number): number | undefined {
+  const fromStream = streamSpanSeconds(event.data?.stream, index)
+  if (fromStream != null) return fromStream
+  const live = state.segments.find(
+    (item): item is ThinkSegment => item.kind === 'think' && item.id === `live:${key}:think:${index}`,
+  )
+  if (live?.startedAt == null || event.time == null || event.time < live.startedAt) return undefined
+  return wholeSeconds(event.time - live.startedAt)
 }
 
 function applyAssistant(state: ThreadState, event: SessionEvent): ThreadState {
@@ -740,7 +788,16 @@ function applyAssistant(state: ThreadState, event: SessionEvent): ThreadState {
   content.forEach((block, index) => {
     const seq = base + index / 100
     if (block.type === 'reasoning' && block.text?.trim()) {
-      segments.push({ kind: 'think', id: `think:${key}:${index}`, text: block.text, running: false, seq, turn, step })
+      segments.push({
+        kind: 'think',
+        id: `think:${key}:${index}`,
+        text: block.text,
+        running: false,
+        seconds: thoughtSeconds(state, event, key, index),
+        seq,
+        turn,
+        step,
+      })
     } else if (block.type === 'text' && block.text) {
       segments.push({
         kind: 'assistant',

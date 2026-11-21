@@ -1669,11 +1669,79 @@ button.chip {
 .activity-group {
   margin: 2px 0 8px;
 }
+.activity-group.open:has(.activity-collapse) {
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  padding: 6px 10px 2px;
+}
 .activity-group .official-leading svg:not(.chevron) {
   color: var(--tertiary);
 }
-.activity-body {
-  margin-left: 16px;
+.activity-latest {
+  position: relative;
+}
+.activity-fold {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: var(--bg);
+  color: var(--tertiary);
+  cursor: pointer;
+}
+.activity-fold svg {
+  width: 14px;
+  height: 14px;
+}
+.activity-group:not(.open) .activity-fold svg {
+  transform: rotate(-90deg);
+}
+.activity-collapse {
+  position: static;
+  top: auto;
+  left: auto;
+  z-index: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 28px;
+  margin-top: 2px;
+  background: none;
+}
+.activity-collapse svg {
+  transform: rotate(180deg);
+}
+.activity-calls {
+  position: static;
+  top: auto;
+  left: auto;
+  z-index: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  height: 24px;
+  background: none;
+  color: var(--tertiary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 24px;
+}
+.activity-calls svg {
+  flex: none;
+}
+.activity-fold:hover {
+  color: var(--secondary);
+}
+.activity-latest:has(.activity-fold) > .official-row > .official-title .official-leading {
+  visibility: hidden;
 }
 .official-row {
   min-width: 0;
@@ -2502,52 +2570,57 @@ button.chip {
   }
 }
 
-/* A single quiet line immediately above the composer, independent of transcript layout.
-   The fade lives on .composer-wrap, so it remains after this line hides. */
-.composer-activity {
+/* The live status is the last chat line, not a bar pinned to the composer. */
+.chat-status {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  margin: 0 10px 8px;
-  color: #8d8d93;
-  font-size: 13px;
+  margin: 6px 0 18px;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 22px;
 }
-.composer-activity svg {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
+.chat-status-mark {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #c5c8ce;
 }
-.composer-activity-text {
+.chat-status[data-moving="true"] .chat-status-mark {
+  background: #ff7a1a;
+  animation: chat-status-pulse 1.6s ease-in-out infinite;
+}
+.chat-status-mark span {
+  width: 3px;
+  height: 10px;
+  border-radius: 2px;
+  background: #fff;
+}
+.chat-status-text {
   display: block;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-@supports (background-clip: text) {
-  .composer-activity[data-moving="true"] .composer-activity-text {
-    background: linear-gradient(110deg, #8d8d93 30%, #fafafa 46%, #8d8d93 62%);
-    background-size: 240% 100%;
-    background-clip: text;
-    -webkit-background-clip: text;
-    color: transparent;
-    animation: composer-sweep 2.8s ease-in-out infinite;
+@keyframes chat-status-pulse {
+  0%,
+  100% {
+    transform: scale(1);
   }
-}
-@keyframes composer-sweep {
-  from {
-    background-position: 180% 0;
-  }
-  to {
-    background-position: -80% 0;
+  50% {
+    transform: scale(0.92);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .composer-activity[data-moving="true"] .composer-activity-text {
+  .chat-status[data-moving="true"] .chat-status-mark {
     animation: none;
-    background: none;
-    color: #8d8d93;
   }
 }
 

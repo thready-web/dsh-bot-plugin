@@ -1341,23 +1341,23 @@ export function App() {
                 />
               )
         }
+        activity={
+          sessionId && !historyLoading ? (
+            <CurrentActivity
+              segments={thread.segments}
+              drafting={thread.drafting}
+              currentTurn={thread.turn}
+              tickets={works}
+              connectionPhase={syncStatus?.phase}
+              pendingApprovals={approvals}
+            />
+          ) : null
+        }
         composer={
           <ChatComposer
             onSubmit={() => {
               void send()
             }}
-            activity={
-              sessionId && !historyLoading ? (
-                <CurrentActivity
-                  segments={thread.segments}
-                  drafting={thread.drafting}
-                  currentTurn={thread.turn}
-                  tickets={works}
-                  connectionPhase={syncStatus?.phase}
-                  pendingApprovals={approvals}
-                />
-              ) : null
-            }
             chips={
               <>
               {canvasMentions.length > 0 ? (

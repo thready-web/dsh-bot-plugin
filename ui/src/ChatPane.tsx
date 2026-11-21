@@ -38,6 +38,7 @@ export const ChatPane = forwardRef<
     scrollClassName?: string
     markReadonly?: boolean
     rail?: (root: RefObject<HTMLDivElement | null>) => ReactNode
+    activity?: ReactNode
     composer: ReactNode
     children: ReactNode
   }
@@ -54,6 +55,7 @@ export const ChatPane = forwardRef<
     scrollClassName,
     markReadonly = false,
     rail,
+    activity,
     composer,
     children,
   },
@@ -103,6 +105,7 @@ export const ChatPane = forwardRef<
         >
           <div className="column" ref={contentRef}>
             {children}
+            {activity}
           </div>
         </div>
         {rail?.(scrollRef)}
@@ -117,7 +120,6 @@ export const ChatPane = forwardRef<
 
 export function ChatComposer({
   onSubmit,
-  activity,
   chips,
   mentions,
   textareaRef,
@@ -143,7 +145,6 @@ export function ChatComposer({
   stats,
 }: {
   onSubmit?: () => void
-  activity?: ReactNode
   chips?: ReactNode
   mentions?: ReactNode
   textareaRef?: { current: HTMLTextAreaElement | null }
@@ -179,7 +180,6 @@ export function ChatComposer({
 
   return (
     <form className="column" onSubmit={submit}>
-      {activity}
       <div className="card">
         {chips}
         {mentions}

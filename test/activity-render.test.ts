@@ -167,7 +167,9 @@ test('SSR: todo rows show real items, not todo_write duplicated as its own summa
 
 test('SSR: sync uncertainty stays separate; empty turn only has one compact composer status', () => {
   const html = renderActivity!({ segments: [tool('c1')], connectionPhase: 'syncing', pending: true })
-  assert.ok(html.includes('Resyncing · last known state'))
+  assert.ok(!html.includes('1 action') && !html.includes('Resyncing · last known state'))
+  assert.ok(html.includes('Print output'))
+  assert.equal(html.includes('activity-fold'), false)
   assert.ok(renderExpandedTool!({ segment: tool('c1'), stale: true }).includes('Waiting for tool result'))
   assert.ok(!html.includes('Running commands'))
   const empty = renderTranscript!({ ...base, segments: [] })
@@ -221,7 +223,10 @@ test('SSR: parallel worker rows show each ticket and latest report, not generic 
     )
     .join('')
   for (const text of ['worker-t1', 'worker-t2', 'Report t1', 'Report t2']) assert.ok(expanded.includes(text), text)
-  assert.equal((html.match(/data-state="worker"/g) ?? []).length, 2)
+  assert.equal(html.includes('data-fold="true"'), true)
+  assert.equal(html.includes('data-open="true"'), false)
+  assert.equal((html.match(/data-state="worker"/g) ?? []).length, 1)
+  assert.equal(html.includes('activity-calls'), false)
 })
 
 function ordered(html: string, markers: string[]) {
@@ -302,10 +307,9 @@ test('SSR: only contiguous process segments group; empty and consecutive text bo
     ],
   })
   assert.equal((html.match(/aria-label="Activity"/g) ?? []).length, 3)
+  assert.equal((html.match(/data-fold="true"/g) ?? []).length, 1)
+  assert.equal((html.match(/data-fold="false"/g) ?? []).length, 2)
   ordered(html, [
-    'data-segment="a"',
-    'data-segment="b"',
-    'data-segment="c"',
     'data-segment="d"',
     'data-segment="empty"',
     'data-segment="e"',
@@ -313,6 +317,7 @@ test('SSR: only contiguous process segments group; empty and consecutive text bo
     'ANSWER_TWO',
     'data-segment="f"',
   ])
+  assert.equal(html.includes('data-segment="a"'), false)
 })
 
 const message = (seq: number, step: number, id: string) => ({
@@ -478,8 +483,8 @@ test('SSR/CSS: hidden documents pause the compact sweep and reduced motion disab
     else Reflect.deleteProperty(globalThis, 'document')
   }
   const css = readFileSync(new URL('../ui/src/styles.css', import.meta.url), 'utf8')
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.composer-activity[\s\S]*?animation: none/)
-  assert.match(css, /\.composer-activity-text\s*\{[^}]*text-overflow: ellipsis/)
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.chat-status[\s\S]*?animation: none/)
+  assert.match(css, /\.chat-status-text\s*\{[^}]*text-overflow: ellipsis/)
   assert.match(css, /\.composer-wrap\s*\{[^}]*position:\s*absolute/)
   assert.match(css, /\.composer-wrap::before\s*\{[^}]*mask-image:\s*linear-gradient\(to bottom, transparent/)
 })
@@ -726,6 +731,9 @@ test('SSR: settled background jobs do not keep Activity or composer pending', ()
   )
   const html = renderActivity!({ segments: jobs })
   assert.equal(html.includes('Active'), false)
+  assert.ok(html.includes('3 tool calls'))
+  assert.ok(!html.includes('Job 1') && !html.includes('Job 2') && !html.includes('Job 3'))
+  assert.match(html, /class="activity-fold[^"]*"[^>]*aria-expanded="false"/)
   assert.ok(!html.includes('data-state="running"'))
   assert.ok(!html.includes('pending'))
   const current = renderCurrent!({
