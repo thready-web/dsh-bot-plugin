@@ -12,7 +12,9 @@ function collect(dir) {
       files.push(...collect(rel))
       continue
     }
-    if (entry.name.endsWith('.test.ts') && !entry.name.includes('host')) files.push(rel)
+    if ((entry.name.endsWith('.test.ts') || entry.name.endsWith('.test.mjs')) && !entry.name.includes('host')) {
+      files.push(rel)
+    }
   }
   return files
 }

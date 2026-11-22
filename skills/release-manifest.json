@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "purpose": "Required skill files for an installed @thready-web/dsh-bot-plugin. Deploy the npm pack. Do not drop skills/ from a copy allowlist.",
+  "files": [
+    {
+      "path": "skills/ui/baseline-ui/SKILL.md",
+      "sha256": "fea3322f36d58fdafafce2aef56e4556dd2ac7b20876b7dff7d8be7f25fa597f"
+    },
+    {
+      "path": "skills/ui/bencium-innovative-ux-designer/SKILL.md",
+      "sha256": "5b08bc5017bbdcaa36f4cc7ad5b1698f552a8c43222ebddb5ef52c5a2cf8c50a"
+    },
+    {
+      "path": "skills/ui/better-ui/SKILL.md",
+      "sha256": "2d5f9fa4f3bbf045da914349b6e5fde559c947e5323968350b65bb2cdc6b3e4f"
+    },
+    {
+      "path": "skills/ui/design-lab/SKILL.md",
+      "sha256": "965e5a4d95679aaa36464f429e059fa097549d0491ef672b163c1460a72f2510"
+    },
+    {
+      "path": "skills/ui/frontend-design/SKILL.md",
+      "sha256": "d91970639e9f5c37682ac7ab60094d35f1c7c1f38d731bd56396563aee10c1d3"
+    },
+    {
+      "path": "skills/ui/impeccable/SKILL.md",
+      "sha256": "0ba941a0e216297b2742e00b51c708c33f932f1562597e55cbfd4557eac809ce"
+    },
+    {
+      "path": "skills/ui/interface-design/SKILL.md",
+      "sha256": "720b31a31276e899fbe3006a33cbfeaceb77a73ba4c27b80d29afd38c8b7b208"
+    },
+    {
+      "path": "skills/ui/sources.json",
+      "sha256": "cc7bea7474f4b51bea4c55fbc2cb002826eb26d21b6c52af62d307aef4afcb76"
+    },
+    {
+      "path": "skills/ui/ui-design/SKILL.md",
+      "sha256": "134e44eb48fac7e0b03d3af64a55d899f246dce07acb2aa94b6f34244dc335c6"
+    },
+    {
+      "path": "skills/ui/ui-skills-root/SKILL.md",
+      "sha256": "d4e1033f910467164a9cd3931277c1b309cb87c6d23cb5f184a65bfdf92b1c9c"
+    },
+    {
+      "path": "skills/ui/visual-design-foundations/SKILL.md",
+      "sha256": "0c6970d14f5d5df55c63d1be995205d140489e2d0c39896657fabee6f6a5df84"
+    },
+    {
+      "path": "skills/ui/web-design-guidelines/SKILL.md",
+      "sha256": "f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f"
+    }
+  ]
+}

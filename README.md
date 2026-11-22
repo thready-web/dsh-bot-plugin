@@ -168,6 +168,25 @@ A visible connected view reconciles once on entry and every 60 seconds. Unsuppor
 
 The authorization drawer loads the provider directory only on demand, with a per-App single-flight 30-second cache, no browser storage or cross-App cache. Local authorization lifecycle changes and mutations invalidate it. An open drawer revalidates every 30 seconds and on background resume: native provider registration has no complete event hook, so these changes are eventually reconciled rather than falsely treated as push-complete. Dynamic prompts/notices remain on the compact channel even when the drawer is closed.
 
+## Bundled skills and the release directory
+
+Canvas skills ship inside this package at `skills/ui/`. `ui-design` is the contract. The other directories are the vendored catalog snapshots named in `skills/ui/sources.json`. `skills/release-manifest.json` lists every file under `skills/` except itself, with a sha256. `package.json` `"files"` includes `skills`, so `npm pack` puts that directory in the tarball next to `dist/`.
+
+A running bot reads those files from the install that contains `dist/` (`skills/ui` and `skills/release-manifest.json`). It does not look in a monorepo checkout, a staging tree, or a profile. `foundations_skill_load` returns the `SKILL.md` text. Text helpers that sit beside a `SKILL.md` (`.md`, `.txt`, `.json`) are appended to that body, so loading the skill returns them too. The catalog snapshots in this tree are single `SKILL.md` files. Do not add placeholder helpers for links those snapshots mention.
+
+`foundations_dispatch_canvas` checks and binds the bundled skills before it inserts a canvas row. If a manifest path is missing or a hash does not match, the tool returns `UNAVAILABLE` and does not create a canvas. An existing canvas is left as it is. A private skill that already owns an id stays; the public copy is not written over it. Plugin startup logs the same missing-skill error and still finishes loading, so the rest of the bot keeps running.
+
+Assemble a release from the pack. Do not keep a second, hand-written allowlist of paths:
+
+```bash
+npm run build
+npm run release:check
+npm pack --ignore-scripts
+npm run verify:publish
+```
+
+`release:check` compares this checkout with the manifest. `verify:publish` packs the tarball, extracts it, and checks that directory. That extracted package is the tree an install should contain. Copy it whole. After adding or editing a file under `skills/`, run `node scripts/release-layout.mjs --write` and commit the manifest with the file.
+
 DSH loads `dist/`. Rebuild after changing `src/`. The plugin build also writes `dist/canvas-inspector.js`; a published install reads that file and does not compile the inspector on startup. Until `npm --prefix ui run build` has run, `/dsh-bot/` is 404.
 
 Host integration needs Node `>= 24.9` and `DSH_BIN`:

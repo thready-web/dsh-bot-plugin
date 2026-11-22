@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { isAbsolute, resolve, sep } from 'node:path'
-import { bindCanvasSkills } from './canvas-skills.ts'
+import { CanvasSkillsError, bindCanvasSkills } from './canvas-skills.ts'
 import type { CanvasStore } from './canvas-store.ts'
 import { CANVAS_MAX_FILE_BYTES } from './canvas-store.ts'
 import { toolError, type ToolPayload } from './errors.ts'
@@ -52,6 +52,7 @@ export function canvasToolDefinitions(
   work: CanvasWork,
   engine: CanvasEngine,
   filesApi: CanvasFiles = {},
+  skillsRoot?: string,
 ) {
   return [
     tool(
@@ -71,7 +72,7 @@ export function canvasToolDefinitions(
         },
         required: ['briefing'],
       },
-      (args, hostId) => dispatchCanvas(canvas, work, engine, hostId, args),
+      (args, hostId) => dispatchCanvas(canvas, work, engine, hostId, args, skillsRoot),
     ),
     tool(
       'canvas_read',
@@ -235,6 +236,7 @@ async function dispatchCanvas(
   engine: CanvasEngine,
   hostId: string,
   args: Record<string, unknown>,
+  skillsRoot?: string,
 ) {
   if (!engine.isBot(hostId)) return toolError('FORBIDDEN', 'Only the main bot can open a canvas worker.')
   const briefing = typeof args.briefing === 'string' ? args.briefing.trim() : ''
@@ -244,10 +246,19 @@ async function dispatchCanvas(
     return toolError('VALIDATION', 'idempotencyKey is not allowed.')
   const title = briefing.split('\n')[0]?.trim().slice(0, 80) ?? ''
   const requested = typeof args.canvasId === 'string' ? args.canvasId : ''
+  if (requested !== '' && !canvas.ownedBy(hostId, requested)) {
+    return toolError('FORBIDDEN', 'That canvas is not in this session.')
+  }
+  let skills: string[] = []
+  try {
+    const loaded = bindCanvasSkills(engine, hostId, skillsRoot)
+    skills = [...loaded.bound, ...loaded.preregistered]
+  } catch (error) {
+    if (error instanceof CanvasSkillsError) return toolError('UNAVAILABLE', error.message, { missing: error.missing })
+    return toolError('STORE_FAILURE', error instanceof Error ? error.message : 'Canvas skills could not be bound.')
+  }
   let canvasId = requested !== '' ? requested : typeof key === 'string' ? canvas.findIdempotent(hostId, key) : null
-  if (requested !== '') {
-    if (!canvas.ownedBy(hostId, requested)) return toolError('FORBIDDEN', 'That canvas is not in this session.')
-  } else if (!canvasId) {
+  if (requested === '' && !canvasId) {
     const created = canvas.create({
       sessionId: hostId,
       title,
@@ -258,12 +269,6 @@ async function dispatchCanvas(
     canvasId = created.canvas?.id
   }
   if (typeof canvasId !== 'string') return toolError('STORE_FAILURE', 'The canvas was not created.')
-  let skills: string[] = []
-  try {
-    skills = bindCanvasSkills(engine, hostId).bound
-  } catch (error) {
-    return toolError('STORE_FAILURE', error instanceof Error ? error.message : 'Canvas skills could not be bound.')
-  }
   const forwarded: Record<string, unknown> = {
     briefing: canvasBriefing(canvasId, briefing, skills, canvas.previewPaths(canvasId)),
   }

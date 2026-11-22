@@ -11,7 +11,7 @@ import {
   renameSync,
   writeSync,
 } from 'node:fs'
-import { basename, dirname, join, relative, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
@@ -40,8 +40,10 @@ export function ensureDir(root: string) {
  */
 export function openContained(root: string, file: string) {
   const rootReal = realpathSync(root)
-  const rel = relative(rootReal, file)
-  if (rel.startsWith('..') || rel === '' || file.includes('\0')) {
+  // Compare the paths the caller passed. realpath(root) can be /private/var while
+  // the file is still under /var, and that false escape would hide a real skill file.
+  const rel = relative(root, file)
+  if (rel.startsWith('..') || rel === '' || isAbsolute(rel) || file.includes('\0')) {
     throw Object.assign(new Error('path escapes the skill root'), { code: 'FORBIDDEN' })
   }
   const segments = rel.split(sep).filter(Boolean)

@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { assertReleaseLayout } from './release-layout.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const entries = ['dist/index.js', 'dist/http-plugin.js', 'dist/router-plugin.js', 'dist/engine.js', 'dist/cli.js']
@@ -85,6 +86,7 @@ try {
   if (typeof filename !== 'string' || filename === '') throw new Error('npm pack did not return a filename')
   run('tar', ['-xzf', join(packDir, filename), '-C', stage], root)
   const publishDir = join(stage, 'package')
+  assertReleaseLayout(publishDir)
   const dependencies = JSON.parse(readFileSync(join(publishDir, 'package.json'), 'utf8')).dependencies ?? {}
   assertRuntimeImports(publishDir, dependencies)
   const inspector = readFileSync(join(publishDir, 'dist/canvas-inspector.js'), 'utf8')

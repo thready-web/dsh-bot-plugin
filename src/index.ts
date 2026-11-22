@@ -28,6 +28,7 @@ import { BUDGET_NOTICE_PREFIX, createWorkRuntime, type MainBudgetTrip } from './
 import { workToolDefinitions } from './work-tools.ts'
 import { openCanvasStore } from './canvas-store.ts'
 import { backlogCanvases, bindCanvasCards, createCardLog, publishCardLog, type CardLog } from './card-log.ts'
+import { canvasSkillFiles, CanvasSkillsError } from './canvas-skills.ts'
 import { canvasToolDefinitions } from './canvas-tools.ts'
 import { forgetWorker, rememberWorker } from './worker-handles.ts'
 import { applyFreshMainPermission, permissionDefaultFile } from './permission-default.ts'
@@ -400,6 +401,13 @@ export function apply(ctx: PluginHost, config: FoundationsConfig = {}) {
   ctx.effect(() => () => {
     if (authorizationFor(store.root) === authorization) publishAuthorization(store.root, null)
   })
+
+  try {
+    canvasSkillFiles()
+  } catch (error) {
+    if (!(error instanceof CanvasSkillsError)) throw error
+    ctx.logger?.warn?.('session-foundations: %s', error.message)
+  }
 
   ctx.logger?.info?.(
     'session-foundations: ready dir=%s bindings=%s promoted=%s',
