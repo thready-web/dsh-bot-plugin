@@ -1591,6 +1591,25 @@ button.chip {
   font-size: 12px;
   line-height: 18px;
 }
+.system-note {
+  margin: 10px 24px 14px;
+  text-align: center;
+  color: var(--tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
+.system-note summary {
+  display: block;
+  cursor: pointer;
+  list-style: none;
+}
+.system-note summary::-webkit-details-marker {
+  display: none;
+}
+.system-note-reason {
+  display: block;
+  margin-top: 2px;
+}
 .send-state {
   display: flex;
   align-items: center;
@@ -1819,17 +1838,6 @@ button.chip {
   color: #fff;
   font-size: 14px;
   line-height: 24px;
-}
-.retry-row {
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 13px;
-  line-height: 20px;
-}
-.retry-row summary {
-  cursor: pointer;
-}
-.retry-row p {
-  margin: 2px 0 2px 16px;
 }
 .turn-error {
   display: flex;

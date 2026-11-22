@@ -434,49 +434,62 @@ function TurnFailurePanel({
   if (!failure && retries.length === 0) return null
   const spent = used || continued
   return (
-    <div className="turn-failure">
-      {showLabel ? (
-        <p className="turn-failed-label">
-          Failed
-          {seconds != null ? (
-            <>
-              {' '}
-              · <span className="duration">{seconds}s</span>
-            </>
-          ) : null}
-        </p>
-      ) : null}
-      {retries.map(attempt => (
-        <details key={`${attempt.retryId}:${attempt.retry}`} className="retry-row" open={attempt.state === 'scheduled'}>
-          <summary>
+    <>
+      {retries.map(attempt => {
+        const summary = (
+          <>
             {attempt.state === 'started' ? 'Retried model request' : 'Retrying model request'} ({attempt.retry}/
             {attempt.maxRetries ?? '∞'}) · {Math.max(1, Math.ceil(attempt.delayMs / 1000))}s
-          </summary>
-          <p>Retry delay: {Math.round(attempt.delayMs)}ms</p>
-          <p>Failure reason: {attempt.message}</p>
-        </details>
-      ))}
+          </>
+        )
+        if (!attempt.message) {
+          return (
+            <p key={`${attempt.retryId}:${attempt.retry}`} className="system-note">
+              {summary}
+            </p>
+          )
+        }
+        return (
+          <details key={`${attempt.retryId}:${attempt.retry}`} className="system-note">
+            <summary>{summary}</summary>
+            <span className="system-note-reason">{attempt.message}</span>
+          </details>
+        )
+      })}
       {failure ? (
-        <p className="turn-error" role="status">
-          <span className="turn-error-title">This turn failed</span>
-          <span>{failure.message}</span>
-          {failure.code ? <code>{failure.code}</code> : null}
-        </p>
+        <div className="turn-failure">
+          {showLabel ? (
+            <p className="turn-failed-label">
+              Failed
+              {seconds != null ? (
+                <>
+                  {' '}
+                  · <span className="duration">{seconds}s</span>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+          <p className="turn-error" role="status">
+            <span className="turn-error-title">This turn failed</span>
+            <span>{failure.message}</span>
+            {failure.code ? <code>{failure.code}</code> : null}
+          </p>
+          {prompt && !spent ? (
+            <button
+              type="button"
+              className="retry-turn"
+              disabled={!canRetry}
+              onClick={() => {
+                setUsed(true)
+                onRetry(prompt)
+              }}
+            >
+              {t('bot.retry')}
+            </button>
+          ) : null}
+        </div>
       ) : null}
-      {failure && prompt && !spent ? (
-        <button
-          type="button"
-          className="retry-turn"
-          disabled={!canRetry}
-          onClick={() => {
-            setUsed(true)
-            onRetry(prompt)
-          }}
-        >
-          {t('bot.retry')}
-        </button>
-      ) : null}
-    </div>
+    </>
   )
 }
 
