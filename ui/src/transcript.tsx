@@ -70,6 +70,7 @@ export function Transcript({
   now,
   canRetry,
   onRetry,
+  onRetrySend,
   onSupply,
   onOpenSession,
   onOpenFile,
@@ -97,6 +98,7 @@ export function Transcript({
   now: number
   canRetry: boolean
   onRetry: (text: string) => void
+  onRetrySend?: (clientMessageId: string) => void
   onSupply: (ticketId: string, text: string) => Promise<string>
   onOpenSession: (sessionId: string) => void
   onOpenFile: (path: string, line?: number) => void
@@ -181,6 +183,7 @@ export function Transcript({
                 botLabel={botLabel}
                 onOpenInbox={onOpenInbox}
                 onOpenFile={onOpenFile}
+                onRetrySend={onRetrySend}
               />
             ) : block.type === 'card' ? (
               <CardView
@@ -312,15 +315,17 @@ function UserBlock({
   botLabel,
   onOpenInbox,
   onOpenFile,
+  onRetrySend,
 }: {
   segment: Segment & { kind: 'user' }
   botLabel: (sessionId: string) => string
   onOpenInbox: () => void
   onOpenFile: (path: string, line?: number) => void
+  onRetrySend?: (clientMessageId: string) => void
 }) {
   const mail = parseBotMail(segment.text)
   const briefing = parseBriefing(segment.text)
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
   const stamp = clock(segment.time, locale)
   if (briefing) return <BriefingCard briefing={briefing} time={stamp} mark={segment.id} onOpenFile={onOpenFile} />
   if (mail) {
@@ -340,6 +345,28 @@ function UserBlock({
       <div className="user-bubble">
         <UserText text={segment.text} />
       </div>
+      {segment.delivery ? (
+        <p className="send-state" aria-live="polite">
+          <span>
+            {segment.delivery === 'queued'
+              ? t('composer.queued')
+              : segment.delivery === 'sending'
+                ? t('composer.sending')
+                : segment.delivery === 'failed'
+                  ? t('composer.failed')
+                  : t('composer.unknown')}
+          </span>
+          {segment.clientMessageId && (segment.delivery === 'failed' || segment.delivery === 'unknown') ? (
+            <button
+              type="button"
+              aria-label={t('composer.retry')}
+              onClick={() => onRetrySend?.(segment.clientMessageId ?? '')}
+            >
+              {t('composer.retry')}
+            </button>
+          ) : null}
+        </p>
+      ) : null}
       {stamp ? <time>{stamp}</time> : null}
     </div>
   )

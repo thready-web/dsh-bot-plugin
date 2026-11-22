@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -145,6 +146,7 @@ export function ChatComposer({
   showSend = true,
   sendDisabled = false,
   stats,
+  inputLabel,
 }: {
   onSubmit?: () => void
   chips?: ReactNode
@@ -170,9 +172,20 @@ export function ChatComposer({
   showSend?: boolean
   sendDisabled?: boolean
   stats?: ReactNode
+  inputLabel?: string
 }) {
   const { t } = useI18n()
   const locked = disabled || readOnly
+  useLayoutEffect(() => {
+    const node = textareaRef?.current
+    if (!node) return
+    const narrow = window.matchMedia('(max-width: 800px)').matches
+    const limit = narrow ? Math.min(160, window.innerHeight * 0.3) : 160
+    node.style.height = 'auto'
+    const next = Math.min(Math.max(node.scrollHeight, 36), limit)
+    node.style.height = `${next}px`
+    node.style.overflowY = node.scrollHeight > limit ? 'auto' : 'hidden'
+  }, [textareaRef, value])
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -194,7 +207,7 @@ export function ChatComposer({
           placeholder={placeholder}
           disabled={disabled || readOnly}
           readOnly={readOnly}
-          aria-label={readOnly ? placeholder : undefined}
+          aria-label={inputLabel || placeholder}
           onChange={event => onChange?.(event.target.value, event.target.selectionStart ?? event.target.value.length)}
           onSelect={event => onSelect?.(event.currentTarget.selectionStart ?? 0)}
           onKeyDown={onKeyDown}
@@ -223,7 +236,13 @@ export function ChatComposer({
           <div className="trailing">
             {model ? <span className="model">{model}</span> : null}
             {showStop ? (
-              <button type="button" className="stop" aria-label={t('composer.cancel')} disabled={locked || stopDisabled} onClick={onStop}>
+              <button
+                type="button"
+                className="stop"
+                aria-label={t('composer.cancel')}
+                disabled={locked || stopDisabled}
+                onClick={onStop}
+              >
                 <span className="stop-icon" />
               </button>
             ) : null}
@@ -252,6 +271,22 @@ function LatestButton({ label, onClick }: { label: string; onClick: () => void }
 const ComposerDock = forwardRef<HTMLDivElement, { lift: boolean; hidden: boolean; children: ReactNode }>(
   function ComposerDock({ lift, hidden, children }, ref) {
     const [box, setBox] = useState<{ left: number; width: number } | null>(null)
+    useEffect(() => {
+      const viewport = window.visualViewport
+      if (!viewport) return
+      const apply = () => {
+        const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+        document.documentElement.style.setProperty('--keyboard-inset', `${inset}px`)
+      }
+      apply()
+      viewport.addEventListener('resize', apply)
+      viewport.addEventListener('scroll', apply)
+      return () => {
+        viewport.removeEventListener('resize', apply)
+        viewport.removeEventListener('scroll', apply)
+        document.documentElement.style.setProperty('--keyboard-inset', '0px')
+      }
+    }, [])
     useLayoutEffect(() => {
       if (!lift) return
       const chat = document.querySelector('section.chat')

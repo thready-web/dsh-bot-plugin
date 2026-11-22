@@ -1,6 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from './api'
+import {
+  MESSAGE_LIMIT,
+  SEND_TIMEOUT_MS,
+  classifySend,
+  draftAfterSend,
+  enterInsertsNewline,
+  isComposingKey,
+  nextSendSeq,
+} from './composer-send.ts'
 import { readDeleteEvents, type DeleteEvent } from './delete-job'
 import { forgetLogCache } from './sync/checkpoint'
 import { foundations, foundationsError } from './foundations'
@@ -309,6 +318,13 @@ export function App() {
   const sessionMenuRef = useRef<HTMLDivElement>(null)
   const deletedSessions = useRef(new Set<string>())
   const localSeq = useRef(0)
+  const outboundRef = useRef<Array<{ sessionId: string; text: string; seq: number; clientMessageId: string }>>([])
+  const outboundStarted = useRef(new Set<string>())
+  const inflightSessions = useRef(new Set<string>())
+  const postTaskRef = useRef<
+    (targetSession: string, text: string, clientMessageId: string, seq: number) => Promise<boolean>
+  >(async () => false)
+  const [outboundTick, setOutboundTick] = useState(0)
   const previewQueue = useRef(new Map<string, string>())
   const previewTimer = useRef(0)
   const previewKnown = useRef(new Map<string, string>())
@@ -1092,54 +1108,176 @@ export function App() {
     window.requestAnimationFrame(() => draftRef.current?.focus())
   }
 
-  async function submit(text: string) {
-    const turnLive = task?.status === 'accepted' && thread.drafting
-    const tickets = loadedWorkSession === sessionId ? works : []
-    if (!sessionId || !text || !execution.ready || composerLocked(turnLive, tickets, bots.has(sessionId))) return false
-    chatRef.current?.pin()
-    const wasLive = thread.drafting
-    setDraft('')
-    setReason('')
-    localSeq.current += 1
-    const seq = Number.MAX_SAFE_INTEGER - localSeq.current
-    setThread(prev => ({
-      ...prev,
-      drafting: true,
-      segments: [
-        ...prev.segments,
-        { kind: 'user', id: `optimistic:${seq}`, text, time: Date.now(), seq, optimistic: true },
-      ],
-    }))
-    const result = await api('/tasks', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() },
-      body: JSON.stringify({ sessionId, text }),
-    })
-    const nextTask = result.body.task as TaskRecord | undefined
-    setTask(nextTask ?? null)
-    if (result.status !== 202) {
-      setThread(prev => ({
-        ...prev,
-        drafting: wasLive ? prev.drafting : false,
-        segments: prev.segments.filter(item => !(item.kind === 'user' && item.optimistic && item.text === text)),
-      }))
-      const blocked = result.body.execution as { reason?: string } | undefined
-      setReason(blocked?.reason || hostText(String(result.body.error || ''), t('composer.notSent'), t))
-      return false
-    }
-    return true
+  function focusDraft() {
+    window.requestAnimationFrame(() => draftRef.current?.focus({ preventScroll: true }))
   }
 
+  function sendSeq() {
+    localSeq.current += 1
+    const maxSeq = thread.segments.reduce((max, item) => Math.max(max, item.seq || 0), 0)
+    return nextSendSeq(maxSeq, localSeq.current)
+  }
+
+  async function postTask(targetSession: string, text: string, clientMessageId: string, seq: number) {
+    const wasLive = thread.drafting
+    if (sessionRef.current === targetSession) {
+      chatRef.current?.pin()
+      setThread(prev => {
+        const pending = {
+          kind: 'user' as const,
+          id: `optimistic:${clientMessageId}`,
+          text,
+          time: Date.now(),
+          seq,
+          optimistic: true,
+          clientMessageId,
+          delivery: 'sending' as const,
+        }
+        const has = prev.segments.some(item => item.kind === 'user' && item.clientMessageId === clientMessageId)
+        return {
+          ...prev,
+          drafting: true,
+          segments: has
+            ? prev.segments.map(item =>
+                item.kind === 'user' && item.clientMessageId === clientMessageId ? { ...item, ...pending } : item,
+              )
+            : [...prev.segments, pending],
+        }
+      })
+    }
+    let status = 0
+    let body: Record<string, unknown> = {}
+    let aborted = false
+    try {
+      const result = await api('/tasks', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': clientMessageId },
+        body: JSON.stringify({ sessionId: targetSession, text, idempotencyKey: clientMessageId }),
+        signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+      })
+      status = result.status
+      body = result.body
+    } catch {
+      aborted = true
+    }
+    if (sessionRef.current !== targetSession) return status === 202
+    const taskRecord = body.task as TaskRecord | undefined
+    const outcome = classifySend({
+      status,
+      reused: body.reused === true,
+      taskStatus: taskRecord?.status,
+      aborted,
+    })
+    if (outcome === 'accepted') {
+      setTask(taskRecord ?? null)
+      setThread(prev => ({
+        ...prev,
+        segments: prev.segments.map(item =>
+          item.kind === 'user' && item.clientMessageId === clientMessageId ? { ...item, delivery: undefined } : item,
+        ),
+      }))
+      return true
+    }
+    if (outcome === 'failed') {
+      const blocked = body.execution as { reason?: string } | undefined
+      setReason(blocked?.reason || hostText(String(body.error || ''), t('composer.notSent'), t))
+      const box = draftRef.current?.value ?? ''
+      if (box.trim() === '') {
+        setDraft(text)
+        setThread(prev => ({
+          ...prev,
+          drafting: wasLive ? prev.drafting : false,
+          segments: prev.segments.filter(item => !(item.kind === 'user' && item.clientMessageId === clientMessageId)),
+        }))
+        focusDraft()
+      } else {
+        setThread(prev => ({
+          ...prev,
+          drafting: wasLive ? prev.drafting : false,
+          segments: prev.segments.map(item =>
+            item.kind === 'user' && item.clientMessageId === clientMessageId
+              ? { ...item, delivery: 'failed' as const }
+              : item,
+          ),
+        }))
+        setReason(t('composer.kept'))
+      }
+      return false
+    }
+    setThread(prev => ({
+      ...prev,
+      drafting: wasLive ? prev.drafting : false,
+      segments: prev.segments.map(item =>
+        item.kind === 'user' && item.clientMessageId === clientMessageId
+          ? { ...item, delivery: 'unknown' as const }
+          : item,
+      ),
+    }))
+    return false
+  }
+  postTaskRef.current = postTask
+
   async function send() {
-    const text = draft.trim()
-    if (!text || !canSend) return
+    const snapshot = draft
+    const text = snapshot.trim()
+    if (!sessionId || text === '' || !execution.ready || deleteLocked) return
     const mentions = canvasMentions
     const blocks = mentions.map(formatCanvasTarget).join('\n')
     const full = blocks ? `${text}\n\n${blocks}` : text
+    if (full.length > MESSAGE_LIMIT) {
+      setReason(t('composer.tooLong'))
+      return
+    }
+    const queue = composerLocked(turnLive, workTickets, isBotSession)
+    setDraft(current => draftAfterSend(current, snapshot))
     setCanvasMentions([])
     setCanvasDismiss(count => count + 1)
-    const sent = await submit(full)
-    if (!sent) setCanvasMentions(mentions)
+    setReason('')
+    focusDraft()
+    const clientMessageId = crypto.randomUUID()
+    const seq = sendSeq()
+    if (queue) {
+      outboundRef.current.push({ sessionId, text: full, seq, clientMessageId })
+      setThread(prev => ({
+        ...prev,
+        segments: [
+          ...prev.segments,
+          {
+            kind: 'user',
+            id: `optimistic:${clientMessageId}`,
+            text: full,
+            time: Date.now(),
+            seq,
+            optimistic: true,
+            clientMessageId,
+            delivery: 'queued',
+          },
+        ],
+      }))
+      setOutboundTick(count => count + 1)
+      return
+    }
+    await postTask(sessionId, full, clientMessageId, seq)
+  }
+
+  function retrySend(clientMessageId: string) {
+    const segment = thread.segments.find(item => item.kind === 'user' && item.clientMessageId === clientMessageId)
+    if (!segment || segment.kind !== 'user' || !sessionId) return
+    if (segment.delivery === 'unknown') {
+      void postTask(sessionId, segment.text, clientMessageId, segment.seq)
+      return
+    }
+    if (segment.delivery !== 'failed') return
+    if ((draftRef.current?.value ?? '').trim() !== '') {
+      setReason(t('composer.kept'))
+      return
+    }
+    setDraft(segment.text)
+    setThread(prev => ({
+      ...prev,
+      segments: prev.segments.filter(item => !(item.kind === 'user' && item.clientMessageId === clientMessageId)),
+    }))
+    focusDraft()
   }
 
   async function supplyWork(ticketId: string, text: string) {
@@ -1166,8 +1304,22 @@ export function App() {
   const turnLive = task?.status === 'accepted' && thread.drafting
   const workTickets = loadedWorkSession === sessionId ? works : []
   const deleteLocked = deleteJob?.id === sessionId
-  const locked = composerLocked(turnLive, workTickets, isBotSession) || deleteLocked
-  const canSend = Boolean(sessionId) && execution.ready && draft.trim() !== '' && !locked
+  const overLimit = draft.trim().length > MESSAGE_LIMIT
+  const canSend = Boolean(sessionId) && execution.ready && draft.trim() !== '' && !overLimit && !deleteLocked
+
+  useEffect(() => {
+    if (!sessionId || turnLive || !execution.ready || deleteLocked) return
+    if (inflightSessions.current.has(sessionId)) return
+    const next = outboundRef.current.find(item => item.sessionId === sessionId)
+    if (!next || outboundStarted.current.has(next.clientMessageId)) return
+    outboundStarted.current.add(next.clientMessageId)
+    outboundRef.current = outboundRef.current.filter(item => item.clientMessageId !== next.clientMessageId)
+    inflightSessions.current.add(sessionId)
+    void postTaskRef.current(next.sessionId, next.text, next.clientMessageId, next.seq).finally(() => {
+      inflightSessions.current.delete(sessionId)
+      setOutboundTick(count => count + 1)
+    })
+  }, [deleteLocked, execution.ready, outboundTick, sessionId, turnLive])
 
   const settledRef = useRef<SettledStamp | null>(null)
   const openStatuses =
@@ -1313,13 +1465,7 @@ export function App() {
               )}
               <span className="chat-identity">
                 {faceSessionId && !botChat ? (
-                  <PresenceMark
-                    sessionId={faceSessionId}
-                    state={headerState}
-                    still={false}
-                    size={32}
-                    label={title}
-                  />
+                  <PresenceMark sessionId={faceSessionId} state={headerState} still={false} size={32} label={title} />
                 ) : null}
                 {isWorkerSession(sessionId) && !botChat ? (
                   <nav className="work-crumb" aria-label={t('nav.where')}>
@@ -1460,12 +1606,7 @@ export function App() {
                             chooseMention(item)
                           }}
                         >
-                          <PresenceMark
-                            sessionId={item.sessionId}
-                            state="idle"
-                            still
-                            size={22}
-                          />
+                          <PresenceMark sessionId={item.sessionId} state="idle" still size={22} />
                           <span className="mention-name">{item.label}</span>
                         </button>
                       ))
@@ -1509,8 +1650,16 @@ export function App() {
               setCursor(cursor)
             }}
             onSelect={cursor => setCursor(cursor)}
+            inputLabel={t('composer.input')}
             onKeyDown={event => {
-              if (event.nativeEvent.isComposing) return
+              if (
+                isComposingKey({
+                  isComposing: event.nativeEvent.isComposing,
+                  key: event.key,
+                  keyCode: event.keyCode,
+                })
+              )
+                return
               if (mentionOpen && mentionChoices.length > 0) {
                 if (event.key === 'ArrowDown') {
                   event.preventDefault()
@@ -1535,6 +1684,13 @@ export function App() {
                 }
               }
               if (event.key === 'Enter' && !event.shiftKey) {
+                if (
+                  enterInsertsNewline({
+                    coarse: window.matchMedia('(pointer: coarse)').matches,
+                    narrow: window.matchMedia('(max-width: 800px)').matches,
+                  })
+                )
+                  return
                 event.preventDefault()
                 void send()
               }
@@ -1618,9 +1774,15 @@ export function App() {
             onStop={() => {
               void cancel()
             }}
-            showSend={!locked}
             sendDisabled={!canSend}
-            stats={reason || (!execution.ready ? hostText(execution.reason, execution.reason, t) : statsLine(thread))}
+            stats={
+              reason ||
+              (overLimit
+                ? t('composer.tooLong')
+                : !execution.ready
+                  ? hostText(execution.reason, execution.reason, t)
+                  : statsLine(thread))
+            }
           />
         }
       >
@@ -1674,8 +1836,10 @@ export function App() {
                 now={workNow}
                 canRetry={Boolean(sessionId) && execution.ready && !turnLive}
                 onRetry={text => {
-                  void submit(text)
+                  if (!sessionId || text.trim() === '' || !execution.ready || deleteLocked) return
+                  void postTask(sessionId, text, crypto.randomUUID(), sendSeq())
                 }}
+                onRetrySend={retrySend}
                 onSupply={supplyWork}
                 onOpenSession={openWorkerSession}
                 onOpenFile={(path, line) => {
@@ -1714,11 +1878,7 @@ export function App() {
         </ImageFailureScope>
       </ChatPane>
       {settings === 'permission' && sessionId ? (
-        <PermissionPanel
-          sessionId={sessionId}
-          current={thread.preset}
-          onClose={() => setSettings(null)}
-        />
+        <PermissionPanel sessionId={sessionId} current={thread.preset} onClose={() => setSettings(null)} />
       ) : null}
       {settings === 'authorization' || (authPending && settings == null) ? (
         <AuthorizationPanel

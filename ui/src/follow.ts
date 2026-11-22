@@ -144,9 +144,11 @@ function sortSegments(segments: Segment[]): Segment[] {
 }
 
 function addUser(segments: Segment[], segment: Segment & { kind: 'user' }): Segment[] {
-  const index = segments.findIndex(
-    item => item.kind === 'user' && item.optimistic && item.text.trim() === segment.text.trim(),
-  )
+  const index = segments.findIndex(item => {
+    if (item.kind !== 'user' || !item.optimistic) return false
+    if (segment.clientMessageId && item.clientMessageId) return item.clientMessageId === segment.clientMessageId
+    return item.text.trim() === segment.text.trim()
+  })
   if (index >= 0) {
     const next = segments.slice()
     const pending = next[index]
@@ -154,6 +156,7 @@ function addUser(segments: Segment[], segment: Segment & { kind: 'user' }): Segm
     next[index] = {
       ...pending,
       optimistic: false,
+      delivery: undefined,
       time: segment.time ?? pending.time,
       seq: segment.seq,
       turn: segment.turn,

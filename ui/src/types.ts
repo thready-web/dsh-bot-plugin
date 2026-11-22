@@ -7,6 +7,9 @@ export interface SessionItem {
   title?: string | null
 }
 
+/** Delivery of one user send. Accepted messages omit this and look like ordinary bubbles. */
+export type SendDelivery = 'queued' | 'sending' | 'failed' | 'unknown'
+
 export interface UserSegment {
   kind: 'user'
   id: string
@@ -15,6 +18,9 @@ export interface UserSegment {
   seq: number
   turn?: number
   optimistic?: boolean
+  /** Stable idempotency key for this send. Retries reuse it. */
+  clientMessageId?: string
+  delivery?: SendDelivery
 }
 
 export interface ThinkSegment {
