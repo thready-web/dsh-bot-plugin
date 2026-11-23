@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { isCanvasAnchor, isCanvasPage, splitCanvasRoute } from './canvas-link'
+import { canvasFrameBox, defaultCanvasFit, type CanvasStageBox } from './canvas-fit.ts'
 import { mentionFrom } from './canvas-mention.ts'
 import { adoptElement, type RawNode } from './canvas-path.ts'
 import { mentionLabel } from './canvas-target'
@@ -17,10 +18,13 @@ import { useI18n } from './locale'
 import type { MessageKey } from './i18n/index.ts'
 
 const DEVICES = [
-  { id: 'desktop', width: 1280, label: 'canvas.device.desktop' },
-  { id: 'tablet', width: 768, label: 'canvas.device.tablet' },
-  { id: 'phone', width: 390, label: 'canvas.device.phone' },
-] as const satisfies ReadonlyArray<{ id: string; width: number; label: MessageKey }>
+  { id: 'desktop', width: 1280, height: 860, label: 'canvas.device.desktop' },
+  { id: 'tablet', width: 768, height: 1024, label: 'canvas.device.tablet' },
+  { id: 'phone', width: 390, height: 844, label: 'canvas.device.phone' },
+] as const satisfies ReadonlyArray<{ id: string; width: number; height: number; label: MessageKey }>
+
+/** Space kept around a fitted canvas, so the frame edge is not glued to the toolbar. */
+const FIT_GAP = 16
 
 export interface CanvasSummary {
   id: string
@@ -147,6 +151,10 @@ export function CanvasPreview({
   const selectingRef = useRef(false)
   const pinnedRef = useRef<string | null>(null)
   const [device, setDevice] = useState<(typeof DEVICES)[number]['id']>('desktop')
+  const [fit, setFit] = useState(defaultCanvasFit)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [stageSize, setStageSize] = useState<CanvasStageBox>({ width: 0, height: 0 })
+  const scaleRef = useRef(1)
   const [selecting, setSelecting] = useState(false)
   const [nonce, setNonce] = useState('')
   const [nonceSrc, setNonceSrc] = useState('')
@@ -191,10 +199,13 @@ export function CanvasPreview({
   }
   const pageName = page ?? entryName(src)
   const frameSrc = frameAddress(src, nonce, pageName, reload, anchor)
+  const windowUrl = standaloneUrl(src, pageName)
   const sourceUrl = mediaPage(src, pageName)
   const name = title || t('canvas.card')
   const active = revisions.find(revision => revision.revision === activeRevision) ?? null
-  const width = DEVICES.find(item => item.id === device)?.width ?? 1280
+  const spec = DEVICES.find(item => item.id === device) ?? DEVICES[0]
+  const fitted = canvasFrameBox(stageSize, spec, fit, FIT_GAP)
+  scaleRef.current = fitted.scale
 
   const requestClose = () => {
     if (motionRef.current === 'leave') return
@@ -318,6 +329,63 @@ export function CanvasPreview({
     }
   }, [])
 
+  // The modal is position: fixed, so 100% is the layout viewport. On a phone that runs
+  // under the URL bar and the keyboard, so measure the visual viewport instead.
+  useLayoutEffect(() => {
+    const root = document.documentElement
+    const viewport = window.visualViewport
+    const apply = () => {
+      const height = viewport ? viewport.height : window.innerHeight
+      const top = viewport ? viewport.offsetTop : 0
+      // A transient zero keeps the CSS fallback (100vh) instead of collapsing the modal.
+      if (Number.isFinite(height) && height > 0) root.style.setProperty('--canvas-vh', `${Math.round(height)}px`)
+      if (Number.isFinite(top) && top >= 0) root.style.setProperty('--canvas-vt', `${Math.round(top)}px`)
+    }
+    apply()
+    if (!viewport) {
+      window.addEventListener('resize', apply)
+      return () => {
+        window.removeEventListener('resize', apply)
+        root.style.removeProperty('--canvas-vh')
+        root.style.removeProperty('--canvas-vt')
+      }
+    }
+    viewport.addEventListener('resize', apply)
+    viewport.addEventListener('scroll', apply)
+    return () => {
+      viewport.removeEventListener('resize', apply)
+      viewport.removeEventListener('scroll', apply)
+      root.style.removeProperty('--canvas-vh')
+      root.style.removeProperty('--canvas-vt')
+    }
+  }, [])
+
+  // Measured before paint, so the first frame is already fitted instead of a 1280px flash.
+  useLayoutEffect(() => {
+    const node = stageRef.current
+    if (!node) return
+    // client* includes padding; the stage reserves the composer's height down there.
+    const measure = () => {
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(node) : null
+      const horizontal =
+        (Number.parseFloat(style?.paddingLeft ?? '') || 0) + (Number.parseFloat(style?.paddingRight ?? '') || 0)
+      const vertical =
+        (Number.parseFloat(style?.paddingTop ?? '') || 0) + (Number.parseFloat(style?.paddingBottom ?? '') || 0)
+      setStageSize({
+        width: Math.max((node.clientWidth || 0) - horizontal, 0),
+        height: Math.max((node.clientHeight || 0) - vertical, 0),
+      })
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure)
+      return () => window.removeEventListener('resize', measure)
+    }
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
   useEffect(() => {
     if (motion !== 'settled' || !sourceUrl) return
     let cancel = false
@@ -364,7 +432,7 @@ export function CanvasPreview({
       const revision = revisionRef.current
       if (!mention || !id || revision == null) return
       setPinnedPath(data.path)
-      const from = viewportRect(frameRef.current, data.rect)
+      const from = viewportRect(frameRef.current, data.rect, scaleRef.current)
       const label = mentionLabel(name, t('canvas.revision', { revision: String(revision) }), mention.tag, mention.text)
       const chip = { canvasId: id, revision, path: mention.path, tag: mention.tag, label }
       void flyToComposer(from, label).then(() => mentionRef.current?.(chip))
@@ -407,6 +475,21 @@ export function CanvasPreview({
             <strong className="canvas-name" title={name}>
               {name}
             </strong>
+            <a
+              className="canvas-new-window"
+              href={windowUrl || undefined}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={t('canvas.window')}
+              title={t('canvas.window.hint')}
+              aria-disabled={windowUrl ? undefined : true}
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M8.2 4H5.1A1.6 1.6 0 0 0 3.5 5.6v9.3A1.6 1.6 0 0 0 5.1 16.5h9.3a1.6 1.6 0 0 0 1.6-1.6v-3.1" />
+                <path d="M11.6 3.2h5.2v5.2" />
+                <path d="M16.8 3.2 9.1 10.9" />
+              </svg>
+            </a>
             <button
               ref={closeButton}
               type="button"
@@ -420,76 +503,87 @@ export function CanvasPreview({
             </button>
           </div>
           <div className="canvas-toolbar-controls">
-            <button
-              type="button"
-              className="canvas-reset"
-              title={t('canvas.reset.hint')}
-              onClick={resetPage}
-              disabled={!src}
-            >
-              {t('canvas.reset')}
-            </button>
-            <button
-              type="button"
-              className={selecting ? 'canvas-select on' : 'canvas-select'}
-              aria-pressed={selecting}
-              aria-label={t('canvas.select')}
-              title={t('canvas.select')}
-              disabled={!src}
-              onClick={() => {
-                if (selecting) {
-                  setSelecting(false)
-                  tellFrame('disarm')
-                  return
-                }
-                setSelecting(true)
-                tellFrame('arm')
-              }}
-            >
-              <svg viewBox="0 0 20 20" aria-hidden="true">
-                <rect
-                  x="6.4"
-                  y="6.4"
-                  width="11"
-                  height="11"
-                  rx="1.4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                />
-                <path
-                  className="cursor"
-                  d="M1.8 1.4 2.15 9.2 4.6 6.8 6.7 11.4 8 10.8 5.9 6.2 9.2 6.4Z"
-                  fill="currentColor"
-                />
-              </svg>
-            </button>
-            <div className="canvas-segment" role="group" aria-label={t('canvas.devices')}>
-              {DEVICES.map(item => (
-                <button
-                  key={item.id}
-                  type="button"
-                  aria-pressed={device === item.id}
-                  onClick={() => setDevice(item.id)}
-                >
-                  {t(item.label)}
-                </button>
-              ))}
-            </div>
-            <div className="canvas-segment canvas-versions" role="group" aria-label={t('canvas.versions')}>
-              {revisions.map(revision => (
-                <button
-                  key={revision.revision}
-                  type="button"
-                  aria-pressed={revision.revision === activeRevision}
-                  disabled={revision.status === 'failed'}
-                  title={revision.error ?? t('canvas.revision', { revision: String(revision.revision) })}
-                  onClick={() => onSelect(revision.revision)}
-                >
-                  {t('canvas.revision', { revision: String(revision.revision) })}
-                  <span className="canvas-version-status">{t(statusKey(revision.status))}</span>
-                </button>
-              ))}
+            <div className="canvas-toolbar-rail">
+              <button
+                type="button"
+                className="canvas-reset"
+                title={t('canvas.reset.hint')}
+                onClick={resetPage}
+                disabled={!src}
+              >
+                {t('canvas.reset')}
+              </button>
+              <button
+                type="button"
+                className="canvas-scale"
+                aria-pressed={fit}
+                title={fit ? t('canvas.actual') : t('canvas.fit')}
+                disabled={!src}
+                onClick={() => setFit(value => !value)}
+              >
+                {fit ? t('canvas.actual') : t('canvas.fit')}
+              </button>
+              <button
+                type="button"
+                className={selecting ? 'canvas-select on' : 'canvas-select'}
+                aria-pressed={selecting}
+                aria-label={t('canvas.select')}
+                title={t('canvas.select')}
+                disabled={!src}
+                onClick={() => {
+                  if (selecting) {
+                    setSelecting(false)
+                    tellFrame('disarm')
+                    return
+                  }
+                  setSelecting(true)
+                  tellFrame('arm')
+                }}
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path
+                    d="M9.5 14H5a1.5 1.5 0 0 1-1.5-1.5V6A1.5 1.5 0 0 1 5 4.5h8A1.5 1.5 0 0 1 14.5 6v4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                  />
+                  <g transform="translate(9.8 9.2) scale(0.58)">
+                    <path
+                      className="cursor"
+                      d="M1.8 1.4 2.15 9.2 4.6 6.8 6.7 11.4 8 10.8 5.9 6.2 9.2 6.4Z"
+                      fill="currentColor"
+                    />
+                  </g>
+                </svg>
+              </button>
+              <div className="canvas-segment" role="group" aria-label={t('canvas.devices')}>
+                {DEVICES.map(item => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-pressed={device === item.id}
+                    onClick={() => setDevice(item.id)}
+                  >
+                    {t(item.label)}
+                  </button>
+                ))}
+              </div>
+              <div className="canvas-segment canvas-versions" role="group" aria-label={t('canvas.versions')}>
+                {revisions.map(revision => (
+                  <button
+                    key={revision.revision}
+                    type="button"
+                    aria-pressed={revision.revision === activeRevision}
+                    disabled={revision.status === 'failed'}
+                    title={revision.error ?? t('canvas.revision', { revision: String(revision.revision) })}
+                    onClick={() => onSelect(revision.revision)}
+                  >
+                    {t('canvas.revision', { revision: String(revision.revision) })}
+                    <span className="canvas-version-status">{t(statusKey(revision.status))}</span>
+                  </button>
+                ))}
+              </div>
             </div>
             <button
               type="button"
@@ -501,7 +595,7 @@ export function CanvasPreview({
             </button>
           </div>
         </header>
-        <div className="canvas-stage">
+        <div className="canvas-stage" ref={stageRef}>
           {phase === 'loading' ? <p className="canvas-status">{t('canvas.loading')}</p> : null}
           {phase === 'error' ? (
             <p className="canvas-status" role="alert">
@@ -512,23 +606,32 @@ export function CanvasPreview({
             </p>
           ) : null}
           {motion === 'settled' && src ? (
-            <div className="canvas-frame" style={{ width: `min(100%, ${width}px)` }}>
-              <iframe
-                ref={frameRef}
-                title={name}
-                sandbox="allow-scripts"
-                referrerPolicy="no-referrer"
-                src={frameSrc || undefined}
-                onLoad={() => {
-                  if (!nonce) return
-                  const frame = frameRef.current?.contentWindow
-                  if (!frame || typeof frame.postMessage !== 'function') return
-                  frame.postMessage({ dsh: CHANNEL, nonce, type: 'hello' }, '*')
-                  if (anchor && isCanvasAnchor(anchor))
-                    frame.postMessage({ dsh: CHANNEL, nonce, type: 'focus', anchor }, '*')
-                  if (selectingRef.current) frame.postMessage({ dsh: CHANNEL, nonce, type: 'arm' }, '*')
-                }}
-              />
+            <div
+              className="canvas-fit"
+              data-mode={fit ? 'fit' : 'actual'}
+              style={{ width: fitted.boxWidth, height: fitted.boxHeight }}
+            >
+              <div
+                className="canvas-frame"
+                style={{ width: fitted.frameWidth, height: fitted.frameHeight, transform: `scale(${fitted.scale})` }}
+              >
+                <iframe
+                  ref={frameRef}
+                  title={name}
+                  sandbox="allow-scripts"
+                  referrerPolicy="no-referrer"
+                  src={frameSrc || undefined}
+                  onLoad={() => {
+                    if (!nonce) return
+                    const frame = frameRef.current?.contentWindow
+                    if (!frame || typeof frame.postMessage !== 'function') return
+                    frame.postMessage({ dsh: CHANNEL, nonce, type: 'hello' }, '*')
+                    if (anchor && isCanvasAnchor(anchor))
+                      frame.postMessage({ dsh: CHANNEL, nonce, type: 'focus', anchor }, '*')
+                    if (selectingRef.current) frame.postMessage({ dsh: CHANNEL, nonce, type: 'arm' }, '*')
+                  }}
+                />
+              </div>
             </div>
           ) : null}
         </div>
@@ -564,19 +667,25 @@ function frameAddress(src: string, nonce: string, page: string, reload: number, 
   return anchor && isCanvasAnchor(anchor) ? `${located}#${anchor}` : located
 }
 
+function standaloneUrl(src: string, page: string): string {
+  const match = /^\/dsh-bot\/canvas-media\/([A-Za-z0-9_-]{20,128})\/([1-9]\d{0,8})\//.exec(src.split('?')[0] ?? '')
+  if (!match || !isCanvasPage(page)) return ''
+  return `/dsh-bot/canvas-view/${match[1]}/${match[2]}/${page}`
+}
+
 function freshNonce(): string {
   const bytes = new Uint8Array(16)
   crypto.getRandomValues(bytes)
   return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
-function viewportRect(frame: HTMLIFrameElement | null, value: unknown): DOMRect | null {
+function viewportRect(frame: HTMLIFrameElement | null, value: unknown, scale: number): DOMRect | null {
   if (!frame || !value || typeof value !== 'object') return null
   const row = value as { x?: unknown; y?: unknown; width?: unknown; height?: unknown }
   if (typeof row.x !== 'number' || typeof row.y !== 'number') return null
   if (typeof row.width !== 'number' || typeof row.height !== 'number') return null
   const box = frame.getBoundingClientRect()
-  return new DOMRect(box.left + row.x, box.top + row.y, row.width, row.height)
+  return new DOMRect(box.left + row.x * scale, box.top + row.y * scale, row.width * scale, row.height * scale)
 }
 
 function flyToComposer(from: DOMRect | null, label: string): Promise<void> {

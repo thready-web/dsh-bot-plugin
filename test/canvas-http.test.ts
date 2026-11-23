@@ -20,7 +20,8 @@ const bundled = spawnSync(
 )
 if (bundled.status !== 0) throw new Error('canvas inspector bundle failed')
 
-const html = '<!doctype html><link rel="stylesheet" href="styles.css"><img src="hero.png" alt=""></html>'
+const html =
+  '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><img src="hero.png" alt=""></body></html>'
 const css = 'body{color:#111}'
 const png = Buffer.from('89504e470d0a1a0a00000000', 'hex')
 
@@ -139,6 +140,27 @@ test('canvas media trusts the capability token and ignores the login gate', asyn
     assert.equal(notHtml.status, 400)
     assert.equal(inspectHtml.includes('<script'), true)
     assert.equal((inspectHtml.match(/<script/g) ?? []).length, 1)
+    const view = await fetch(`${origin}/dsh-bot/canvas-view/${token.token}/1/index.html`)
+    assert.equal(view.status, 200)
+    assert.equal(view.headers.get('content-type'), 'text/html; charset=utf-8')
+    const viewPolicy = view.headers.get('content-security-policy') ?? ''
+    assert.match(viewPolicy, /frame-ancestors 'none'/)
+    assert.match(viewPolicy, /(?:^|; )sandbox(?:;|$)/)
+    assert.doesNotMatch(viewPolicy, /allow-scripts/)
+    assert.doesNotMatch(viewPolicy, /canvas-inspector/)
+    const viewHtml = await view.text()
+    assert.match(viewHtml, /<title>Poster · v1<\/title>/)
+    assert.match(viewHtml, /<meta name="viewport" content="width=device-width, initial-scale=1">/)
+    assert.equal((viewHtml.match(/<script/g) ?? []).length, 0)
+    assert.equal(viewHtml.includes('<img src="hero.png"'), true)
+    const viewHead = await fetch(`${origin}/dsh-bot/canvas-view/${token.token}/1/index.html`, { method: 'HEAD' })
+    assert.equal(viewHead.status, 200)
+    const viewCss = await fetch(`${origin}/dsh-bot/canvas-view/${token.token}/1/styles.css`)
+    assert.equal(viewCss.status, 400)
+    const viewOtherRevision = await fetch(`${origin}/dsh-bot/canvas-view/${token.token}/2/index.html`)
+    assert.equal(viewOtherRevision.status, 401)
+    const viewAnon = await fetch(`${origin}/dsh-bot/canvas-view/${'a'.repeat(24)}/1/index.html`)
+    assert.equal(viewAnon.status, 401)
     const missingNonce = await fetch(`${origin}/dsh-bot/canvas-inspect/${token.token}/1`)
     assert.equal(missingNonce.status, 400)
     const inspector = await fetch(`${origin}/dsh-bot/canvas-inspector.js`)

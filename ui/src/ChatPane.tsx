@@ -299,6 +299,23 @@ const ComposerDock = forwardRef<HTMLDivElement, { lift: boolean; hidden: boolean
       window.addEventListener('resize', place)
       return () => window.removeEventListener('resize', place)
     }, [lift])
+    // The canvas stage reserves this height so the floating composer does not cover the design.
+    useLayoutEffect(() => {
+      if (!lift) return
+      const node = ref && typeof ref === 'object' ? ref.current : null
+      if (!node) return
+      const root = document.documentElement
+      const apply = () => root.style.setProperty('--composer-lift', `${node.offsetHeight}px`)
+      apply()
+      const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(apply)
+      observer?.observe(node)
+      window.addEventListener('resize', apply)
+      return () => {
+        observer?.disconnect()
+        window.removeEventListener('resize', apply)
+        root.style.setProperty('--composer-lift', '0px')
+      }
+    }, [lift, hidden, ref])
     const node = (
       <div
         ref={ref}

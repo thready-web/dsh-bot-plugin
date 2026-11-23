@@ -35,7 +35,7 @@ import {
   registerBackupRoutes,
 } from './bot-session-snapshot/index.ts'
 import { handleMemoryRoute } from './memory-catalog.ts'
-import { handleCanvasApi, serveCanvasInspect, serveCanvasMedia } from './canvas-http.ts'
+import { handleCanvasApi, serveCanvasInspect, serveCanvasMedia, serveCanvasView } from './canvas-http.ts'
 import { openCanvasStore, type CanvasStore } from './canvas-store.ts'
 import { bindCanvasCards } from './card-log.ts'
 
@@ -214,6 +214,9 @@ export function registerHttp(
     const requestTarget = req.url ?? '/'
     if ((requestTarget.split('?')[0] ?? '').startsWith('/dsh-bot/canvas-media/')) {
       return serveCanvasMedia(req, res, requestTarget, canvas)
+    }
+    if ((requestTarget.split('?')[0] ?? '').startsWith('/dsh-bot/canvas-view/')) {
+      return serveCanvasView(req, res, requestTarget, canvas)
     }
     if (
       (requestTarget.split('?')[0] ?? '') === '/dsh-bot/canvas-inspector.js' ||

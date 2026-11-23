@@ -56,11 +56,19 @@ function scrub(el: InspectNode) {
   }
 }
 
-/** Scriptless design plus the host inspector. CSP stays with the caller. */
-export function composeInspect(
-  html: string,
-  options: { baseHref: string; nonce: string; parentOrigin: string; inspectorSrc: string; page?: string },
-): string {
+interface ComposeOptions {
+  baseHref: string
+  title?: string
+  head?: string[]
+  script?: string
+}
+
+function escapeText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/** Scriptless design, optionally with the host inspector. CSP stays with the caller. */
+function composeDocument(html: string, options: ComposeOptions): string {
   const { document } = parseHTML(html) as unknown as { document: InspectDocument }
   const sheets: string[] = []
   for (const node of Array.from(document.querySelectorAll('link, style'))) {
@@ -77,19 +85,41 @@ export function composeInspect(
     sheets.push(`<link rel="stylesheet" href="${escapeAttr(href)}">`)
   }
   scrub(document.body)
+  const title = options.title ? `<title>${escapeText(options.title)}</title>` : ''
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <base href="${escapeAttr(options.baseHref)}">
-<meta name="dsh-inspect-nonce" content="${escapeAttr(options.nonce)}">
-<meta name="dsh-parent-origin" content="${escapeAttr(options.parentOrigin)}">
-${options.page ? `<meta name="dsh-inspect-page" content="${escapeAttr(options.page)}">` : ''}
+${title}
+${(options.head ?? []).join('\n')}
 ${sheets.join('\n')}
 </head>
 <body>
 ${document.body.innerHTML}
-<script src="${escapeAttr(options.inspectorSrc)}"></script>
+${options.script ?? ''}
 </body>
 </html>`
+}
+
+/** The design inside the canvas modal, with the host inspection script. */
+export function composeInspect(
+  html: string,
+  options: { baseHref: string; nonce: string; parentOrigin: string; inspectorSrc: string; page?: string },
+): string {
+  return composeDocument(html, {
+    baseHref: options.baseHref,
+    head: [
+      `<meta name="dsh-inspect-nonce" content="${escapeAttr(options.nonce)}">`,
+      `<meta name="dsh-parent-origin" content="${escapeAttr(options.parentOrigin)}">`,
+      options.page ? `<meta name="dsh-inspect-page" content="${escapeAttr(options.page)}">` : '',
+    ],
+    script: `<script src="${escapeAttr(options.inspectorSrc)}"></script>`,
+  })
+}
+
+/** The same design in a standalone tab: no inspector, no scripts, no framing. */
+export function composeView(html: string, options: { baseHref: string; title?: string }): string {
+  return composeDocument(html, { baseHref: options.baseHref, title: options.title })
 }

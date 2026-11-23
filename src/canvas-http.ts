@@ -1,12 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { composeInspect } from './canvas-compose.ts'
+import { composeInspect, composeView } from './canvas-compose.ts'
 import { asStoreFailure, toolError, type ToolPayload } from './errors.ts'
 import { CANVAS_MAX_JSON_BYTES, normalizeCanvasPath, type CanvasFileInput, type CanvasStore } from './canvas-store.ts'
 
 const API = '/session-foundations/api/canvas'
 const MEDIA = '/dsh-bot/canvas-media/'
 const INSPECT = '/dsh-bot/canvas-inspect/'
+const VIEW = '/dsh-bot/canvas-view/'
 const INSPECTOR = '/dsh-bot/canvas-inspector.js'
 const CANVAS_ID = /^cnv_[A-Za-z0-9_-]{16}$/
 
@@ -322,12 +323,69 @@ export async function serveCanvasInspect(
   writeBody(res, req.method, 200, 'text/html; charset=utf-8', html, inspectPolicy(origin, prefix))
 }
 
+/**
+ * Standalone tab for one revision. The design is composed without the inspector,
+ * sandboxed without scripts, and refused inside a frame. Token only, like media.
+ */
+export async function serveCanvasView(
+  req: IncomingMessage,
+  res: ServerResponse,
+  requestUrl: string,
+  canvas: CanvasStore | null,
+) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    json(res, 405, toolError('VALIDATION', 'canvas view is read-only.'))
+    return
+  }
+  const parsed = parseCanvasDocument(requestUrl, VIEW)
+  if (!parsed) {
+    json(res, 400, toolError('VALIDATION', 'canvas view path is not allowed.'))
+    return
+  }
+  if (!canvas) {
+    json(res, 404, toolError('NOT_FOUND', 'No such canvas file.'))
+    return
+  }
+  const found = canvas.readMedia(parsed)
+  if (found.ok === false) {
+    json(res, found.code === 'NOT_FOUND' ? 404 : found.code === 'VALIDATION' ? 400 : 401, found)
+    return
+  }
+  if (found.type !== 'text/html') {
+    json(res, 404, toolError('NOT_FOUND', 'No such canvas file.'))
+    return
+  }
+  const origin = requestOrigin(req)
+  if (origin === '') {
+    json(res, 400, toolError('VALIDATION', 'canvas view needs a host.'))
+    return
+  }
+  const title = canvas.canvasRow(found.canvasId)?.title ?? ''
+  const prefix = `${origin}${MEDIA}${parsed.token}/${parsed.revision}/`
+  const html = composeView(found.bytes.toString('utf8'), {
+    baseHref: prefix,
+    title: title === '' ? `Canvas · v${parsed.revision}` : `${title} · v${parsed.revision}`,
+  })
+  writeBody(res, req.method, 200, 'text/html; charset=utf-8', html, viewPolicy(prefix))
+}
+
 export function parseCanvasInspect(requestUrl: string): { token: string; revision: number; path: string } | null {
+  return parseCanvasDocument(requestUrl, INSPECT)
+}
+
+export function parseCanvasView(requestUrl: string): { token: string; revision: number; path: string } | null {
+  return parseCanvasDocument(requestUrl, VIEW)
+}
+
+function parseCanvasDocument(
+  requestUrl: string,
+  prefix: string,
+): { token: string; revision: number; path: string } | null {
   const pathname = (requestUrl.split('?')[0] ?? '').replace(/\/+$/, '')
-  if (!pathname.startsWith(INSPECT)) return null
+  if (!pathname.startsWith(prefix)) return null
   if (pathname.includes('\\') || pathname.includes('%') || pathname.includes('\0')) return null
   if (pathname.split('/').includes('..') || pathname.split('/').includes('.')) return null
-  const parts = pathname.slice(INSPECT.length).split('/')
+  const parts = pathname.slice(prefix.length).split('/')
   if (parts.length < 2) return null
   const [token, revision, ...rest] = parts
   if (!token || !/^[A-Za-z0-9_-]{20,128}$/.test(token)) return null
@@ -348,6 +406,19 @@ function inspectPolicy(origin: string, prefix: string) {
     `frame-ancestors ${origin}`,
     "form-action 'none'",
     'sandbox allow-scripts',
+  ].join('; ')
+}
+
+function viewPolicy(prefix: string) {
+  return [
+    "default-src 'none'",
+    `base-uri ${prefix}`,
+    `img-src ${prefix}`,
+    `style-src ${prefix} 'unsafe-inline'`,
+    `font-src ${prefix}`,
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+    'sandbox',
   ].join('; ')
 }
 

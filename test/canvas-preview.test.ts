@@ -43,6 +43,16 @@ const compiled = await build({
 
 function harness() {
   const { window, document } = parseHTML('<html><body><main></main></body></html>')
+  window.matchMedia = (query: string) => ({
+    matches: /max-width|pointer/.test(query),
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent: () => false,
+  })
   const saved = new Map<string, PropertyDescriptor | undefined>()
   for (const [key, value] of Object.entries({
     window,
@@ -114,6 +124,44 @@ test('the canvas modal keeps one inspect document and does not reload when selec
     assert.equal(frame.getAttribute('sandbox'), 'allow-scripts')
     assert.equal(frame.hasAttribute('srcdoc'), false)
     assert.equal((frame.getAttribute('sandbox') ?? '').includes('allow-same-origin'), false)
+    const windowLink = view.document.querySelector('a.canvas-new-window')
+    assert.ok(windowLink)
+    assert.equal(windowLink.getAttribute('href'), '/dsh-bot/canvas-view/token-token-token-token/2/index.html')
+    assert.equal(windowLink.getAttribute('target'), '_blank')
+    assert.equal(windowLink.getAttribute('rel'), 'noopener noreferrer')
+    assert.equal(windowLink.getAttribute('aria-label'), 'Open in new window')
+    assert.equal(windowLink.getAttribute('title'), 'Open this revision in its own tab')
+    assert.equal(windowLink.parentElement?.classList.contains('canvas-toolbar-title'), true)
+    const fitBox = view.document.querySelector('.canvas-fit') as unknown as HTMLElement | null
+    assert.ok(fitBox)
+    assert.equal(fitBox.getAttribute('data-mode'), 'fit')
+    assert.equal(fitBox.style.width, '1280px')
+    const frameBox = view.document.querySelector('.canvas-frame') as unknown as HTMLElement | null
+    assert.equal(frameBox?.style.width, '1280px')
+    assert.equal(frameBox?.style.height, '860px')
+    assert.equal(frameBox?.style.transform, 'scale(1)')
+    const scaleButton = [...view.document.querySelectorAll('button')].find(
+      button => button.textContent === 'Actual size',
+    )
+    assert.ok(scaleButton)
+    assert.equal(scaleButton.getAttribute('aria-pressed'), 'true')
+    const stage = view.document.querySelector('.canvas-stage') as unknown as HTMLElement
+    Object.defineProperty(stage, 'clientWidth', { value: 366, configurable: true })
+    Object.defineProperty(stage, 'clientHeight', { value: 600, configurable: true })
+    await view.act(() => {
+      view.window.dispatchEvent(new view.window.Event('resize'))
+    })
+    assert.equal(fitBox.style.width, '350px')
+    assert.equal(fitBox.style.height, `${860 * (350 / 1280)}px`)
+    assert.equal(frameBox?.style.transform, `scale(${350 / 1280})`)
+    await view.act(() => scaleButton?.click())
+    assert.equal(view.document.querySelector('.canvas-fit')?.getAttribute('data-mode'), 'actual')
+    assert.equal(frameBox?.style.height, '600px')
+    assert.equal(frameBox?.style.transform, 'scale(1)')
+    assert.equal(
+      [...view.document.querySelectorAll('button')].some(button => button.textContent === 'Fit to screen'),
+      true,
+    )
     const select = [...view.document.querySelectorAll('button')].find(
       button => button.getAttribute('aria-label') === 'Select',
     )
