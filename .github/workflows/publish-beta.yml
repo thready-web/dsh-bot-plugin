@@ -32,8 +32,8 @@ jobs:
             package-lock.json
             ui/package-lock.json
 
-      - name: Use an npm CLI that supports trusted publishing
-        run: npm install --global npm@^11.5.1
+      - name: Use an npm CLI that supports trusted publishing and dist-tags
+        run: npm install --global npm@^12.2.0
 
       - name: Install
         run: |
@@ -54,6 +54,8 @@ jobs:
           echo "publishing ${version}"
           # setup-node and the GitHub token must not authenticate this publish.
           # Trusted publishing uses the OIDC token only when NODE_AUTH_TOKEN is unset.
+          # The latest dist-tag needs the same OIDC path and the npm trusted
+          # publisher's "Allow npm dist-tag" permission.
           unset NODE_AUTH_TOKEN
           for attempt in 1 2 3 4 5; do
             set +e
@@ -62,10 +64,27 @@ jobs:
             set -e
             printf '%s\n' "$log"
             if [ "$code" -eq 0 ]; then
+              version=$(node -p "require('./package.json').version")
+              # OIDC trusted publishing can manage dist-tags when the npm trusted
+              # publisher allows it. The registry may need a moment before it
+              # accepts a tag for the version that was just published.
+              tagged=no
+              for attempt in 1 2 3 4 5 6; do
+                if npm dist-tag add "@thready-web/dsh-bot-plugin@${version}" latest; then
+                  tagged=yes
+                  break
+                fi
+                sleep 15
+              done
+              if [ "$tagged" != yes ]; then
+                echo "Could not point latest at ${version}." >&2
+                echo "Enable 'Allow npm dist-tag' on the npm trusted publisher for this workflow." >&2
+                exit 1
+              fi
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git add package.json package-lock.json
-              git diff --cached --quiet || git commit -m "release: $(node -p 'require(\"./package.json\").version') [skip ci]"
+              git diff --cached --quiet || git commit -m "release: ${version} [skip ci]"
               git push origin HEAD
               exit 0
             fi
