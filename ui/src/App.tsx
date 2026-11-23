@@ -72,9 +72,14 @@ import { PresenceMark } from './presence/PresenceMark'
 import { faceGlyph, focusStatus, presenceForRow, presenceFromThread, stampFor, viewFor } from './presence/source'
 import type { SettledStamp } from './presence/lib/index.ts'
 import { Transcript } from './transcript'
+import { isOverlayEntry } from './overlay-history.ts'
+import { useOverlayHistory } from './use-overlay-history.ts'
 
 /** Look toward the row label. A full turn, so the face answers the item and not only the icon. */
 const ROW_LOOK = { x: 1, y: 0 }
+
+/** One delete request, from its first progress frame to the final cache cleanup. */
+type DeleteJob = { id: string; phase: string; percent: number; error: string }
 
 function hashSession(): string {
   const parts = location.hash.replace(/^#\/?/, '').split('/')
@@ -208,7 +213,7 @@ export function App() {
   const [reason, setReason] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [sessionMenu, setSessionMenu] = useState<{ id: string; x: number; y: number } | null>(null)
-  const [deleteJob, setDeleteJob] = useState<{ id: string; phase: string; percent: number; error: string } | null>(null)
+  const [deleteJob, setDeleteJob] = useState<DeleteJob | null>(null)
   const [settings, setSettings] = useState<'permission' | 'authorization' | 'cua' | 'memory' | 'snapshot' | null>(null)
   const [approvals, setApprovals] = useState<ToolApprovalView[]>([])
   const [questionWaits, setQuestionWaits] = useState<
@@ -216,6 +221,7 @@ export function App() {
   >({})
   const [cuaAvailable, setCuaAvailable] = useState(false)
   const [authPending, setAuthPending] = useState(false)
+  const [authDismissed, setAuthDismissed] = useState(false)
   const [authorization, setAuthorization] = useState<Record<string, unknown>>({})
   const [authorizationCatalog] = useState(() =>
     createAuthorizationCatalog(async () => {
@@ -243,6 +249,24 @@ export function App() {
   const [workNow, setWorkNow] = useState(() => Date.now())
   const [workerOwner, setWorkerOwner] = useState(() => rememberedOwner(hashSession()))
   const [awakeId, setAwakeId] = useState('')
+
+  const authPromptKey = JSON.stringify(
+    Array.isArray(authorization.prompts)
+      ? (authorization.prompts as Array<{ promptId?: unknown }>).map(item =>
+          item && typeof item === 'object' && typeof item.promptId === 'string' ? item.promptId : '',
+        )
+      : [],
+  )
+  const authAutoOpen = authPending && settings === null && !authDismissed
+  const overlayIds: string[] = []
+  if (canvasOpen) overlayIds.push('canvas')
+  if (deleteJob) overlayIds.push('delete')
+  if (setupOpen) overlayIds.push('setup')
+  if (settings) overlayIds.push(`settings:${settings}`)
+  else if (authAutoOpen) overlayIds.push('settings:authorization')
+  if (filesOpen) overlayIds.push('files')
+  if (toolCallId) overlayIds.push('tool')
+  useOverlayHistory(overlayIds, closeOverlay)
 
   useEffect(() => {
     setApprovals([])
@@ -315,11 +339,18 @@ export function App() {
   useEffect(() => {
     void api('/cua').then(response => setCuaAvailable(response.body.available === true))
   }, [])
+  useEffect(() => {
+    // A new authorization prompt reopens the panel even if the previous one
+    // was closed with Back.
+    setAuthDismissed(false)
+  }, [authPromptKey])
   const chatRef = useRef<ChatPaneHandle>(null)
   const draftRef = useRef<HTMLTextAreaElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const sessionMenuRef = useRef<HTMLDivElement>(null)
   const deletedSessions = useRef(new Set<string>())
+  const deleteToken = useRef(0)
+  const deleteHidden = useRef(false)
   const localSeq = useRef(0)
   const outboundRef = useRef<Array<{ sessionId: string; text: string; seq: number; clientMessageId: string }>>([])
   const outboundStarted = useRef(new Set<string>())
@@ -373,6 +404,45 @@ export function App() {
     : t('app.title')
   const nativeHref = sessionId ? `/#/s/${encodeURIComponent(sessionId)}` : '/'
 
+  function closeSettings() {
+    // An auto-opened authorization prompt stays dismissed until the next
+    // prompt arrives; otherwise closing it would re-open it immediately.
+    if (authPending) setAuthDismissed(true)
+    setSettings(null)
+  }
+
+  function dismissDelete() {
+    // The request keeps running. Suppress its next progress frame so the modal
+    // (and a fresh history entry) does not come straight back on screen.
+    deleteHidden.current = true
+    setDeleteJob(null)
+  }
+
+  function closeOverlay(id: string) {
+    if (id === 'files') {
+      setFilesOpen(false)
+      setFilePreview(null)
+      return
+    }
+    if (id === 'tool') {
+      setToolCallId(null)
+      return
+    }
+    if (id === 'canvas') {
+      setCanvasDismiss(value => value + 1)
+      return
+    }
+    if (id === 'setup') {
+      setSetupOpen(false)
+      return
+    }
+    if (id === 'delete') {
+      dismissDelete()
+      return
+    }
+    if (id.startsWith('settings:')) closeSettings()
+  }
+
   function selectSession(id: string) {
     setBotChat(false)
     setSessionId(id)
@@ -411,7 +481,7 @@ export function App() {
     setFilePreview(null)
     setToolCallId(null)
     const state = history.state as { kind?: string } | null
-    if (state?.kind === 'worker') {
+    if (state?.kind === 'worker' && !isOverlayEntry(history.state)) {
       history.back()
       return
     }
@@ -653,6 +723,12 @@ export function App() {
 
   useEffect(() => {
     const onHash = () => {
+      const next = hashSession()
+      const owner = rememberedOwner(next)
+      if (owner) setWorkerOwner(owner)
+      // A bare `/o/<depth>` change is the overlay stack moving, not a Session
+      // move: let the overlay history hook peel the right drawer or dialog.
+      if (next === sessionRef.current) return
       setBotChat(false)
       setMenuOpen(false)
       setFilesOpen(false)
@@ -661,9 +737,6 @@ export function App() {
       setTask(null)
       setReason('')
       setSetupNote('')
-      const next = hashSession()
-      const owner = rememberedOwner(next)
-      if (owner) setWorkerOwner(owner)
       setSessionId(next)
     }
     window.addEventListener('hashchange', onHash)
@@ -993,17 +1066,17 @@ export function App() {
     return event.error || t('session.deleteFailed')
   }
 
-  async function finishDelete(id: string, event: DeleteEvent) {
+  async function finishDelete(id: string, event: DeleteEvent, token: number, show: (job: DeleteJob) => void) {
     if (event.phase === 'error') {
-      setDeleteJob({ id, phase: 'error', percent: event.percent, error: deleteError(event) })
+      show({ id, phase: 'error', percent: event.percent, error: deleteError(event) })
       return false
     }
     if (event.phase !== 'done') {
-      setDeleteJob({ id, phase: event.phase, percent: event.percent, error: t('session.deleteFailed') })
+      show({ id, phase: event.phase, percent: event.percent, error: t('session.deleteFailed') })
       return false
     }
     const gone = event.deletedSessionIds?.length ? event.deletedSessionIds : [id]
-    setDeleteJob({ id, phase: 'cache', percent: 94, error: '' })
+    show({ id, phase: 'cache', percent: 94, error: '' })
     try {
       await forgetLogCache(gone)
     } catch {
@@ -1011,13 +1084,21 @@ export function App() {
     }
     for (const sessionId of gone) forgetSession(sessionId)
     setSessionNote('')
-    setDeleteJob(null)
+    if (token === deleteToken.current) {
+      deleteHidden.current = false
+      setDeleteJob(null)
+    }
     return true
   }
 
   async function runDelete(id: string) {
     if (deleteJob && deleteJob.error === '' && deleteJob.id !== id) return false
-    setDeleteJob({ id, phase: 'fence', percent: 8, error: '' })
+    const token = ++deleteToken.current
+    deleteHidden.current = false
+    const show = (job: DeleteJob) => {
+      if (deleteToken.current === token && !deleteHidden.current) setDeleteJob(job)
+    }
+    show({ id, phase: 'fence', percent: 8, error: '' })
     try {
       const response = await fetch(`/dsh-bot/api/sessions/${encodeURIComponent(id)}/delete`, {
         method: 'POST',
@@ -1026,7 +1107,7 @@ export function App() {
       const type = response.headers.get('content-type') ?? ''
       if (!type.includes('ndjson')) {
         const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string }
-        setDeleteJob({
+        show({
           id,
           phase: 'error',
           percent: 8,
@@ -1036,22 +1117,23 @@ export function App() {
       }
       const last = await readDeleteEvents(response, event => {
         if (event.phase === 'done') return
-        setDeleteJob({
+        show({
           id,
           phase: event.phase,
           percent: event.percent,
           error: event.phase === 'error' ? deleteError(event) : '',
         })
       })
-      if (!last) return recoverDelete(id)
-      return finishDelete(id, last)
+      if (!last) return recoverDelete(id, token, show)
+      return finishDelete(id, last, token, show)
     } catch {
-      return recoverDelete(id)
+      return recoverDelete(id, token, show)
     }
   }
 
-  async function recoverDelete(id: string) {
+  async function recoverDelete(id: string, token: number, show: (job: DeleteJob) => void) {
     for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (token !== deleteToken.current) return false
       const result = await api(`/sessions/${encodeURIComponent(id)}/delete`)
       const phase = typeof result.body.phase === 'string' ? result.body.phase : 'absent'
       if (phase === 'absent') break
@@ -1064,13 +1146,13 @@ export function App() {
           : {}),
       }
       if (phase !== 'done' && phase !== 'error') {
-        setDeleteJob({ id, phase, percent: event.percent, error: '' })
+        show({ id, phase, percent: event.percent, error: '' })
         await new Promise(resolve => setTimeout(resolve, 400))
         continue
       }
-      return finishDelete(id, event)
+      return finishDelete(id, event, token, show)
     }
-    setDeleteJob({ id, phase: 'error', percent: 8, error: t('session.deleteFailed') })
+    show({ id, phase: 'error', percent: 8, error: t('session.deleteFailed') })
     return false
   }
 
@@ -1503,7 +1585,7 @@ export function App() {
                     aria-pressed={settings === 'memory'}
                     onClick={() => {
                       if (settings === 'memory') {
-                        setSettings(null)
+                        closeSettings()
                         return
                       }
                       setFilesOpen(false)
@@ -1759,6 +1841,7 @@ export function App() {
                     role="menuitem"
                     onClick={() => {
                       setMenuOpen(false)
+                      setAuthDismissed(false)
                       setSettings('authorization')
                     }}
                   >
@@ -1904,16 +1987,12 @@ export function App() {
         </ImageFailureScope>
       </ChatPane>
       {settings === 'permission' && sessionId ? (
-        <PermissionPanel sessionId={sessionId} current={thread.preset} onClose={() => setSettings(null)} />
+        <PermissionPanel sessionId={sessionId} current={thread.preset} onClose={closeSettings} />
       ) : null}
-      {settings === 'authorization' || (authPending && settings == null) ? (
-        <AuthorizationPanel
-          authorization={authorization}
-          catalog={authorizationCatalog}
-          onClose={() => setSettings(null)}
-        />
+      {settings === 'authorization' || authAutoOpen ? (
+        <AuthorizationPanel authorization={authorization} catalog={authorizationCatalog} onClose={closeSettings} />
       ) : null}
-      {settings === 'cua' && cuaAvailable ? <CuaPanel onClose={() => setSettings(null)} /> : null}
+      {settings === 'cua' && cuaAvailable ? <CuaPanel onClose={closeSettings} /> : null}
       {sessionId ? (
         <FileBrowser
           key={sessionId}
@@ -1927,10 +2006,10 @@ export function App() {
         />
       ) : null}
       {sessionId && !botChat ? (
-        <MemoryPanel open={settings === 'memory'} sessionId={sessionId} onClose={() => setSettings(null)} />
+        <MemoryPanel open={settings === 'memory'} sessionId={sessionId} onClose={closeSettings} />
       ) : null}
       {settings === 'snapshot' && sessionId ? (
-        <SnapshotPanel sessionId={sessionId} isBot={isBotSession} onClose={() => setSettings(null)} />
+        <SnapshotPanel sessionId={sessionId} isBot={isBotSession} onClose={closeSettings} />
       ) : null}
       {deleteJob
         ? createPortal(

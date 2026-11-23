@@ -37,6 +37,8 @@ In `cordis.patch.yml` every new entry must be wrapped in `- insert:`:
 
 Start the host with `dsh --profile <name> --host 127.0.0.1 --port <port> --no-open` after the patch lists these entries. The official client is `/`. The workbench is `/dsh-bot/`. From the `dsh-plugins` repository, `npx dsh-bot` writes that patch and starts the process.
 
+The official client's router (`client.js`) keeps Session, panel and overlay depth in the hash. The workbench has its own version for `/dsh-bot/`: opening the file, memory or tool drawer, a settings sheet, the new-session sheet, the canvas preview or the delete dialog pushes one history entry (`#/s/<id>/o/<depth>`); Back closes the top overlay one step at a time, and closing it with the app's own control rewinds that entry. The policy lives in `ui/src/overlay-history.ts` and is wired to React in `ui/src/use-overlay-history.ts`.
+
 ## Main-session budget
 
 A bot main session may do the work itself (bash, write, ...) or hand it to a worker with `foundations_dispatch`. The host keeps a runaway guard on each main turn:
