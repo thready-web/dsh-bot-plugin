@@ -301,8 +301,16 @@ function realDirectory(filePath: string): { path: string | null; reason: '' | 'm
 
 function isForbiddenLocation(filePath: string): boolean {
   if (filePath === sep) return true
-  const etc = `${sep}etc`
-  return filePath === etc || filePath.startsWith(`${etc}${sep}`)
+  const roots = new Set([`${sep}etc`])
+  try {
+    roots.add(realpathSync(`${sep}etc`))
+  } catch {
+    /* keep the literal path */
+  }
+  for (const root of roots) {
+    if (filePath === root || filePath.startsWith(`${root}${sep}`)) return true
+  }
+  return false
 }
 
 function inside(root: string, target: string): boolean {
