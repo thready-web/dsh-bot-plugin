@@ -475,7 +475,7 @@ html.files-resizing {
   opacity: 0;
   transition: opacity 200ms ease;
 }
-.presence-live[data-ready='true'] {
+.presence-live[data-ready="true"] {
   opacity: 1;
 }
 .me {
@@ -2808,12 +2808,12 @@ button.chip {
   border: 1.5px solid var(--tertiary);
   border-radius: 3px;
 }
-.todo-check[data-state='completed'] {
+.todo-check[data-state="completed"] {
   background: #22c55e;
   border-color: #22c55e;
 }
-.todo-check[data-state='completed']::after {
-  content: '';
+.todo-check[data-state="completed"]::after {
+  content: "";
   position: absolute;
   left: 3.5px;
   top: 1px;
@@ -2823,11 +2823,11 @@ button.chip {
   border-width: 0 1.5px 1.5px 0;
   transform: rotate(45deg);
 }
-.todo-check[data-state='in_progress'] {
+.todo-check[data-state="in_progress"] {
   border-color: #22c55e;
 }
-.todo-check[data-state='in_progress']::after {
-  content: '';
+.todo-check[data-state="in_progress"]::after {
+  content: "";
   position: absolute;
   left: 2px;
   right: 2px;
@@ -2836,11 +2836,11 @@ button.chip {
   background: #22c55e;
   border-radius: 1px;
 }
-.activity-todos li[data-todo='completed'] .todo-content,
-.activity-todos li[data-todo='cancelled'] .todo-content {
+.activity-todos li[data-todo="completed"] .todo-content,
+.activity-todos li[data-todo="cancelled"] .todo-content {
   color: var(--tertiary);
 }
-.activity-todos li[data-todo='cancelled'] .todo-content {
+.activity-todos li[data-todo="cancelled"] .todo-content {
   text-decoration: line-through;
 }
 /* Wrap only activity diffs; leave Markdown code blocks and tables unchanged. */
@@ -2989,20 +2989,20 @@ button.tool-detail-head-row {
   background: #22c55e;
   flex: none;
 }
-.tool-detail-dot[data-state='failed'] {
+.tool-detail-dot[data-state="failed"] {
   background: #ef4444;
 }
-.tool-detail-dot[data-state='cancelled'],
-.tool-detail-dot[data-state='unknown'] {
+.tool-detail-dot[data-state="cancelled"],
+.tool-detail-dot[data-state="unknown"] {
   background: #a1a1aa;
 }
-.tool-detail-dot[data-state='preparing'],
-.tool-detail-dot[data-state='waiting'],
-.tool-detail-dot[data-state='running'],
-.tool-detail-dot[data-state='worker'] {
+.tool-detail-dot[data-state="preparing"],
+.tool-detail-dot[data-state="waiting"],
+.tool-detail-dot[data-state="running"],
+.tool-detail-dot[data-state="worker"] {
   background: #f59e0b;
 }
-.tool-detail-dot[data-state='background'] {
+.tool-detail-dot[data-state="background"] {
   background: #94a3b8;
 }
 .tool-detail-kicker {

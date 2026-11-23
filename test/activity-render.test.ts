@@ -164,7 +164,9 @@ test('SSR: todo rows show real items, not todo_write duplicated as its own summa
   assert.ok(html.includes('Update plan'))
   assert.ok(html.includes('Scaffold tea') && html.includes('Run tests'))
   assert.ok(html.includes('1/2'))
-  assert.ok(html.includes('todo-check') && html.includes('data-state="completed"') && html.includes('data-state="in_progress"'))
+  assert.ok(
+    html.includes('todo-check') && html.includes('data-state="completed"') && html.includes('data-state="in_progress"'),
+  )
   assert.ok(!html.includes('>completed<') && !html.includes('>in_progress<'))
   assert.ok(!html.includes('todo_write · todo_write'))
 })
@@ -252,7 +254,11 @@ test('SSR: long foundation titles sit above the result', () => {
   const remembered = renderExpandedTool!({
     segment: tool('remember', {
       name: 'foundations_remember',
-      args: JSON.stringify({ target: 'fact', content: '咖啡卡片的图形应保持在大约原来的一半宽。', idempotencyKey: 'remember-cup' }),
+      args: JSON.stringify({
+        target: 'fact',
+        content: '咖啡卡片的图形应保持在大约原来的一半宽。',
+        idempotencyKey: 'remember-cup',
+      }),
       result: '{"ok":true,"id":3}',
       resultReceived: true,
       status: 'succeeded',

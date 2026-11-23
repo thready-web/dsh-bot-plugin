@@ -228,7 +228,11 @@ test('pending, connection and running status never auto-toggle an actions group'
     assert.equal(group().querySelectorAll('.tool-activity').length, 1)
     assert.doesNotMatch(group().textContent ?? '', /tool calls/)
     await h.act(() => fold().click())
-    await h.group({ segments: [tool('one', 'succeeded'), tool('two', 'succeeded')], pending: false, connectionPhase: 'live' })
+    await h.group({
+      segments: [tool('one', 'succeeded'), tool('two', 'succeeded')],
+      pending: false,
+      connectionPhase: 'live',
+    })
     assert.equal(group().getAttribute('data-open'), 'true')
     assert.equal(group().querySelectorAll('.tool-activity').length, 2)
   } finally {

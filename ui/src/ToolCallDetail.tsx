@@ -133,7 +133,8 @@ function PrimaryCard({
   if (kind === 'todo') return <TodoDetail segment={segment} view={view} t={t} />
   if (kind === 'canvas-read') return <CanvasReadDetail segment={segment} args={args} view={view} t={t} />
   if (kind === 'canvas-write') return <CanvasWriteDetail segment={segment} args={args} view={view} t={t} />
-  if (segment.name.toLowerCase() === 'canvas_publish') return <CanvasPublishDetail segment={segment} view={view} t={t} />
+  if (segment.name.toLowerCase() === 'canvas_publish')
+    return <CanvasPublishDetail segment={segment} view={view} t={t} />
   if (kind === 'work') return <WorkDetail segment={segment} args={args} view={view} t={t} />
   if (kind === 'memory') return <MemoryDetail segment={segment} args={args} view={view} t={t} />
   return <GenericDetail segment={segment} args={args} view={view} t={t} />
@@ -423,7 +424,9 @@ function WorkDetail({
       status={view.status}
       kicker={segment.name}
       title={title}
-      copyText={failure?.message || payloadCopy(failure ? '' : segment.result, [narrative, report].filter(Boolean).join('\n\n'))}
+      copyText={
+        failure?.message || payloadCopy(failure ? '' : segment.result, [narrative, report].filter(Boolean).join('\n\n'))
+      }
       copyLabel={t('activity.copy')}
       copiedLabel={t('activity.copied')}
     >
@@ -782,11 +785,15 @@ function toolFailure(result: string): ToolFailure | null {
 function callFailure(segment: ToolSegment, status: ToolStatus): ToolFailure | null {
   return (
     toolFailure(segment.result) ??
-    (status === 'failed' && segment.result.trim() ? { code: segment.errorCode ?? '', message: segment.result.trim() } : null)
+    (status === 'failed' && segment.result.trim()
+      ? { code: segment.errorCode ?? '', message: segment.result.trim() }
+      : null)
   )
 }
 
-function publishedCanvas(result: string): { id: string; title: string; revision: number | null; ticketId: string | null } | null {
+function publishedCanvas(
+  result: string,
+): { id: string; title: string; revision: number | null; ticketId: string | null } | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(result)
@@ -800,10 +807,18 @@ function publishedCanvas(result: string): { id: string; title: string; revision:
   const id = typeof record.canvasId === 'string' ? record.canvasId : typeof canvas?.id === 'string' ? canvas.id : ''
   if (!/^cnv_[A-Za-z0-9_-]{16}$/.test(id)) return null
   const revision =
-    typeof record.revision === 'number' ? record.revision : typeof canvas?.previewRevision === 'number' ? canvas.previewRevision : null
+    typeof record.revision === 'number'
+      ? record.revision
+      : typeof canvas?.previewRevision === 'number'
+        ? canvas.previewRevision
+        : null
   const title = typeof canvas?.title === 'string' ? canvas.title : typeof record.title === 'string' ? record.title : ''
   const ticketId =
-    typeof canvas?.ticketId === 'string' ? canvas.ticketId : typeof record.ticketId === 'string' ? record.ticketId : null
+    typeof canvas?.ticketId === 'string'
+      ? canvas.ticketId
+      : typeof record.ticketId === 'string'
+        ? record.ticketId
+        : null
   return { id, title, revision, ticketId }
 }
 
@@ -873,7 +888,11 @@ function hasVisibleJson(value: unknown): boolean {
 }
 
 function jsonCopy(value: unknown, indent = ''): string {
-  if (Array.isArray(value)) return value.map(item => jsonCopy(item, indent)).filter(Boolean).join('\n')
+  if (Array.isArray(value))
+    return value
+      .map(item => jsonCopy(item, indent))
+      .filter(Boolean)
+      .join('\n')
   if (value && typeof value === 'object') {
     return Object.entries(value as Record<string, unknown>)
       .flatMap(([key, item]) => {

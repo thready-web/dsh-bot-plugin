@@ -28,6 +28,12 @@ import { releaseLoadedAgent } from './inbox.ts'
 import { createLogSource } from './log/source.ts'
 import { createLogSnapshotService } from './log/snapshot-service.ts'
 import { dispatchLogRequest, probeConnection, registerLogRoutes } from './log/routes.ts'
+import {
+  createSnapshotStore,
+  dispatchBackupRequest,
+  incomingToFetchRequest,
+  registerBackupRoutes,
+} from './bot-session-snapshot/index.ts'
 import { handleMemoryRoute } from './memory-catalog.ts'
 import { handleCanvasApi, serveCanvasInspect, serveCanvasMedia } from './canvas-http.ts'
 import { openCanvasStore, type CanvasStore } from './canvas-store.ts'
@@ -60,8 +66,29 @@ export function registerHttp(
   const profileDir = ctx.profileContext?.dir || (storeDir !== '' ? dirname(storeDir) : '')
   const canvas: CanvasStore | null = storeDir === '' ? null : openCanvasStore(join(storeDir, 'canvas.sqlite'))
   if (canvas && storeDir !== '') bindCanvasCards(canvas, ctx, storeDir)
-  const logService = createLogSnapshotService(createLogSource(ctx))
+  const logSource = createLogSource(ctx)
+  const logService = createLogSnapshotService(logSource)
   const logOnConnection = registerLogRoutes(ctx, logService)
+  const backupStore =
+    storeDir === ''
+      ? null
+      : createSnapshotStore({
+          dataDir: storeDir,
+          source: logSource,
+          isBot: sessionId => engine.isBot(sessionId),
+        })
+  const backupOnConnection = !backupStore
+    ? false
+    : (() => {
+        const connection = probeConnection(ctx)
+        if (connection?.fetch?.register === undefined) return false
+        registerBackupRoutes(
+          route => connection.fetch!.register!(route),
+          backupStore,
+          fn => ctx.effect?.(fn),
+        )
+        return true
+      })()
   const persistence = ctx.sessionPersistence as { root?: unknown } | undefined
   const sessionsRoot = typeof persistence?.root === 'string' ? persistence.root : ''
   const desk =
@@ -200,6 +227,10 @@ export function registerHttp(
     const rawPath = url.pathname.replace(/\/+$/, '') || '/'
     if (!logOnConnection && rawPath.startsWith('/api/dsh-bot/log')) {
       const response = await dispatchLogRequest(logService, await asFetchRequest(req))
+      if (response) return sendFetchResponse(res, response)
+    }
+    if (!backupOnConnection && backupStore && rawPath.startsWith('/api/dsh-bot/backups')) {
+      const response = await dispatchBackupRequest(backupStore, await asFetchRequest(req))
       if (response) return sendFetchResponse(res, response)
     }
     if (rawPath === '/dsh-bot' || (rawPath.startsWith('/dsh-bot/') && !rawPath.startsWith('/dsh-bot/api'))) {
@@ -1174,16 +1205,7 @@ function serveDesk(
 }
 
 async function asFetchRequest(req: import('node:http').IncomingMessage) {
-  const host = req.headers.host ?? '127.0.0.1'
-  const url = `http://${host}${req.url ?? '/'}`
-  const headers = new Headers()
-  for (const [name, value] of Object.entries(req.headers)) {
-    if (typeof value === 'string') headers.set(name, value)
-    else if (Array.isArray(value)) {
-      for (const item of value) headers.append(name, item)
-    }
-  }
-  return new Request(url, { method: req.method ?? 'GET', headers })
+  return incomingToFetchRequest(req)
 }
 
 async function sendFetchResponse(res: import('node:http').ServerResponse, response: Response) {

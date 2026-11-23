@@ -13,6 +13,7 @@ import { work } from './work.ts'
 import { image } from './image.ts'
 import { memory } from './memory.ts'
 import { canvas } from './canvas.ts'
+import { snapshot } from './snapshot.ts'
 
 export type Locale = 'en' | 'zh'
 
@@ -31,6 +32,7 @@ const en = {
   ...image.en,
   ...memory.en,
   ...canvas.en,
+  ...snapshot.en,
 } as const
 
 const zh: Record<keyof typeof en, string> = {
@@ -48,6 +50,7 @@ const zh: Record<keyof typeof en, string> = {
   ...image.zh,
   ...memory.zh,
   ...canvas.zh,
+  ...snapshot.zh,
 }
 
 export type MessageKey = keyof typeof en

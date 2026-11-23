@@ -6,7 +6,7 @@ import {
   type PresenceThread,
   type PresenceView,
   type SettledStamp,
-} from '@tobs/bot-presence'
+} from './lib/index.ts'
 import type { ThreadState } from '../types'
 
 const RANK = ['failed', 'needs_user', 'waiting_budget', 'started', 'accepted', 'enqueued', 'delivered', 'ready']

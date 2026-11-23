@@ -1,4 +1,4 @@
-import type { PresenceState } from '@tobs/bot-presence'
+import type { PresenceState } from './presence/lib/index.ts'
 import { useEffect, useState } from 'react'
 import { currentActivity, type CurrentActivityInput } from './current-activity'
 import { useI18n } from './locale'

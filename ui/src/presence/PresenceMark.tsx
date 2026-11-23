@@ -1,4 +1,4 @@
-import { presenceColor, readPresenceEngine, type PresenceState } from '@tobs/bot-presence'
+import { presenceColor, readPresenceEngine, type PresenceState } from './lib/index.ts'
 import { useEffect, useRef, useState } from 'react'
 
 interface LiveHandle {
@@ -106,7 +106,7 @@ export function PresenceMark({
       return
     }
     let cancelled = false
-    void import('@tobs/bot-presence/engine')
+    void import('./lib/engine.ts')
       .then(mod => mod.renderStill({ sessionId, state: visual, color }))
       .then(markup => {
         if (cancelled) return
@@ -126,7 +126,7 @@ export function PresenceMark({
     const host = liveHostRef.current
     if (!host) return
     let dead = false
-    void import('@tobs/bot-presence/engine')
+    void import('./lib/engine.ts')
       .then(mod =>
         mod.mountLive(host, {
           sessionId,
@@ -183,11 +183,7 @@ export function PresenceMark({
       aria-hidden={label ? undefined : true}
     >
       <span ref={stillRef} className="presence-host presence-still" />
-      <span
-        ref={liveHostRef}
-        className="presence-host presence-live"
-        data-ready={liveReady ? 'true' : 'false'}
-      />
+      <span ref={liveHostRef} className="presence-host presence-live" data-ready={liveReady ? 'true' : 'false'} />
     </span>
   )
 }

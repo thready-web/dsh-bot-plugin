@@ -34,6 +34,7 @@ import { ImageFailureScope } from './ImageFailureScope'
 import { CurrentActivity } from './CurrentActivity'
 import { currentActivity } from './current-activity'
 import { MemoryPanel } from './MemoryPanel'
+import { SnapshotPanel } from './SnapshotPanel.tsx'
 import { ToolCallDrawer } from './ToolCallDrawer'
 import { CanvasScope } from './CanvasPreview'
 import { formatCanvasTarget, type CanvasChip } from './canvas-target'
@@ -68,7 +69,7 @@ import {
 import { BotDot, PermissionIcon, PlusIcon, SearchIcon, Status, hostText, statsLine } from './chrome'
 import { PresenceMark } from './presence/PresenceMark'
 import { faceGlyph, focusStatus, presenceForRow, presenceFromThread, stampFor, viewFor } from './presence/source'
-import type { SettledStamp } from '@tobs/bot-presence'
+import type { SettledStamp } from './presence/lib/index.ts'
 import { Transcript } from './transcript'
 
 /** Look toward the row label. A full turn, so the face answers the item and not only the icon. */
@@ -206,7 +207,7 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [sessionMenu, setSessionMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [deleteJob, setDeleteJob] = useState<{ id: string; phase: string; percent: number; error: string } | null>(null)
-  const [settings, setSettings] = useState<'permission' | 'authorization' | 'cua' | 'memory' | null>(null)
+  const [settings, setSettings] = useState<'permission' | 'authorization' | 'cua' | 'memory' | 'snapshot' | null>(null)
   const [approvals, setApprovals] = useState<ToolApprovalView[]>([])
   const [questionWaits, setQuestionWaits] = useState<
     Record<string, { remainingMs?: number; waitState?: UserQuestionWait }>
@@ -1723,6 +1724,19 @@ export function App() {
                     role="menuitem"
                     onClick={() => {
                       setMenuOpen(false)
+                      setFilesOpen(false)
+                      setFilePreview(null)
+                      setToolCallId(null)
+                      setSettings('snapshot')
+                    }}
+                  >
+                    {t('snapshot.open')}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false)
                       setSettings('permission')
                     }}
                   >
@@ -1902,6 +1916,9 @@ export function App() {
       ) : null}
       {sessionId && !botChat ? (
         <MemoryPanel open={settings === 'memory'} sessionId={sessionId} onClose={() => setSettings(null)} />
+      ) : null}
+      {settings === 'snapshot' && sessionId ? (
+        <SnapshotPanel sessionId={sessionId} isBot={isBotSession} onClose={() => setSettings(null)} />
       ) : null}
       {deleteJob
         ? createPortal(

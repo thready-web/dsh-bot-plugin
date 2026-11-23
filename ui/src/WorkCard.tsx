@@ -1,4 +1,4 @@
-import { derivePresence } from '@tobs/bot-presence'
+import { derivePresence } from './presence/lib/index.ts'
 import { useState } from 'react'
 import { Collapse } from './Collapse'
 import { PresenceMark } from './presence/PresenceMark'
