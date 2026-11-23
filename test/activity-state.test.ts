@@ -72,7 +72,9 @@ function harness() {
     requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0),
     cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
   }
-  Object.assign(window, { matchMedia: () => ({ matches: true }) })
+  Object.assign(window, {
+    matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
+  })
   // linkedom has no focus implementation; model browser focus and focusin so
   // the mounted dialog's own trap/restore handlers are exercised, not stubbed.
   let focused: Element | null = null
