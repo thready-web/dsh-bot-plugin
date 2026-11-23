@@ -133,6 +133,10 @@ test('activity: real shell commands, no-output, failure, background acknowledgem
     assert.equal(views[0]!.status, 'succeeded')
     assert.equal(views[1]!.status, 'succeeded')
     assert.equal(views[1]!.output, '(no output)')
+    assert.ok(
+      views[1]!.sandboxNotice === '' ||
+        views[1]!.sandboxNotice === 'landlock-run: partial enforcement (older Landlock ABI)',
+    )
     assert.equal(views[2]!.status, 'failed')
     assert.equal(views[2]!.exitCode, 7)
     assert.equal(views[3]!.status, 'background', 'acknowledgement must not report process completion')

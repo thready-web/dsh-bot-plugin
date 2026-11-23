@@ -264,6 +264,25 @@ test('command, description, multiline args, cwd and explicit exit status remain 
   )
 })
 
+test('the older Landlock ABI notice is not command output, and other stderr stays output', () => {
+  const notice = `landlock-run: partial enforcement (older Landlock ABI)`
+  const quiet = toolPresentation(tool({ resultReceived: true, result: `[stderr]\n${notice}` }))
+  assert.equal(quiet.output, '(no output)')
+  assert.equal(quiet.sandboxNotice, notice)
+  assert.equal(quiet.exitCode, null)
+  const trailing = toolPresentation(tool({ resultReceived: true, result: `[stderr]\n${notice}\n` }))
+  assert.equal(trailing.output, '(no output)')
+  assert.equal(trailing.sandboxNotice, notice)
+  const failed = toolPresentation(tool({ resultReceived: true, result: '[stderr]\npermission denied' }))
+  assert.equal(failed.output, '[stderr]\npermission denied')
+  assert.equal(failed.sandboxNotice, '')
+  const mixed = toolPresentation(
+    tool({ resultReceived: true, result: `[stderr]\n${notice}\n[stderr]\npermission denied` }),
+  )
+  assert.equal(mixed.sandboxNotice, '')
+  assert.equal(mixed.output.includes('permission denied'), true)
+})
+
 test('todo_write renders actual content and statuses, not guessed completion', () => {
   const view = toolPresentation(
     tool({

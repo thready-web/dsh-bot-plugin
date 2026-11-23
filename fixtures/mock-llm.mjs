@@ -1,5 +1,11 @@
 /** In-process mock provider for host tests. This is not a real model. */
 
+/** Bot sessions pin this effort before a turn. The host rejects the call when it is absent. */
+export const mockReasoning = {
+  efforts: [{ id: 'off', name: 'Off' }],
+  defaultEffort: 'off',
+}
+
 export const name = 'foundations-mock-llm'
 export const inject = ['llm']
 
@@ -23,6 +29,7 @@ export function apply(ctx) {
         id: 'mock-1',
         name: 'Foundations mock',
         inputModalities: ['text'],
+        reasoning: mockReasoning,
       }])
     },
     resolveModel(provider, model) {
@@ -32,6 +39,7 @@ export function apply(ctx) {
         name: 'Foundations mock',
         inputModalities: ['text'],
         context: { contextWindow: 128000 },
+        reasoning: mockReasoning,
       })
     },
     async prepareCall(provider, model, signal) {

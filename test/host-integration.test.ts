@@ -28,7 +28,9 @@ test('real DSH 0.2.2-rc.1 host: section, tools, isolation, restart, compaction',
 
   const home = mkdtempSync(join(tmpdir(), 'sf-dsh-home-'))
   const work = mkdtempSync(join(tmpdir(), 'sf-dsh-work-'))
-  writeFileSync('/tmp/sf-host-paths.txt', `${home}\n${work}\n`)
+  const pathFile = join(work, 'sf-host-paths.txt')
+  writeFileSync(pathFile, `${home}\n${work}\n`, { mode: 0o600 })
+  console.log(`HOST_PATHS ${pathFile}`)
   const patch = join(work, 'patch.yml')
   writeFileSync(
     patch,
@@ -154,10 +156,10 @@ test('real DSH 0.2.2-rc.1 host: section, tools, isolation, restart, compaction',
     )
     evidence.memoryA = memoryA
     evidence.memoryB = memoryB
-    assert.equal(
-      memoryA.facts.some((fact: any) => fact.content === 'The user is called Ada' && fact.status === 'active'),
-      true,
+    const adaActive = memoryA.facts.some(
+      (fact: any) => fact.content === 'The user is called Ada' && fact.status === 'active',
     )
+    assert.equal(adaActive, true, `sessionA has no active Ada fact; facts=${JSON.stringify(memoryA.facts ?? null)}`)
     assert.equal(memoryB.facts.length, 0)
     evidence.baseChecks.push('A5-foreign-session-ignored')
 

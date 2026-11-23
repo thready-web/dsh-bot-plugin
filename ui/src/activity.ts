@@ -353,6 +353,17 @@ export function callDetailText(detail: PresentedCall): string {
   return detail.text
 }
 
+/** The bundled landlock-run writes this when the kernel ABI is older. It is not the command's stdout. */
+export const LANDLOCK_ABI_NOTICE = 'landlock-run: partial enforcement (older Landlock ABI)'
+
+/** Keep one exact sandbox notice out of the command output. Any other stderr stays output. */
+export function commandOutput(result: string): { output: string; sandboxNotice: string } {
+  if (result === `[stderr]\n${LANDLOCK_ABI_NOTICE}` || result === `[stderr]\n${LANDLOCK_ABI_NOTICE}\n`) {
+    return { output: '(no output)', sandboxNotice: LANDLOCK_ABI_NOTICE }
+  }
+  return { output: result, sandboxNotice: '' }
+}
+
 export function toolPresentation(tool: ToolSegment, sessionCwd?: string, tickets: readonly WorkTicket[] = []) {
   const args = argsOf(tool.args)
   const result = argsOf(tool.result)
@@ -381,6 +392,7 @@ export function toolPresentation(tool: ToolSegment, sessionCwd?: string, tickets
         })
       : []
   const exit = shell ? /^\[exit code: (-?\d+)\]$/m.exec(tool.result) : null
+  const shown = shell ? commandOutput(tool.result) : { output: tool.result, sandboxNotice: '' }
   return {
     status,
     command,
@@ -391,7 +403,8 @@ export function toolPresentation(tool: ToolSegment, sessionCwd?: string, tickets
     title: tool.name === 'todo_write' ? 'todo_write' : tool.name,
     detail: callDetail(tool),
     args: formatArgs(tool.args),
-    output: tool.result,
+    output: shown.output,
+    sandboxNotice: shown.sandboxNotice,
     exitCode: exit ? Number(exit[1]) : null,
     ticket,
     ticketId,
