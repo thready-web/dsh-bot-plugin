@@ -14,6 +14,7 @@ import { image } from './image.ts'
 import { memory } from './memory.ts'
 import { canvas } from './canvas.ts'
 import { snapshot } from './snapshot.ts'
+import { pwa } from './pwa.ts'
 
 export type Locale = 'en' | 'zh'
 
@@ -33,6 +34,7 @@ const en = {
   ...memory.en,
   ...canvas.en,
   ...snapshot.en,
+  ...pwa.en,
 } as const
 
 const zh: Record<keyof typeof en, string> = {
@@ -51,6 +53,7 @@ const zh: Record<keyof typeof en, string> = {
   ...memory.zh,
   ...canvas.zh,
   ...snapshot.zh,
+  ...pwa.zh,
 }
 
 export type MessageKey = keyof typeof en
@@ -102,6 +105,7 @@ if (import.meta.hot) {
       './question.ts',
       './session.ts',
       './work.ts',
+      './pwa.ts',
     ],
     modules => {
       for (const mod of modules) {

@@ -5,6 +5,7 @@
       "src/**",
       "test/**",
       "ui/src/**",
+      "ui/pwa/**",
       "client.js",
       "scripts/**",
       "*.mjs",

@@ -1,11 +1,12 @@
 import react from '@vitejs/plugin-react'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
+import { pwaShellPlugin } from './pwa/build-shell.mjs'
 
 const repo = fileURLToPath(new URL('../../..', import.meta.url))
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), pwaShellPlugin()],
   base: '/dsh-bot/',
   build: {
     outDir: '../public',

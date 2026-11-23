@@ -4577,3 +4577,55 @@ button.tool-detail-head-row {
     padding-top: 8px;
   }
 }
+
+/* PWA shell: an offered update, never a silent swap. */
+.pwa-update {
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: min(calc(100vw - 24px), 460px);
+  padding: 10px 10px 10px 16px;
+  border-radius: var(--dsw-radius-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+}
+.pwa-update p {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.pwa-update-actions {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+.pwa-update button {
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  background: transparent;
+  color: var(--secondary);
+}
+.pwa-update button:hover,
+.pwa-update button:focus-visible {
+  background: var(--hover);
+  color: var(--ink);
+}
+.pwa-update .pwa-update-apply {
+  background: var(--send);
+  color: #fff;
+}
+.pwa-update .pwa-update-apply:hover,
+.pwa-update .pwa-update-apply:focus-visible {
+  background: var(--send-hover);
+  color: #fff;
+}

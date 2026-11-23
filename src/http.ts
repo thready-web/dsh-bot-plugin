@@ -1,11 +1,12 @@
 import { createReadStream, statSync, type ReadStream } from 'node:fs'
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http'
 import { connect as connectSocket } from 'node:net'
-import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { beginDelete, deleteStatus, type DeleteJob, type DeleteProgress } from './deleting.ts'
 import { createDesk, defaultSessionCwd, type DeskRequest } from './desk.ts'
+import { deskHeaders, deskPwaEnabled, deskPwaFileBlocked } from './desk-static.ts'
 import { dropSessions } from './runtime-registry.ts'
 import { executeDelete } from './session-delete-job.ts'
 import { serveWorkspaceImage } from './workspace-image.ts'
@@ -1081,20 +1082,6 @@ function localOrigin(req: DeskRequest) {
 }
 
 const DESK_DIR = fileURLToPath(new URL('../public/', import.meta.url))
-const DESK_TYPES = new Map([
-  ['.html', 'text/html; charset=utf-8'],
-  ['.js', 'text/javascript; charset=utf-8'],
-  ['.css', 'text/css; charset=utf-8'],
-  ['.svg', 'image/svg+xml'],
-  ['.json', 'application/json; charset=utf-8'],
-  ['.map', 'application/json; charset=utf-8'],
-  ['.jpg', 'image/jpeg'],
-  ['.jpeg', 'image/jpeg'],
-  ['.png', 'image/png'],
-  ['.webp', 'image/webp'],
-  ['.woff2', 'font/woff2'],
-  ['.ttf', 'font/ttf'],
-])
 
 /**
  * Absolute Unix socket where the dev Vite server listens.
@@ -1197,10 +1184,11 @@ function serveDesk(
     return false
   }
   if (!stat.isFile()) return false
+  const pwa = deskPwaEnabled()
+  if (deskPwaFileBlocked(decoded, pwa)) return false
   res.writeHead(200, {
-    'content-type': DESK_TYPES.get(extname(file)) ?? 'application/octet-stream',
+    ...deskHeaders(decoded, pwa),
     'content-length': stat.size,
-    'cache-control': extname(file) === '.html' ? 'no-store' : 'public, max-age=31536000, immutable',
   })
   if (req.method === 'HEAD') res.end()
   else createReadStream(file).pipe(res)
