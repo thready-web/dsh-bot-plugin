@@ -27,6 +27,7 @@ import {
 import { ChatComposer, ChatPane, type ChatPaneHandle } from './ChatPane'
 import { FileBrowser } from './FileBrowser'
 import { NewSessionSheet } from './NewSession'
+import { SessionListSkeleton } from './SessionSkeleton'
 import { BotChatView } from './BotChatView'
 import { TurnRail } from './TurnRail'
 import { createInteractionSync, createAuthorizationCatalog } from './interaction-sync'
@@ -175,6 +176,7 @@ export function App() {
   const { t, locale, setLocale } = useI18n()
   const [sessionId, setSessionId] = useState(hashSession)
   const [items, setItems] = useState<SessionItem[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sessionNote, setSessionNote] = useState('')
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
@@ -497,6 +499,13 @@ export function App() {
     if (usage && typeof usage === 'object' && !Array.isArray(usage)) setUsage(usage as UsageBody)
   }
 
+  // A stalled first request must not pin the skeleton forever; the live stream can still fill in.
+  useEffect(() => {
+    if (!sessionsLoading) return
+    const timer = window.setTimeout(() => setSessionsLoading(false), 10000)
+    return () => window.clearTimeout(timer)
+  }, [sessionsLoading])
+
   useEffect(() => {
     let stop = false
     void (async () => {
@@ -515,6 +524,8 @@ export function App() {
         }
       } catch {
         /* the live stream still fills the list */
+      } finally {
+        if (!stop) setSessionsLoading(false)
       }
       try {
         const roster = await api('/sessions/bots')
@@ -1373,7 +1384,8 @@ export function App() {
         ) : null}
         {sessionNote ? <p className="note">{sessionNote}</p> : null}
         {setupNote ? <p className="note ok">{setupNote}</p> : null}
-        <ul className="sessions">
+        {sessionsLoading && items.length === 0 ? <SessionListSkeleton /> : null}
+        <ul className="sessions" hidden={sessionsLoading && items.length === 0}>
           {conversations.length === 0 ? (
             <li className="empty">{query.trim() ? t('session.noMatch') : t('session.none')}</li>
           ) : null}

@@ -67,6 +67,19 @@ a {
   text-decoration: none;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 @property --files-inset {
   syntax: "<length>";
   inherits: true;
@@ -205,6 +218,117 @@ html.files-resizing {
   color: var(--tertiary);
   font-size: 13px;
   padding: 8px 10px;
+}
+
+/* Session list before the first answer: desktop rows, mobile cards. */
+.session-skeleton {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 2px 6px 8px;
+}
+.session-skeleton-desktop {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.session-skeleton-mobile {
+  display: none;
+}
+.skeleton-session,
+.skeleton-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.skeleton-session {
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+.skeleton-avatar,
+.skeleton-line,
+.skeleton-pill {
+  background-color: var(--selected);
+  background-image: linear-gradient(100deg, var(--selected) 20%, #f8f8fa 40%, var(--selected) 60%);
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+.skeleton-avatar {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+}
+.skeleton-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.skeleton-line {
+  height: 9px;
+  border-radius: 999px;
+}
+.skeleton-line.name {
+  width: 56%;
+}
+.skeleton-line.preview {
+  width: 82%;
+  opacity: 0.62;
+}
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+@media (max-width: 800px) {
+  .session-skeleton {
+    padding: 2px 4px 10px;
+  }
+  .session-skeleton-desktop {
+    display: none;
+  }
+  .session-skeleton-mobile {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .skeleton-card {
+    padding: 14px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 0 0 0.5px var(--line);
+  }
+  .skeleton-card .skeleton-avatar {
+    width: 44px;
+    height: 44px;
+  }
+  .skeleton-card .skeleton-line.name {
+    width: 46%;
+    height: 10px;
+  }
+  .skeleton-card .skeleton-line.preview {
+    width: 70%;
+  }
+  .skeleton-pill {
+    flex: none;
+    width: 40px;
+    height: 18px;
+    border-radius: 999px;
+    opacity: 0.55;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-avatar,
+  .skeleton-line,
+  .skeleton-pill {
+    animation: none;
+    background-image: none;
+  }
 }
 .session {
   display: flex;
