@@ -28,6 +28,7 @@ import { ChatComposer, ChatPane, type ChatPaneHandle } from './ChatPane'
 import { FileBrowser } from './FileBrowser'
 import { NewSessionSheet } from './NewSession'
 import { SessionListSkeleton } from './SessionSkeleton'
+import { classifySessionListFailure } from './session-list.ts'
 import { BotChatView } from './BotChatView'
 import { TurnRail } from './TurnRail'
 import { createInteractionSync, createAuthorizationCatalog } from './interaction-sync'
@@ -182,6 +183,7 @@ export function App() {
   const [sessionId, setSessionId] = useState(hashSession)
   const [items, setItems] = useState<SessionItem[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(true)
+  const [sessionRetry, setSessionRetry] = useState(0)
   const [sessionNote, setSessionNote] = useState('')
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
@@ -578,6 +580,7 @@ export function App() {
 
   useEffect(() => {
     let stop = false
+    if (sessionRetry > 0) setSessionsLoading(true)
     void (async () => {
       try {
         const listed = await api('/sessions')
@@ -589,11 +592,17 @@ export function App() {
           setSessionNote('')
           setItems(acceptSessions(result.value?.items))
           takePreviews(listed.body.previews)
-        } else if (listed.status !== 200) {
-          setSessionNote(result?.error?.message || t('session.listUnavailable'))
+        } else {
+          // A failure must never look like an empty account. A 200 that is not our
+          // envelope is usually a sign-in page the request was redirected to.
+          const failure = classifySessionListFailure(listed.status, result !== undefined)
+          setSessionNote(
+            failure === 'signin' ? t('session.needSignIn') : result?.error?.message || t('session.listUnavailable'),
+          )
         }
       } catch {
-        /* the live stream still fills the list */
+        // The live stream can still fill the list; until then, say what happened.
+        if (!stop) setSessionNote(navigator.onLine ? t('session.listUnavailable') : t('session.listOffline'))
       } finally {
         if (!stop) setSessionsLoading(false)
       }
@@ -625,7 +634,7 @@ export function App() {
     return () => {
       stop = true
     }
-  }, [])
+  }, [sessionRetry])
 
   useEffect(() => {
     let stop = false
@@ -1464,11 +1473,18 @@ export function App() {
             onChange={event => setQuery(event.target.value)}
           />
         ) : null}
-        {sessionNote ? <p className="note">{sessionNote}</p> : null}
+        {sessionNote ? (
+          <div className="note-row">
+            <p className="note">{sessionNote}</p>
+            <button type="button" className="note-retry" onClick={() => setSessionRetry(value => value + 1)}>
+              {t('session.retry')}
+            </button>
+          </div>
+        ) : null}
         {setupNote ? <p className="note ok">{setupNote}</p> : null}
         {sessionsLoading && items.length === 0 ? <SessionListSkeleton /> : null}
         <ul className="sessions" hidden={sessionsLoading && items.length === 0}>
-          {conversations.length === 0 ? (
+          {conversations.length === 0 && sessionNote === '' ? (
             <li className="empty">{query.trim() ? t('session.noMatch') : t('session.none')}</li>
           ) : null}
           {conversations.map(item => {

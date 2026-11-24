@@ -204,6 +204,30 @@ html.files-resizing {
 .note.ok {
   color: var(--secondary);
 }
+.note-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 8px 8px;
+}
+.note-row .note {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+.note-retry {
+  flex: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--link);
+  font-size: 12px;
+}
+.note-retry:hover,
+.note-retry:focus-visible {
+  background: var(--hover);
+}
 .sessions {
   list-style: none;
   margin: 0;
