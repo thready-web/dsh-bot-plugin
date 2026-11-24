@@ -7,7 +7,10 @@ import { runInThisContext } from 'node:vm'
  * These rules are the shell's security boundary: they decide what may enter Cache
  * Storage. The test runs the exact file that build-shell.mjs inlines into sw.js.
  */
-type Routes = { classify: (request: Record<string, unknown>) => string }
+type Routes = {
+  classify: (request: Record<string, unknown>) => string
+  navigationAction: (probe: { redirected?: boolean } | null) => string
+}
 
 const source = readFileSync(new URL('../../pwa/routes.js', import.meta.url), 'utf8')
 runInThisContext(source, { filename: 'routes.js' })
@@ -61,6 +64,25 @@ test('non-GET and cross-origin requests are untouched', () => {
   assert.equal(classify('/dsh-bot/', { method: 'POST' }), 'bypass')
   assert.equal(classify('https://elsewhere.example/dsh-bot/'), 'bypass')
   assert.equal(classify('/dsh-bot/', { origin: '' }), 'shell')
+})
+
+test('a navigation only falls back to cache when the network did not answer', () => {
+  assert.equal(routes.navigationAction(null), 'cache')
+})
+
+test('a network redirect is handed to the browser, whatever it is for', () => {
+  assert.equal(routes.navigationAction({ redirected: true }), 'handoff')
+})
+
+test('every other network answer is returned unchanged', () => {
+  assert.equal(routes.navigationAction({ redirected: false }), 'network')
+})
+
+test('the worker carries no notion of a sign-in response', () => {
+  const api = routes as unknown as Record<string, unknown>
+  assert.equal('BOUNCE_PATH' in api, false)
+  assert.equal('LOGIN_PATH' in api, false)
+  assert.equal(JSON.stringify(Object.keys(api)).includes('login'), false)
 })
 
 test('the exported constants match the generated worker files', () => {

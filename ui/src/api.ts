@@ -1,13 +1,23 @@
 /** Desk calls. Session, task, file, health, and usage routes are served by the plugin. */
 
+import { forgetUnauthorized, reloadForUnauthorized, reloadStorage } from './unauthorized-reload.ts'
+
 export async function api(
   path: string,
   options?: RequestInit,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const response = await fetch('/dsh-bot/api' + path, {
     ...options,
-    headers: { accept: 'application/json', ...(options?.headers ?? {}) },
+    // A redirect to a login page is unobservable from a page and breaks CORS; asking as
+    // an XHR makes a gateway answer with a status instead. It says nothing about who
+    // owns the login.
+    credentials: 'same-origin',
+    headers: { accept: 'application/json', 'x-requested-with': 'XMLHttpRequest', ...(options?.headers ?? {}) },
   })
+  // A 401 means this request needs credentials. The app does not own that decision:
+  // it only asks for the document again so the gateway or login bridge can act.
+  if (response.status === 401) reloadForUnauthorized(window.location, reloadStorage())
+  else if (response.ok) forgetUnauthorized(reloadStorage())
   const body = await response.json().catch(() => ({}))
   return { status: response.status, body: body && typeof body === 'object' ? (body as Record<string, unknown>) : {} }
 }

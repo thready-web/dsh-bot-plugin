@@ -110,16 +110,66 @@ async function activateShell() {
   }
 }
 
-/** Serve the shell document locally. A miss falls back to the network and stays uncached. */
+/**
+ * A document navigation, resolved against the network first.
+ *
+ * Serving the cached document before asking the origin is what hid Cloudflare Access:
+ * an expired session answers the navigation with a redirect, and a cached reply meant
+ * that redirect never happened. The origin gets the first word now.
+ *
+ * This worker deliberately knows nothing about sessions. It only refuses to stand in
+ * for a document the network wanted to say something about: a redirect is handed back
+ * to the browser so whatever owns authentication runs natively, and every other answer
+ * is returned unchanged. The cached shell is only for a request that could not complete.
+ */
+const PROBE_TIMEOUT_MS = 5000
+
 async function shellDocument(request) {
+  const probe = await probeNavigation(request)
+  const action = self.DshBotPwa.navigationAction(probe)
+  if (action === 'handoff') return Response.redirect(probe.url, 302)
+  if (action === 'network') return probe
   const cached = await matchShell(SHELL_INDEX)
-  if (cached) return cached
-  return fetch(request)
+  return cached || Response.error()
+}
+
+/** Ask the origin for the document, following any redirect to observe where it ends. */
+async function probeNavigation(request) {
+  try {
+    return await withTimeout(
+      fetch(request.url, {
+        method: 'GET',
+        credentials: 'same-origin',
+        redirect: 'follow',
+        cache: 'no-store',
+        headers: { accept: 'text/html' },
+      }),
+      PROBE_TIMEOUT_MS,
+    )
+  } catch {
+    return null
+  }
+}
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('dsh-bot pwa: navigation probe timed out')), ms)
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      error => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
 }
 
 /**
- * Serve a versioned shell asset from the active bucket, then the previous one so a
- * tab opened before the last activation keeps working, then the network.
+ * A versioned shell asset: the current bucket, then the previous one so a tab opened
+ * before the last activation keeps working, then the network. Stays cache-first.
  */
 async function shellAsset(request) {
   const url = new URL(request.url)

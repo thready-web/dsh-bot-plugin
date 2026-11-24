@@ -94,8 +94,31 @@
     return 'network'
   }
 
+  /**
+   * What a document navigation should do with the network answer.
+   *
+   * This worker knows nothing about sessions, Access, or sign-in pages, and it must
+   * not: a gateway, a bridge, or the future in-harness auth decides what an
+   * unauthenticated request looks like. The only rule here is document hygiene, and
+   * it holds for any of them:
+   *
+   * - the network did not answer → the cached shell may stand in;
+   * - the network answered with a redirect → hand that redirect to the browser, so
+   *   whatever owns authentication can run natively;
+   * - anything else → return it unchanged, including a `200` interstitial page.
+   *
+   * @param {{redirected?: boolean} | null} probe null when the request did not complete
+   * @returns {'cache' | 'handoff' | 'network'}
+   */
+  function navigationAction(probe) {
+    if (!probe) return 'cache'
+    if (probe.redirected === true) return 'handoff'
+    return 'network'
+  }
+
   root.DshBotPwa = {
     classify,
+    navigationAction,
     SHELL_URL,
     SHELL_INDEX,
     SHELL_CACHE_PREFIX,
