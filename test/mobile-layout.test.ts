@@ -206,7 +206,12 @@ test('mobile header and composer stay inside the visual viewport', {
     }
   } finally {
     proc.kill('SIGKILL')
-    rmSync(dir, { recursive: true, force: true })
+    await new Promise(resolve => proc.once('exit', () => resolve(undefined)))
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 40 })
+    } catch {
+      /* Chrome can release its profile after the process has exited. */
+    }
   }
 })
 

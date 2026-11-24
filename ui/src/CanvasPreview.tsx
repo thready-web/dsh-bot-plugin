@@ -6,6 +6,8 @@ import { mentionFrom } from './canvas-mention.ts'
 import { adoptElement, type RawNode } from './canvas-path.ts'
 import { mentionLabel } from './canvas-target'
 import { api } from './api'
+import { canvasMediaPath, CanvasAccessError, INSPECTOR_PATH, readSameOriginBytes } from './canvas-access.ts'
+import { buildCanvasSrcdoc, type CanvasFrameFile } from './canvas-frame.ts'
 import { placeCanvases } from './canvas-place'
 import {
   applyCanvasRevision,
@@ -113,6 +115,8 @@ export function CanvasPreview({
   routeStamp = 0,
   routePage = null,
   routeAnchor = null,
+  files = null,
+  inspectorSource = '',
 }: {
   title: string
   revisions: RevisionSummary[]
@@ -132,6 +136,9 @@ export function CanvasPreview({
   routeStamp?: number
   routePage?: string | null
   routeAnchor?: string | null
+  /** Verified revision bytes. The frame never fetches these itself. */
+  files?: ReadonlyMap<string, CanvasFrameFile> | null
+  inspectorSource?: string
 }) {
   const { t } = useI18n()
   const dialog = useRef<HTMLDivElement>(null)
@@ -198,9 +205,18 @@ export function CanvasPreview({
     setPinnedPath(null)
   }
   const pageName = page ?? entryName(src)
-  const frameSrc = frameAddress(src, nonce, pageName, reload, anchor)
   const windowUrl = standaloneUrl(src, pageName)
-  const sourceUrl = mediaPage(src, pageName)
+  const srcdoc =
+    files && inspectorSource && nonce
+      ? (buildCanvasSrcdoc({
+          files,
+          page: pageName,
+          nonce,
+          parentOrigin: pageOrigin(),
+          inspectorSource,
+          scriptNonce: nonce,
+        }) ?? '')
+      : ''
   const name = title || t('canvas.card')
   const active = revisions.find(revision => revision.revision === activeRevision) ?? null
   const spec = DEVICES.find(item => item.id === device) ?? DEVICES[0]
@@ -387,20 +403,14 @@ export function CanvasPreview({
   }, [])
 
   useEffect(() => {
-    if (motion !== 'settled' || !sourceUrl) return
-    let cancel = false
-    fetch(sourceUrl, { credentials: 'omit', cache: 'no-store' })
-      .then(response => (response.ok ? response.text() : Promise.reject(new Error('load'))))
-      .then(html => {
-        if (!cancel) setSource(adoptElement(new DOMParser().parseFromString(html, 'text/html').body))
-      })
-      .catch(() => {
-        if (!cancel) setSource(null)
-      })
-    return () => {
-      cancel = true
+    const bytes = files?.get(pageName)
+    if (!bytes || bytes.type !== 'text/html') {
+      setSource(null)
+      return
     }
-  }, [motion, sourceUrl])
+    const html = new TextDecoder().decode(bytes.bytes)
+    setSource(adoptElement(new DOMParser().parseFromString(html, 'text/html').body))
+  }, [files, pageName])
 
   useEffect(() => {
     if (!nonce) return
@@ -605,7 +615,7 @@ export function CanvasPreview({
               </button>
             </p>
           ) : null}
-          {motion === 'settled' && src ? (
+          {motion === 'settled' && src && srcdoc ? (
             <div
               className="canvas-fit"
               data-mode={fit ? 'fit' : 'actual'}
@@ -616,11 +626,12 @@ export function CanvasPreview({
                 style={{ width: fitted.frameWidth, height: fitted.frameHeight, transform: `scale(${fitted.scale})` }}
               >
                 <iframe
+                  key={`${pageName}:${reload}`}
                   ref={frameRef}
                   title={name}
                   sandbox="allow-scripts"
                   referrerPolicy="no-referrer"
-                  src={frameSrc || undefined}
+                  srcDoc={srcdoc}
                   onLoad={() => {
                     if (!nonce) return
                     const frame = frameRef.current?.contentWindow
@@ -653,18 +664,9 @@ function entryName(src: string): string {
   return isCanvasPage(page) ? page : 'index.html'
 }
 
-function mediaPage(src: string, page: string): string {
-  const match = /^(\/dsh-bot\/canvas-media\/[A-Za-z0-9_-]{20,128}\/[1-9]\d{0,8}\/)/.exec(src.split('?')[0] ?? '')
-  if (!match || !isCanvasPage(page)) return src
-  return `${match[1]}${page}`
-}
-
-function frameAddress(src: string, nonce: string, page: string, reload: number, anchor: string | null): string {
-  const match = /^\/dsh-bot\/canvas-media\/([A-Za-z0-9_-]{20,128})\/([1-9]\d{0,8})\//.exec(src.split('?')[0] ?? '')
-  if (!match || !nonce || !isCanvasPage(page)) return ''
-  const address = `/dsh-bot/canvas-inspect/${match[1]}/${match[2]}/${page}?nonce=${encodeURIComponent(nonce)}`
-  const located = reload ? `${address}&r=${reload}` : address
-  return anchor && isCanvasAnchor(anchor) ? `${located}#${anchor}` : located
+function pageOrigin(): string {
+  if (typeof location === 'undefined') return 'http://127.0.0.1'
+  return /^https?:\/\/[A-Za-z0-9.\-:[\]]+$/.test(location.origin) ? location.origin : 'http://127.0.0.1'
 }
 
 function standaloneUrl(src: string, page: string): string {
@@ -829,6 +831,9 @@ export function CanvasScope({
   const [phase, setPhase] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [error, setError] = useState('')
   const [src, setSrc] = useState('')
+  const [frameFiles, setFrameFiles] = useState<CanvasCache['files'] | null>(null)
+  const [inspectorSource, setInspectorSource] = useState('')
+  const inspectorRef = useRef('')
   const cacheRef = useRef<CanvasCache>(emptyCanvasCache())
   const loadedCanvas = useRef<string | null>(null)
   const requestRef = useRef(0)
@@ -912,6 +917,7 @@ export function CanvasScope({
       loadedCanvas.current = canvasId
       cacheRef.current = emptyCanvasCache()
       setSrc('')
+      setFrameFiles(null)
     }
     setPhase('loading')
     setError('')
@@ -936,18 +942,38 @@ export function CanvasScope({
       return
     }
     const applied = await applyCanvasRevision(cacheRef.current, doc, async path => {
-      const response = await fetch(mediaUrl(token, revision, path), { credentials: 'omit', cache: 'no-store' })
-      if (!response.ok) throw new Error(t('canvas.error'))
-      return new Uint8Array(await response.arrayBuffer())
+      const url = canvasMediaPath(token, revision, path)
+      if (!url) throw new Error(t('canvas.error'))
+      return readSameOriginBytes(url)
     })
     if (ticket !== requestRef.current) return
     if (!applied.ok) {
       cacheRef.current = applied.cache
       setPhase('error')
-      setError(t('canvas.error'))
+      setError(applied.reason === 'access' ? t('canvas.access') : t('canvas.error'))
       return
     }
+    let inspector = inspectorRef.current
+    if (!inspector) {
+      try {
+        inspector = new TextDecoder().decode(await readSameOriginBytes(INSPECTOR_PATH))
+      } catch (error) {
+        if (ticket !== requestRef.current) return
+        setPhase('error')
+        setError(error instanceof CanvasAccessError ? t('canvas.access') : t('canvas.error'))
+        return
+      }
+      if (!inspector.includes('canvas-inspect')) {
+        setPhase('error')
+        setError(t('canvas.error'))
+        return
+      }
+      inspectorRef.current = inspector
+    }
+    if (ticket !== requestRef.current) return
     cacheRef.current = applied.cache
+    setFrameFiles(applied.cache.files)
+    setInspectorSource(inspector)
     setSrc(current => nextFrameSrc(current, { ok: true, src: mediaUrl(token, doc.revision, doc.entry) }))
     setShown(doc.revision)
     setPhase('ready')
@@ -966,6 +992,7 @@ export function CanvasScope({
         if (openIdRef.current == null) {
           setPaint(false)
           setSrc('')
+          setFrameFiles(null)
           setPhase('idle')
         }
         openStamp.current += 1
@@ -1000,6 +1027,8 @@ export function CanvasScope({
           phase={phase}
           error={error}
           src={src}
+          files={frameFiles}
+          inspectorSource={inspectorSource}
           onSelect={revision => void show(open.id, revision)}
           onRetry={() => {
             if (shown != null) void show(open.id, shown)

@@ -9,6 +9,8 @@ export const canvas = {
     'canvas.failed': 'Failed',
     'canvas.loading': 'Checking this revision…',
     'canvas.error': 'This revision could not be shown. The previous one is still open.',
+    'canvas.access':
+      'Cloudflare Access blocked this preview. Sign in again, then retry. The previous version stays open.',
     'canvas.retry': 'Retry',
     'canvas.window': 'Open in new window',
     'canvas.window.hint': 'Open this revision in its own tab',
@@ -39,6 +41,7 @@ export const canvas = {
     'canvas.failed': '失败',
     'canvas.loading': '正在核对这个版本…',
     'canvas.error': '这个版本无法显示，仍停留在上一版。',
+    'canvas.access': 'Cloudflare Access 没有放行这次预览。请重新登录后再试。上一版仍然开着。',
     'canvas.retry': '重试',
     'canvas.window': '在新窗口打开',
     'canvas.window.hint': '在新标签页中单独查看这一版',

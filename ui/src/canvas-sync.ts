@@ -88,13 +88,19 @@ export async function applyCanvasRevision(
   cache: CanvasCache,
   doc: CanvasRevisionDocument,
   fetchBytes: (path: string) => Promise<Uint8Array>,
-): Promise<{ ok: true; cache: CanvasCache } | { ok: false; cache: CanvasCache; error: string }> {
+): Promise<{ ok: true; cache: CanvasCache } | { ok: false; cache: CanvasCache; error: string; reason?: 'access' }> {
   const plan = transferPlan(cache, doc)
   const fetched = new Map<string, Uint8Array>()
   try {
     for (const path of plan.paths) fetched.set(path, await fetchBytes(path))
   } catch (error) {
-    return { ok: false, cache, error: error instanceof Error ? error.message : 'fetch failed' }
+    const access = !!error && typeof error === 'object' && 'code' in error && error.code === 'ACCESS_EXPIRED'
+    return {
+      ok: false,
+      cache,
+      error: error instanceof Error ? error.message : 'fetch failed',
+      ...(access ? { reason: 'access' as const } : {}),
+    }
   }
   if (plan.mode === 'snapshot') {
     for (const item of doc.manifest) {

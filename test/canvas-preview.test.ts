@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert'
 import { createRequire } from 'node:module'
 import test from 'node:test'
 import { build } from 'esbuild'
-import { parseHTML } from 'linkedom'
+import { DOMParser, parseHTML } from 'linkedom'
 
 const compiled = await build({
   stdin: {
@@ -59,6 +59,7 @@ function harness() {
     document,
     HTMLElement: window.HTMLElement,
     Node: window.Node,
+    DOMParser,
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
@@ -89,6 +90,17 @@ function harness() {
   }
 }
 
+const previewFiles = new Map([
+  [
+    'index.html',
+    {
+      type: 'text/html',
+      bytes: new TextEncoder().encode('<!doctype html><html><body><p>Poster body</p></body></html>'),
+    },
+  ],
+])
+const inspectorSource = '/* canvas-inspect */'
+
 const revisions = [
   { revision: 1, kind: 'snapshot', status: 'stable' as const, entry: 'index.html', error: null },
   { revision: 2, kind: 'delta', status: 'preview' as const, entry: 'index.html', error: null },
@@ -108,6 +120,8 @@ test('the canvas modal keeps one inspect document and does not reload when selec
       phase: 'ready',
       error: '',
       src,
+      files: previewFiles,
+      inspectorSource,
       onSelect: (revision: number) => {
         selected = revision
       },
@@ -119,10 +133,13 @@ test('the canvas modal keeps one inspect document and does not reload when selec
     })
     const frame = view.document.querySelector('iframe')
     assert.ok(frame)
-    const address = frame.getAttribute('src') ?? ''
-    assert.match(address, /^\/dsh-bot\/canvas-inspect\/token-token-token-token\/2\/index\.html\?nonce=[a-z0-9]+$/)
+    const address = frame.getAttribute('srcDoc') || frame.getAttribute('srcdoc') || ''
+    assert.equal(frame.hasAttribute('src'), false)
+    assert.match(address, /Poster body/)
+    assert.equal(address.includes('token-token-token-token'), false)
+    assert.equal(address.includes('/dsh-bot/canvas-media/'), false)
+    assert.match(address, /https:\/\/canvas\.invalid\/preview\//)
     assert.equal(frame.getAttribute('sandbox'), 'allow-scripts')
-    assert.equal(frame.hasAttribute('srcdoc'), false)
     assert.equal((frame.getAttribute('sandbox') ?? '').includes('allow-same-origin'), false)
     const windowLink = view.document.querySelector('a.canvas-new-window')
     assert.ok(windowLink)
@@ -166,9 +183,9 @@ test('the canvas modal keeps one inspect document and does not reload when selec
       button => button.getAttribute('aria-label') === 'Select',
     )
     await view.act(() => select?.click())
-    assert.equal(frame.getAttribute('src'), address)
+    assert.equal(frame.getAttribute('srcDoc') || frame.getAttribute('srcdoc') || '', address)
     await view.act(() => select?.click())
-    assert.equal(frame.getAttribute('src'), address)
+    assert.equal(frame.getAttribute('srcDoc') || frame.getAttribute('srcdoc') || '', address)
     assert.equal(view.document.querySelector('.canvas-dialog')?.getAttribute('role'), 'dialog')
     const labels = [...view.document.querySelectorAll('button')].map(button => button.textContent)
     assert.equal(labels.includes('Back'), false)
@@ -196,12 +213,16 @@ test('the canvas modal keeps one inspect document and does not reload when selec
       phase: 'error',
       error: 'This revision could not be shown. The previous one is still open.',
       src,
+      files: previewFiles,
+      inspectorSource,
       onSelect: () => {},
       onRetry: () => {},
       onAdopt: () => {},
       onClose: () => {},
     })
-    assert.equal(view.document.querySelector('iframe')?.getAttribute('src'), address)
+    const again = view.document.querySelector('iframe')
+    assert.equal(again?.getAttribute('srcDoc') || again?.getAttribute('srcdoc') || '', address)
+    assert.equal(view.document.querySelector('iframe')?.hasAttribute('src'), false)
     assert.match(view.document.body.textContent ?? '', /previous one is still open/)
   } finally {
     await view.close()
