@@ -225,6 +225,31 @@ export function registerHttp(
     ) {
       return serveCanvasInspect(req, res, requestTarget, canvas)
     }
+    const earlyHook = inboundHookId(requestTarget)
+    if (req.method === 'POST' && earlyHook) {
+      try {
+        const runtime = getRuntime()
+        if (!runtime) return send(res, 503, toolError('UNAVAILABLE', 'Triggers are not attached to this host yet.'))
+        const declared = Number(header(req, 'content-length') ?? '')
+        if (Number.isFinite(declared) && declared > 65536) {
+          return send(res, 413, toolError('VALIDATION', 'The body is too long.'))
+        }
+        const raw = await readRaw(req, 65536)
+        const result = await runtime.acceptWebhook(earlyHook, raw, {
+          timestamp: header(req, 'x-foundations-timestamp'),
+          signature: header(req, 'x-foundations-signature'),
+          eventId: header(req, 'x-foundations-event-id'),
+        })
+        return send(res, result.http, result.body)
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'STORE_FAILURE'
+        return send(res, code === 'VALIDATION' ? 400 : 500, {
+          ok: false,
+          code,
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
     const rejection = reject(ctx, req)
     if (rejection) return send(res, rejection, { ok: false, code: 'FORBIDDEN' })
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -497,18 +522,6 @@ export function registerHttp(
           body.skillId,
         )
         return send(res, 200, { ok: true, skill: row })
-      }
-      const hookMatch = /^\/session-foundations\/hooks\/([^/]+)$/.exec(path)
-      if (req.method === 'POST' && hookMatch) {
-        const runtime = getRuntime()
-        if (!runtime) return send(res, 503, toolError('UNAVAILABLE', 'Triggers are not attached to this host yet.'))
-        const raw = await readRaw(req, 65536)
-        const result = await runtime.acceptWebhook(hookMatch[1], raw, {
-          timestamp: header(req, 'x-foundations-timestamp'),
-          signature: header(req, 'x-foundations-signature'),
-          eventId: header(req, 'x-foundations-event-id'),
-        })
-        return send(res, result.http, result.body)
       }
       if (req.method === 'POST' && path === '/session-foundations/api/messages/allow') {
         const runtime = getRuntime()
@@ -821,6 +834,13 @@ function detachSessionEntry(ctx: HostContext, sessionId: string) {
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {import('node:http').IncomingMessage} req
  */
+/** POST /session-foundations/hooks/:id only. Other methods and /api routes stay behind the session cookie. */
+function inboundHookId(requestTarget: string): string | null {
+  const path = (requestTarget.split('?')[0] ?? '').replace(/\/+$/, '') || '/'
+  const match = /^\/session-foundations\/hooks\/([^/]+)$/.exec(path)
+  return match ? match[1] : null
+}
+
 function reject(ctx: HostContext, req: import('node:http').IncomingMessage) {
   const connection = probeConnection(ctx)
   const rejection = connection?.requestRejection?.(req)
